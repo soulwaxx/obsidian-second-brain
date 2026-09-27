@@ -239,3 +239,70 @@ output=$(printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"wiki/index
 [ -z "$output" ]
 output=$(OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" autocommit "$vault/wiki/quickstart.md")
 [ "$output" = disabled ]
+rm -f "$properties"
+
+# Retrieval helpers are optional and derived state is never staged/committed.
+rm -rf scripts .vault-meta
+OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop
+mkdir -p scripts
+printf '#!/bin/sh\nexit 1\n' >scripts/contextual-prefix.py
+printf '#!/bin/sh\nexit 1\n' >scripts/bm25-index.py
+OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop 2>"$work/retrieval-warning"
+grep -q 'retrieval index refresh failed' "$work/retrieval-warning"
+repo=$(cd "$(dirname "$hook")/.." && pwd -P)
+cp "$repo/scripts/contextual-prefix.py" scripts/contextual-prefix.py
+cp "$repo/scripts/bm25-index.py" scripts/bm25-index.py
+OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop
+[ -f .vault-meta/retrieval/bm25.json ]
+[ -z "$(git diff --cached --name-only)" ]
+if git cat-file -e HEAD:.vault-meta/retrieval/bm25.json 2>/dev/null; then
+  echo "retrieval cache was committed" >&2
+  exit 1
+fi
+# A pre-existing tracked cache is warned about, but remains unstaged.
+git add .vault-meta/retrieval/bm25.json
+git commit -qm 'tracked retrieval cache fixture'
+cat >wiki/cache-fixture.md <<'EOF'
+---
+type: note
+title: Cache Fixture
+last_updated: 2026-01-07
+---
+# Cache Fixture
+EOF
+WIKI_MIDDLEWARE_DIR=$middleware python3 "$middleware/sync.py" . >/dev/null
+# Include page and generated navigation as committed baseline before shutdown.
+git add wiki
+git commit -qm 'cache fixture page'
+OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop 2>"$work/tracked-cache-warning"
+grep -q 'retrieval cache is tracked' "$work/tracked-cache-warning"
+[ -n "$(git diff -- .vault-meta/retrieval/bm25.json)" ]
+[ -z "$(git diff --cached --name-only)" ]
+
+# A vault without its own Git repository still syncs indexes and refreshes its
+# optional retrieval cache; a containing repository must never be treated as it.
+parent=$work/parent-repo
+no_git_vault=$parent/nested-vault
+mkdir -p "$no_git_vault/wiki" "$no_git_vault/scripts"
+git init -q "$parent"
+git -C "$parent" config user.name test
+git -C "$parent" config user.email test@example.invalid
+printf 'parent sentinel\n' >"$parent/sentinel.txt"
+git -C "$parent" add sentinel.txt
+git -C "$parent" commit -qm baseline
+cp "$repo/scripts/contextual-prefix.py" "$no_git_vault/scripts/"
+cp "$repo/scripts/bm25-index.py" "$no_git_vault/scripts/"
+cat >"$no_git_vault/wiki/no-git-page.md" <<'EOF'
+---
+type: note
+title: No Git Page
+last_updated: 2026-01-08
+---
+# No Git Page
+EOF
+(cd "$no_git_vault" && OBSIDIAN_VAULT_PATH=$no_git_vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+[ -f "$no_git_vault/wiki/index.md" ]
+[ -f "$no_git_vault/.vault-meta/retrieval/bm25.json" ]
+[ ! -e "$no_git_vault/.git" ]
+[ -z "$(git -C "$parent" diff --cached --name-only)" ]
+[ -z "$(git -C "$parent" diff --name-only)" ]

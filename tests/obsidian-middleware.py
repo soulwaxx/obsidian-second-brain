@@ -8,7 +8,6 @@ import sys
 import tempfile
 
 middleware = Path(sys.argv[1]).resolve()
-migration = Path(sys.argv[2]).resolve()
 
 
 def run(script: Path, *args: str, ok: bool = True) -> subprocess.CompletedProcess:
@@ -70,8 +69,5 @@ with tempfile.TemporaryDirectory() as temp:
     lint = json.loads(run(middleware / "lint.py", root).stdout)
     assert not lint["stale_index_entries"] and not lint["dead_links"]
 
-    run(migration, root, "--apply")
-    assert foreign.read_text().endswith("[[dest]]\n")
-    assert "[Dest](/dest.md)" in page.read_text()
 
 print("wiki middleware boundary regressions PASS")

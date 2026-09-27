@@ -1,96 +1,57 @@
 # Obsidian Setup
 
+Obsidian and its plugins are optional and are installed/configured by the vault
+owner. This package does not ship community plugins, templates, dashboard
+files, or CSS snippets. Windows instructions are outside verified support for
+this workflow.
+
 ---
 
 ## Install Obsidian
 
-### Linux (Flatpak: recommended)
+Download Obsidian from <https://obsidian.md/download>, then choose **Manage
+Vaults > Open folder as vault** and select the vault directory.
 
-Check if installed:
-```bash
-flatpak list 2>/dev/null | grep -i obsidian && echo "FOUND via flatpak" || \
-which obsidian 2>/dev/null && echo "FOUND in PATH" || echo "NOT FOUND"
-```
+## Built-in Core Plugins
 
-Install if not found:
-```bash
-flatpak install flathub md.obsidian.Obsidian
-```
+These are Obsidian features, not files or community plugins shipped by this
+repository. Enable them as needed in Settings > Core Plugins:
 
-### macOS
+| Feature | Purpose |
+|---------|---------|
+| Bases | Database-like views for `.base` files, if you create one. This repository does not provide `wiki/meta/dashboard.base`. |
+| Properties | Visual frontmatter editor. |
+| Backlinks | Incoming and outgoing links pane. |
+| Outline | Heading navigation. |
 
-```bash
-ls /Applications/Obsidian.app 2>/dev/null && echo "FOUND" || brew install --cask obsidian
-```
+## Optional Community Plugins
 
-### Windows
+Install desired plugins through Settings > Community Plugins > Browse. They
+are not preinstalled by this repository.
 
-```powershell
-Test-Path "$env:LOCALAPPDATA\Obsidian" && echo "FOUND" || winget install Obsidian.Obsidian
-```
+| Plugin | Optional use |
+|--------|--------------|
+| Templater | Templates you create and configure; this repository does not supply `_templates/`. |
+| Obsidian Git | Optional UI-based Git backups; separate from bootstrap and agent auto-commit. See [git-setup.md](git-setup.md). |
+| Calendar | Calendar view; install separately if wanted. |
+| Thino | Quick memo capture; install separately if wanted. |
+| Iconize | Folder icons. |
+| Minimal Theme | Optional appearance theme. |
+| Dataview | Optional query views, if you create pages that use it. No dashboard query page is supplied. |
 
-### All platforms: direct download
-
-https://obsidian.md/download
-
----
-
-## Open the Vault
-
-After installing: Obsidian > Manage Vaults > Open Folder as Vault > select your vault directory.
-
----
-
-## Core Plugins (Built-in: No Install Required)
-
-These ship with Obsidian. Enable them in Settings > Core Plugins:
-
-| Plugin | Purpose |
-|--------|---------|
-| **Bases** | Native database-like views for `.base` files. Powers `wiki/meta/dashboard.base`. Available since Obsidian v1.9.10 (August 2025). **Replaces Dataview for most wiki use cases.** |
-| **Properties** | Visual frontmatter editor. Always enabled. |
-| **Backlinks** | Outgoing/incoming links pane. |
-| **Outline** | Document heading navigation. |
-
-## Recommended Community Plugins
-
-Install via Settings > Community Plugins > Turn off Restricted Mode > Browse.
-
-| Plugin | Purpose |
-|--------|---------|
-| **Templater** | Auto-populate frontmatter on note creation from `_templates/`. |
-| **Obsidian Git** | Auto-commit every 15 minutes. Protects against bad writes. |
-| **Calendar** | Right-sidebar calendar with word count, task, and link indicators. Pre-installed in this vault via `.obsidian/plugins/calendar/`. |
-| **Thino** | Quick memo capture panel in right sidebar. Pre-installed via `.obsidian/plugins/thino/`. |
-| **Iconize** | Visual folder icons for navigation. |
-| **Minimal Theme** | Best dark theme for dense information display. |
-| **Dataview** *(optional/legacy)* | Only needed if you're on Obsidian < 1.9.10 or want to use the legacy `dashboard.md` queries. The primary dashboard now uses Bases. |
-
-**Calendar and Thino are pre-installed**. They ship with this vault. Enable them in Settings → Community Plugins → toggle on. No download needed.
-
-If installing in a different vault: download `main.js` + `manifest.json` from their GitHub releases into `.obsidian/plugins/calendar/` and `.obsidian/plugins/thino/` respectively.
-
-Optional additions:
-- **Smart Connections**: semantic search across all notes
-- **QuickAdd**: macros for fast note creation
-- **Folder Notes**: click a folder to open an overview note
-
----
+Other community plugins such as Smart Connections, QuickAdd, and Folder Notes
+are also user choices, not requirements.
 
 ## Web Clipper
 
-The Obsidian Web Clipper browser extension converts web articles to markdown and sends them to `.raw/` in one click.
+The Obsidian Web Clipper browser extension is optional. Install it separately
+from Obsidian's website and choose a destination folder that exists in your
+vault; `.raw/` is a common optional convention, not a folder created by this
+package.
 
-Install for Chrome, Firefox, or Safari from the Obsidian website.
+## After Installing (Optional)
 
-Set the default folder to `.raw/` in the extension settings.
-
----
-
-## After Installing Plugins
-
-1. Enable Bases: Settings > Core Plugins > toggle on (already on by default in Obsidian v1.9.10+)
-2. Enable Templater: Settings > Templater > set template folder to `_templates`
-3. Enable Obsidian Git: Settings > Obsidian Git > Auto backup interval: 15 minutes
-4. Enable the CSS snippet: Settings > Appearance > CSS Snippets > toggle on `vault-colors`
-5. *(Optional)* Enable Dataview only if you want the legacy `wiki/meta/dashboard.md` queries to work alongside the primary `dashboard.base`
+Configure each installed plugin in its own settings. For example, set
+Templater's template folder only if you create one; configure Obsidian Git only
+if you want its backups; and enable Bases only if you have `.base` files to
+view. No plugin is required for the wiki scaffold or local BM25 retrieval.

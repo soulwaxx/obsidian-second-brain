@@ -2,12 +2,18 @@
 
 Build the wiki from scratch for a new repository or project.
 
-**Vault setup (new vaults only).** If the vault has no git repository yet,
-follow [git-setup.md](git-setup.md) to initialize history and write-protection;
-it also covers the Obsidian plugins in [plugins.md](plugins.md). To make the
-file explorer colour-coded by folder type and add custom callout styles, apply
-the snippets in [css-snippets.md](css-snippets.md). Skip both when the vault is
-already established.
+**Vault setup (optional).** For a new or existing vault, first preview the
+scaffold from the plugin checkout with
+`python3 scripts/bootstrap-vault.py --vault /absolute/path/to/vault`, review its
+plan, then apply with `--apply --confirm <planHash>` using the printed hash.
+Bootstrap does not initialize Git and preserves existing notes/indexes/logs. A
+new config uses `autoCommit: false`; existing config values and omitted
+feature defaults are unchanged. For `vaultPath: null` or a missing path, set
+the target path and explicitly set `features.autoCommit: false` before retrying.
+Git history is a separate opt-in; follow [git-setup.md](git-setup.md) and create
+`.gitignore` before staging. Optional Obsidian plugins are described in
+[plugins.md](plugins.md); optional CSS and Graph View customizations are in
+[css-snippets.md](css-snippets.md).
 
 **Procedure:**
 

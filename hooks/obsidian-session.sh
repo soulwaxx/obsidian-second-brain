@@ -56,8 +56,17 @@ guard_path() {
   python3 "$mw/guard.py" --if-wiki "$vault" "$target"
 }
 
+vault_git_root() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  root=$(canonical_dir "$root") || return 1
+  [ "$root" = "$vault" ] || return 1
+}
+
 acquire_lock() {
-  lifecycle_lock=.git/obsidian-lifecycle.lock
+  local git_lock
+  git_lock=$(git rev-parse --git-path obsidian-lifecycle.lock 2>/dev/null) || return 1
+  lifecycle_lock=$git_lock
   if ! mkdir "$lifecycle_lock" 2>/dev/null; then
     holder=$(cat "$lifecycle_lock/pid" 2>/dev/null || true)
     if [[ "$holder" =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; then
@@ -156,7 +165,8 @@ PY
       [iI][nN][dD][eE][xX].[mM][dD]|[lL][oO][gG].[mM][dD]|_[pP][lL][aA][nN].[mM][dD]) continue ;;
     esac
     duplicate=0
-    for existing in "${touched[@]}"; do
+    # macOS Bash 3 treats an empty array expansion as unset under nounset.
+    for existing in "${touched[@]+"${touched[@]}"}"; do
       [ "$existing" = "$canonical" ] && duplicate=1
     done
     [ "$duplicate" = 1 ] || touched+=("$canonical")
@@ -231,14 +241,14 @@ PY
   generated=()
   while IFS= read -r -d '' index; do
     duplicate=0
-    for existing in "${generated[@]}"; do
+    for existing in "${generated[@]+"${generated[@]}"}"; do
       [ "$existing" = "$index" ] && duplicate=1
     done
     [ "$duplicate" = 1 ] || generated+=("$index")
   done < <(git diff --name-only -z -- 'wiki/**/index.md' wiki/index.md)
   while IFS= read -r -d '' index; do
     duplicate=0
-    for existing in "${generated[@]}"; do
+    for existing in "${generated[@]+"${generated[@]}"}"; do
       [ "$existing" = "$index" ] && duplicate=1
     done
     [ "$duplicate" = 1 ] || generated+=("$index")
@@ -313,11 +323,11 @@ PY
   fi
   mv wiki/log.md.tmp wiki/log.md
 
-  commit_paths=("${changed[@]}" "${generated[@]}" wiki/log.md)
+  commit_paths=("${changed[@]}" "${generated[@]+"${generated[@]}"}" wiki/log.md)
   cleanup_failed_commit() {
     local hook_path cleanup_failed=0
     git reset -q HEAD -- "${commit_paths[@]}" || cleanup_failed=1
-    for hook_path in "${generated[@]}" wiki/log.md; do
+    for hook_path in "${generated[@]+"${generated[@]}"}" wiki/log.md; do
       if git ls-files --error-unmatch -- "$hook_path" >/dev/null 2>&1; then
         git restore --worktree --source=HEAD -- "$hook_path" || cleanup_failed=1
       else
@@ -345,10 +355,14 @@ PY
 
 stop)
   [ -d wiki ] || exit 0
-  acquire_lock || exit 1
-  if ! git diff --cached --quiet; then
-    echo "obsidian lifecycle: staged changes already exist; refusing unsafe shutdown commit" >&2
-    exit 1
+  has_vault_git=0
+  if vault_git_root; then
+    has_vault_git=1
+    acquire_lock || exit 1
+    if ! git diff --cached --quiet; then
+      echo "obsidian lifecycle: staged changes already exist; refusing unsafe shutdown commit" >&2
+      exit 1
+    fi
   fi
   mw=$(middleware_dir)
   if [ -n "$mw" ] && [ -f "$mw/sync.py" ]; then
@@ -356,28 +370,19 @@ stop)
       echo "obsidian lifecycle: shutdown index synchronization failed" >&2
       exit 1
     }
-    if [ -n "$(git status --porcelain -- 'wiki/**/index.md' wiki/index.md)" ]; then
+    if [ "$has_vault_git" = 1 ] && [ -n "$(git status --porcelain -- 'wiki/**/index.md' wiki/index.md)" ]; then
       echo "obsidian lifecycle: generated indexes drifted at shutdown; repair and commit with the page change" >&2
       exit 1
     fi
   fi
 
   if feature_enabled retrievalRefresh && [ -f scripts/contextual-prefix.py ] && [ -f scripts/bm25-index.py ]; then
-    if [ -n "$(git status --porcelain -- .vault-meta)" ]; then
-      echo "obsidian lifecycle: pre-existing retrieval state changes prevent isolated refresh" >&2
-      exit 1
+    if [ "$has_vault_git" = 1 ] && [ -n "$(git ls-files -- .vault-meta/retrieval/)" ]; then
+      echo "obsidian lifecycle: warning: retrieval cache is tracked; keep derived state uncommitted" >&2
     fi
     if ! python3 scripts/contextual-prefix.py --all >/dev/null ||
       ! python3 scripts/bm25-index.py build >/dev/null; then
-      echo "obsidian lifecycle: retrieval index refresh failed" >&2
-      exit 1
-    fi
-    if [ -n "$(git status --porcelain -- .vault-meta)" ]; then
-      git add -- .vault-meta || exit 1
-      git commit -m "wiki: retrieval index $(date '+%Y-%m-%d %H:%M')" -- .vault-meta >/dev/null || {
-        echo "obsidian lifecycle: retrieval index commit failed" >&2
-        exit 1
-      }
+      echo "obsidian lifecycle: warning: retrieval index refresh failed; wiki index navigation remains available" >&2
     fi
   fi
   if [ -n "$mw" ] && [ -f "$mw/lint.py" ]; then

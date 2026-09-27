@@ -20,10 +20,7 @@ label:
 
 **Legacy wikilinks** (`[[concepts/retrieval]]`, `[[concepts/retrieval|RAG]]`)
 remain readable — `lint.py` resolves them and they still produce backlinks —
-but do not author new ones. To bulk-convert an existing vault, run
-`scripts/migrate_wikilinks.py <vault-root>` (dry run by default; `--apply` to
-write). It rewrites body wikilinks to Markdown links, skips embeds and code,
-and reports any target it cannot resolve.
+but do not author new ones.
 
 ## Obsidian extensions (optional)
 

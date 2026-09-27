@@ -1,0 +1,45 @@
+name: Test and install smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install system prerequisites (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git jq shellcheck
+          python -m pip install --upgrade PyYAML
+      - name: Install system prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install jq shellcheck
+          python3 -m pip install --upgrade PyYAML
+      - name: Install agent CLIs
+        run: npm install --global @earendil-works/pi-coding-agent @anthropic-ai/claude-code
+      - name: Shell checks
+        run: |
+          bash -n hooks/obsidian-session.sh tests/install-smoke.sh
+          shellcheck tests/install-smoke.sh
+      - name: Test suite
+        run: npm test
+      - name: Validate Claude plugin and marketplace
+        run: claude plugin validate .
+      - name: Isolated local package installation smoke
+        run: bash tests/install-smoke.sh

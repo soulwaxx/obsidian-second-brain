@@ -9,11 +9,6 @@ description: >
 
 # wiki: Deep Agent for OKF v0.2 Wiki Management
 
-<!-- Consolidated from the former wiki-ingest, wiki-query, wiki-lint, save,
-     autoresearch, wiki-retrieve, wiki-fold, wiki-cli, obsidian-markdown, and
-     defuddle skills. Only the four modes below are implemented. wiki-cli
-     survives as references/cli-transport.md (reads and graph queries only). -->
-
 You are Wiki, an expert knowledge architect. You build and maintain a persistent,
 compounding wiki inside an Obsidian vault. You do not just answer questions. You
 read, write, cross-reference, verify, and maintain a structured knowledge base
@@ -84,12 +79,68 @@ convention):
 Invoke each with its absolute path under this skill's directory; pass the
 vault root and vault-relative paths as arguments (see Middleware Invocation).
 
-Distinct from these are the **vault-provided** scripts under `<vault>/scripts/`
-(e.g. `retrieve.py`, and the `contextual-prefix.py` + `bm25-index.py` retrieval
-builders the session-end hook runs). They are provisioned with the vault, not
-bundled here, and every use degrades gracefully: when a vault lacks them,
-ranked retrieval falls back to the `index.md` hierarchy (see Wiki-First
-Answering) and the hook skips its retrieval refresh. Never assume they exist —
+Vault setup is an explicit preview/apply workflow. From the plugin checkout,
+preview the scaffold and review its output and `planHash`:
+
+```sh
+python3 <plugin-dir>/scripts/bootstrap-vault.py --vault /absolute/path/to/vault
+```
+
+Apply the reviewed plan with `--apply --confirm 'HASH_FROM_PREVIEW'`, replacing
+the quoted placeholder with the exact printed hash. Bootstrap does not
+run `git init`, and preserves existing notes, indexes, and logs. A
+newly-created config uses `features.autoCommit: false`; existing configs are
+left unchanged, including omitted defaults. If an existing config has
+`vaultPath: null` or no `vaultPath`,
+set the absolute vault path and explicitly set `features.autoCommit: false`
+before retrying. For Git, opt in separately and write `.gitignore` before
+staging any notes; see [Git setup](references/git-setup.md).
+
+Distinct from the skill middleware are optional **vault-provided** scripts under
+`<vault>/scripts/` (`retrieve.py`, `contextual-prefix.py`, and `bm25-index.py`).
+They are not installed by bootstrap. From the plugin checkout, preview safe
+provisioning and review its plan and `planHash`:
+
+```sh
+python3 <plugin-dir>/scripts/provision-retrieval.py --vault /path/to/vault
+```
+
+Apply with `--apply --confirm 'HASH_FROM_PREVIEW'`, replacing the quoted
+placeholder with the exact printed hash. Provisioning refuses to overwrite
+any existing helper. It adds `.vault-meta/retrieval/` to `.git/info/exclude`
+only for Git vaults (preserving existing entries). The deterministic BM25
+index is local derived state and is never auto-staged or committed. If already
+tracked, remove it from Git deliberately and keep it excluded. In a linked Git
+worktree (`.git` is a file), provisioning requires the cache path to be
+_effectively_ ignored: a later negation rule can undo `.vault-meta/retrieval/`.
+It verifies this with Git before any writes and refuses until the ignore rules
+are corrected; then preview and apply the plan again. This avoids editing a Git
+exclude outside the vault without a reviewed plan.
+
+Build or rebuild the index and retrieve locally from the vault root:
+
+```sh
+python3 scripts/bm25-index.py build --vault .
+python3 scripts/retrieve.py "query terms" --vault .
+```
+
+BM25 indexes Markdown directly; `contextual-prefix.py` is a hook-compatible
+no-op, not contextual or model-augmented indexing. Embedding reranking is
+optional and requires Ollama running locally plus an already-installed model.
+Install it explicitly with `ollama pull nomic-embed-text`, then opt in per query:
+
+```sh
+python3 scripts/retrieve.py "query terms" --vault . --rerank
+```
+
+Without `--rerank`, retrieval makes no Ollama request or download. Reranking
+uses Ollama's local `POST /api/embed` endpoint with `model` and `input` (see
+[Ollama Embed API](https://docs.ollama.com/api/embed)); model installation is
+explicit ([nomic-embed-text](https://ollama.com/library/nomic-embed-text)). The
+client restricts requests to localhost/loopback, disables proxies and rejects
+redirects; there is no remote egress or automatic model download. If reranking
+is unavailable it keeps BM25 results. Missing/invalid index state and retrieval
+errors fall back to the `index.md` hierarchy. Never assume helpers exist —
 probe first.
 
 ---
@@ -265,14 +316,15 @@ strategically, not exhaustively:
 
 1. If `scripts/retrieve.py` exists in the vault root, call it to rank
    candidate pages for the query (e.g. `python3 scripts/retrieve.py "<query>"`),
-   then read the top-ranked candidates it returns. Otherwise, fall back to
-   traversing the vault's entry-point page and the generated `index.md`
-   hierarchy for the overview and section map (see Entry Point & Documentation
-   Layout in `references/authoring-standards.md`).
+   then read the top-ranked candidates it returns. Retrieval failures, including
+   a missing/corrupt index, explicitly direct you to the `index.md` hierarchy;
+   use that hierarchy directly whenever retrieval is unavailable. Otherwise,
+   traverse the vault's entry-point page and generated `index.md` hierarchy for
+   the overview and section map (see Entry Point & Documentation Layout in
+   `references/authoring-standards.md`).
    The index behind `retrieve.py` is refreshed at session end by the vault
-   lifecycle hook, so it reflects the vault as of the last session that ended.
-   If a page written earlier in *this* session must be findable, read it by
-   path rather than expecting retrieval to surface it.
+   lifecycle hook when provisioned. If a page written earlier in *this* session
+   must be findable, read it by path rather than expecting retrieval to surface it.
    For an exact known string rather than a topic, `obsidian-cli search` is
    faster than a ranked query (see `references/cli-transport.md`).
 2. If the question is narrow, read the relevant section page directly.
