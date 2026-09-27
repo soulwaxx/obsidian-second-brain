@@ -81,6 +81,34 @@ class RetrievalTests(unittest.TestCase):
         subprocess.run([sys.executable, str(ROOT / "scripts/bm25-index.py"), "update", "--vault", str(self.vault)], check=True, capture_output=True)
         self.assertTrue(self.retrieve().stdout.startswith("1. wiki/new.md"))
 
+    def test_canonical_title_outranks_dated_snapshots_for_undated_query(self):
+        canonical = self.vault / "wiki/cashflow-manager.md"
+        canonical.write_text(
+            "---\ntype: project\ntitle: Cashflow Manager\n---\n"
+            "# Cashflow Manager\nCanonical design, services, and architecture.\n",
+            encoding="utf-8",
+        )
+        for date in ("2026-09-14", "2026-09-15", "2026-09-16"):
+            snapshot = self.vault / f"wiki/cashflow-manager-{date}.md"
+            snapshot.write_text(
+                f"---\ntype: note\ntitle: Cashflow Manager session {date}\n---\n"
+                + ("cashflow manager " * 8) + f"\nSession snapshot {date}.\n",
+                encoding="utf-8",
+            )
+        self.build()
+
+        undated = self.retrieve("cashflow manager")
+        self.assertEqual(undated.returncode, 0)
+        undated_pages = [line.split("\t", 1)[0] for line in undated.stdout.splitlines()]
+        canonical_rank = next((rank for rank, page in enumerate(undated_pages, 1)
+                               if page.endswith("wiki/cashflow-manager.md")), None)
+        self.assertIsNotNone(canonical_rank, undated.stdout)
+        self.assertLessEqual(canonical_rank, 3, undated.stdout)
+
+        dated = self.retrieve("cashflow manager 2026-09-15")
+        self.assertEqual(dated.returncode, 0)
+        self.assertTrue(dated.stdout.startswith("1. wiki/cashflow-manager-2026-09-15.md"), dated.stdout)
+
     def test_missing_and_corrupt_index_fall_back(self):
         self.index.unlink()
         result = self.retrieve()

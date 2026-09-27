@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 TOKEN = re.compile(r"[\w]+", re.UNICODE)
+HEADING = re.compile(r"(?m)^#\s+(.+?)\s*#*\s*$")
 DEFAULT_INDEX = Path(".vault-meta/retrieval/bm25.json")
 RESERVED = {"index.md", "log.md", "_plan.md"}
 MAX_COUNT = 2**31 - 1
@@ -59,6 +60,7 @@ def build(root=Path("."), output=None):
     root = Path(root).resolve()
     output = safe_output(root, output if output is not None else DEFAULT_INDEX)
     documents = {}
+    titles = {}
     wiki = root / "wiki"
     if wiki.is_symlink() or not wiki.is_dir():
         raise FileNotFoundError(f"wiki directory is missing or symlinked: {wiki}")
@@ -66,9 +68,13 @@ def build(root=Path("."), output=None):
         if not eligible(path, root):
             continue
         rel = path.relative_to(root).as_posix()
-        words = tokens(path.read_text(encoding="utf-8", errors="replace"))
+        text = path.read_text(encoding="utf-8", errors="replace")
+        words = tokens(text)
         if words:
             documents[rel] = words
+            heading = HEADING.search(text)
+            if heading:
+                titles[rel] = tokens(heading.group(1))
     postings = {}
     lengths = {}
     for page, words in documents.items():
@@ -78,7 +84,7 @@ def build(root=Path("."), output=None):
             frequencies[word] = frequencies.get(word, 0) + 1
         for word, count in frequencies.items():
             postings.setdefault(word, {})[page] = count
-    data = {"version": 1, "documents": len(documents), "lengths": lengths, "terms": postings}
+    data = {"version": 1, "documents": len(documents), "lengths": lengths, "terms": postings, "titles": titles}
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.with_suffix(output.suffix + ".tmp")
     if temp.is_symlink() or output.is_symlink():
@@ -112,6 +118,9 @@ def load_index(path):
     for word, entries in terms.items():
         if not isinstance(word, str) or not isinstance(entries, dict) or any(p not in lengths or type(n) is not int or n <= 0 or n > MAX_COUNT for p, n in entries.items()):
             raise ValueError("malformed postings")
+    titles = data.get("titles", {})
+    if not isinstance(titles, dict) or any(page not in lengths or not isinstance(words, list) or any(not isinstance(word, str) for word in words) for page, words in titles.items()):
+        raise ValueError("malformed titles")
     return data
 
 
@@ -120,6 +129,7 @@ def query(data, text):
     if not terms:
         return []
     lengths, postings = data["lengths"], data["terms"]
+    titles = data.get("titles", {})
     avg = sum(lengths.values()) / max(len(lengths), 1)
     scores = {}
     k1, b = 1.5, 0.75
@@ -132,6 +142,10 @@ def query(data, text):
         for page, freq in found.items():
             norm = freq + k1 * (1 - b + b * lengths[page] / avg)
             scores[page] = scores.get(page, 0.0) + idf * freq * (k1 + 1) / norm
+    if terms:
+        for page, title in titles.items():
+            if title == terms and page in scores:
+                scores[page] *= 2
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
