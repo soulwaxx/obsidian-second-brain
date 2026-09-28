@@ -142,10 +142,10 @@ def query(data, text):
         for page, freq in found.items():
             norm = freq + k1 * (1 - b + b * lengths[page] / avg)
             scores[page] = scores.get(page, 0.0) + idf * freq * (k1 + 1) / norm
-    if terms:
-        for page, title in titles.items():
-            if title == terms and page in scores:
-                scores[page] *= 2
+    title_bonus = max(scores.values(), default=0.0)
+    for page, title in titles.items():
+        if title == terms and page in scores:
+            scores[page] += title_bonus
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 

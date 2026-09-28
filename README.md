@@ -82,9 +82,9 @@ python3 scripts/bm25-index.py build --vault .
 python3 scripts/retrieve.py "query terms" --vault .
 ```
 
-The generated index lives under `.vault-meta/retrieval/`; keep that directory out of Git. Provisioning adds a local exclusion in an ordinary Git vault and checks the effective exclusion in a linked Git worktree. It refuses to replace existing helper scripts.
+The generated index lives under `.vault-meta/retrieval/`; keep that directory out of Git. Rebuild it after upgrading the package to enable title-aware ranking for existing vaults. Provisioning adds a local exclusion in an ordinary Git vault and checks the effective exclusion in a linked Git worktree. It refuses to replace existing helper scripts.
 
-Embedding reranking requires a running local Ollama service and an embedding model you install yourself. Run `ollama pull nomic-embed-text`, then add `--rerank` to a retrieval query. Normal retrieval makes no Ollama request. Reranking uses note content over a loopback connection and falls back to text search if Ollama fails. See [Set up a vault](docs/setup.md#optional-local-retrieval) for the exact sequence and privacy limits.
+Embedding reranking requires a running local Ollama service and an embedding model you install yourself. Run `ollama pull nomic-embed-text`, then add `--rerank` to a retrieval query. Normal retrieval makes no Ollama request. Reranking uses note content over a loopback connection and falls back to text search if Ollama fails. Exact title matches are prioritized for topic-only searches; queries containing an ISO date stay lexical, preferring an exact dated filename or a matching dated section in the canonical titled page. Successful semantic reranks label their output scores `cosine=` rather than BM25. See [Set up a vault](docs/setup.md#optional-local-retrieval) for the exact sequence and privacy limits.
 
 ## Use the wiki
 

@@ -11,6 +11,6 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "scripts": {
-    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw"
+    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw"
   }
 }

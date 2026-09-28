@@ -4,6 +4,7 @@ import argparse
 import ipaddress
 import json
 import math
+import re
 from pathlib import Path
 import urllib.error
 import urllib.parse
@@ -15,6 +16,7 @@ _index_module = SourceFileLoader("bm25_index", str(Path(__file__).with_name("bm2
 DEFAULT_INDEX = Path(".vault-meta/retrieval/bm25.json")
 MAX_DOCUMENT_CHARS = 8000
 MAX_QUERY_CHARS = 4000
+DATE = re.compile(r"(?<!\d)\d{4}-\d{2}(?:-\d{2})?(?!\d)")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -81,7 +83,7 @@ def rerank(query, results, vault, endpoint, model, timeout):
         similarity = sum(a * b for a, b in zip(q, vector)) / (qnorm * norm) if norm else -1.0
         scored.append((result[0], result[1], similarity, idx))
     scored.sort(key=lambda item: (-item[2], item[3]))
-    return [(page, score) for page, score, _, _ in scored]
+    return [(page, similarity) for page, _, similarity, _ in scored]
 
 
 def main():
@@ -102,18 +104,37 @@ def main():
         results = _index_module.query(data, args.query)
         results = [(page, score) for page, score in results
                    if _index_module.eligible(vault / Path(page), vault)]
+        date = DATE.search(args.query)
+        matched = set()
+        if date:
+            topic = _index_module.tokens(DATE.sub(" ", args.query))
+            filename = "-".join(topic + [date.group()])
+            matched = {page for page, _ in results if Path(page).stem == filename}
+            if not matched and topic:
+                heading = re.compile(r"(?m)^#{2,6}\s+[^\n]*" + re.escape(date.group()) + r"\b")
+                for page, _ in results:
+                    if data.get("titles", {}).get(page) == topic and heading.search((vault / page).read_text(encoding="utf-8", errors="replace")):
+                        matched.add(page)
+            results.sort(key=lambda item: (item[0] not in matched, -item[1], item[0]))
         results = results[:max(args.limit, 0)]
         if not results:
             print("No indexed matches; use wiki/index.md navigation.")
             return 0
-        if args.rerank:
+        reranked = False
+        if args.rerank and not date:
             try:
                 results = rerank(args.query, results, vault, args.ollama_url,
                                  args.ollama_model, args.timeout)
+                reranked = True
             except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, urllib.error.URLError) as exc:
                 print(f"Rerank unavailable ({exc}); using BM25 results.", file=__import__("sys").stderr)
         for rank, (page, score) in enumerate(results, 1):
-            print(f"{rank}. {page}\t{score:.6f}")
+            if reranked:
+                print(f"{rank}. {page}\tcosine={score:.6f}")
+            elif date and page in matched:
+                print(f"{rank}. {page}\tbm25={score:.6f} exact_date_match")
+            else:
+                print(f"{rank}. {page}\t{score:.6f}")
         return 0
     except (OSError, ValueError, KeyError, TypeError, OverflowError, json.JSONDecodeError) as exc:
         print(f"Retrieval unavailable ({exc}); use wiki/index.md navigation.", file=__import__("sys").stderr)
