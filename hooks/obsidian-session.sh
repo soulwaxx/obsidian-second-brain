@@ -12,7 +12,7 @@ canonical_dir() {
 properties=${OBSIDIAN_AGENT_CONFIG:-$HOME/.config/obsidian-second-brain/properties.json}
 if [ -f "$properties" ]; then
   command -v jq >/dev/null 2>&1 || exit 2
-  jq -e 'type == "object"' "$properties" >/dev/null || exit 2
+  jq -e 'type == "object" and ((.vaultPath? == null) or (.vaultPath | type == "string")) and ((.features? == null) or (.features | type == "object"))' "$properties" >/dev/null || exit 2
   if [ -z "${OBSIDIAN_VAULT_PATH:-}" ]; then
     OBSIDIAN_VAULT_PATH=$(jq -r '.vaultPath // empty' "$properties") || exit 2
   fi

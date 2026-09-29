@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Integration tests for the preview/confirm/apply vault bootstrapper."""
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/bootstrap-vault.py"
 
@@ -155,6 +157,107 @@ with tempfile.TemporaryDirectory() as temp:
     assert not fresh.exists()
     invoke(fresh, fresh_config, "--apply", "--confirm", fresh_hash)
     assert (fresh / ".obsidian").is_dir() and (fresh / "wiki/index.md").is_file()
+
+    # A symlink in the config path's ancestors must be rejected before preview/apply.
+    real_config_parent = root / "real-config-parent"
+    real_config_parent.mkdir()
+    config_link = root / "config-link"
+    config_link.symlink_to(real_config_parent, target_is_directory=True)
+    symlink_config = config_link / "properties.json"
+    rejected = invoke(root / "symlink-config-vault", symlink_config, ok=False)
+    assert "symlink" in rejected.stderr.lower()
+    assert not (root / "symlink-config-vault").exists()
+
+    # A destination that appears after preflight causes a late conflict; rollback
+    # removes only this invocation's creations and preserves the appearing file.
+    spec = importlib.util.spec_from_file_location("bootstrap_vault", SCRIPT)
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    late_vault = root / "late-vault"
+    late_config = root / "late-config" / "properties.json"
+    late_plan, _ = preview(late_vault, late_config)
+    late_target = late_vault.resolve() / "wiki/quickstart.md"
+    real_open = os.open
+    injected = [False]
+
+    def inject_late_conflict(path, flags, *args, **kwargs):
+        parent_fd = kwargs.get("dir_fd")
+        target_open = (
+            path == late_target.name and parent_fd is not None
+            and os.fstat(parent_fd).st_ino == (late_vault.resolve() / "wiki").stat().st_ino
+        )
+        if (Path(path) == late_target or target_open) and not injected[0]:
+            injected[0] = True
+            late_target.write_text("appeared concurrently\n")
+        return real_open(path, flags, *args, **kwargs)
+
+    with mock.patch.object(bootstrap.os, "open", side_effect=inject_late_conflict):
+        try:
+            bootstrap.apply_plan(late_plan)
+            raise AssertionError("late destination conflict should fail")
+        except ValueError as exc:
+            assert "collision" in str(exc)
+    assert injected[0] and late_target.read_text() == "appeared concurrently\n"
+    assert not late_config.exists()
+    assert not (late_vault / ".obsidian").exists()
+    assert not (late_vault / "wiki/index.md").exists()
+
+    # A parent swapped for a symlink after preflight must not redirect creation.
+    swap_vault = root / "swap-vault"
+    swap_vault.mkdir()
+    swap_config = root / "swap-config.json"
+    swap_plan, _ = preview(swap_vault, swap_config)
+    outside = root / "outside"
+    outside.mkdir()
+    swap_wiki = swap_vault / "wiki"
+    displaced_wiki = root / "displaced-wiki"
+    swapped = [False]
+    escaped = [False]
+    swap_real_open = os.open
+    real_fdopen = os.fdopen
+
+    def inject_parent_swap(path, flags, *args, **kwargs):
+        parent_fd = kwargs.get("dir_fd")
+        watched_destination_open = (
+            path == "index.md" and parent_fd is not None
+            and os.fstat(parent_fd).st_ino == swap_wiki.stat().st_ino
+        )
+        path_based_open = Path(path) == swap_vault.resolve() / "wiki/index.md"
+        if (watched_destination_open or path_based_open) and not swapped[0]:
+            swapped[0] = True
+            swap_wiki.rename(displaced_wiki)
+            swap_wiki.symlink_to(outside, target_is_directory=True)
+        return swap_real_open(path, flags, *args, **kwargs)
+
+    class WatchingFile:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def write(self, content):
+            result = self.stream.write(content)
+            if (outside / "index.md").exists():
+                escaped[0] = True
+            return result
+
+    with mock.patch.object(bootstrap.os, "open", side_effect=inject_parent_swap), \
+            mock.patch.object(bootstrap.os, "fdopen",
+                              side_effect=lambda *args, **kwargs: WatchingFile(real_fdopen(*args, **kwargs))):
+        try:
+            bootstrap.apply_plan(swap_plan)
+        except (OSError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"swapped parent should fail apply (swap={swapped[0]})")
+    assert swapped[0] and not escaped[0], "destination parent swap redirected a write outside the vault"
+    swap_wiki.unlink()
+    displaced_wiki.rename(swap_wiki)
+    assert not list(outside.iterdir())
 
     # Config targeting another vault must never be overwritten.
     elsewhere = root / "elsewhere"

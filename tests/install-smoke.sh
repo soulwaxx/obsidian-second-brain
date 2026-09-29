@@ -25,7 +25,7 @@ assert len(packages) == 1, f"unexpected Pi package declarations: {packages!r}"
 # before applying ../ components incorrectly redirects an otherwise valid path.
 package = pathlib.Path(__import__("os").path.abspath(agent_dir / packages[0]))
 assert package == repo, f"Pi package resolved to {package}, expected {repo}"
-for resource in ("extensions/obsidian.ts", "skills/wiki/SKILL.md", "hooks/obsidian-session.sh"):
+for resource in ("extensions/obsidian.ts", "skills/wiki/SKILL.md", "hooks/obsidian-session.sh", "agents/pi/wiki-vault.md"):
     assert (package / resource).is_file(), f"missing Pi-installed resource: {resource}"
 print(f"Pi local package and resources verified: {package}")
 PY
@@ -39,7 +39,7 @@ entry = registry["plugins"]["obsidian-second-brain@obsidian-second-brain"][0]
 installed = pathlib.Path(entry["installPath"]).resolve()
 repo = pathlib.Path(sys.argv[2]).resolve()
 assert installed.is_dir(), f"Claude installed resource directory is missing: {installed}"
-for resource in ("hooks/obsidian-session.sh", "skills/wiki/SKILL.md", ".claude-plugin/plugin.json"):
+for resource in ("hooks/obsidian-session.sh", "skills/wiki/SKILL.md", "agents/claude/wiki-vault.md", ".claude-plugin/plugin.json"):
     assert (installed / resource).is_file(), f"missing Claude installed resource: {resource}"
 print(f"Claude plugin install and resources verified: {installed}")
 PY

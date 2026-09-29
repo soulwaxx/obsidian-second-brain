@@ -90,6 +90,8 @@ Embedding reranking requires a running local Ollama service and an embedding mod
 
 Start your installed agent from the vault directory. Invoke `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki` in Pi. The skill guides you through writing OKF pages; ordinary pages need a `type` field in their YAML frontmatter. Read [Init mode](skills/wiki/references/init-mode.md) for the first-page workflow and [frontmatter rules](skills/wiki/references/frontmatter.md) for page fields.
 
+To delegate a vault task to the packaged specialist, use `@agent-obsidian-second-brain:wiki-vault` in Claude Code. In Pi, optionally install `pi-subagents` with `pi install npm:pi-subagents`, then ask the parent to run `obsidian-second-brain.wiki-vault` (or use `/run obsidian-second-brain.wiki-vault "your task"`). The Pi agent is not required for `/skill:wiki` or the vault lifecycle. Both agents use the bundled wiki skill and leave their model and effort unpinned; see [agent configuration](docs/setup.md#configure-the-vault-agent) for per-client choices.
+
 The lifecycle hook runs only when the agent's working directory is inside the configured vault. It supplies the generated index at session start, checks protected paths before supported file writes, and synchronizes indexes at shutdown. It auto-commits validated page changes when `features.autoCommit` is true in a Git vault with a `.git` directory. Existing configs with no setting retain the true default. Do not edit generated `index.md` files or the hook-owned `wiki/log.md` by hand.
 
 ## Verify the package

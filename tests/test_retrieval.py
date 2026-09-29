@@ -156,6 +156,30 @@ class RetrievalTests(unittest.TestCase):
         self.assertNotIn(".env", result.stdout)
         self.assertIn("wiki/index.md navigation", result.stdout)
 
+    def test_index_cache_parent_swap_cannot_redirect_write(self):
+        outside = self.vault / "outside"
+        outside.mkdir()
+        cache_dir = self.index.parent
+        sentinel = outside / "bm25.json"
+        sentinel.write_text("unchanged", encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("bm25_index_swap", ROOT / "scripts/bm25-index.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real_open = Path.open
+        swapped = False
+
+        def swap_cache_before_temp_open(path, *args, **kwargs):
+            nonlocal swapped
+            if path.name == "bm25.json.tmp" and not swapped:
+                shutil.rmtree(cache_dir)
+                cache_dir.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", swap_cache_before_temp_open):
+            module.build(self.vault)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
     def test_index_symlinked_cache_and_temp_are_refused(self):
         outside = self.vault / "outside"
         outside.mkdir()
@@ -244,18 +268,85 @@ class RetrievalTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("provision_retrieval", ROOT / "scripts/provision-retrieval.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        real_open = Path.open
+        real_open = os.open
 
         def fail_exclude_temp(path, *args, **kwargs):
-            if path.name == "exclude.provision.tmp":
+            if path == "exclude.provision.tmp":
                 raise OSError("injected failure")
             return real_open(path, *args, **kwargs)
 
         argv = ["provision-retrieval.py", "--vault", str(self.vault), "--apply", "--confirm", plan["planHash"]]
-        with patch.object(sys, "argv", argv), patch.object(Path, "open", fail_exclude_temp), contextlib.redirect_stderr(io.StringIO()):
+        with patch.object(sys, "argv", argv), patch.object(module.os, "open", fail_exclude_temp), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 module.main()
         self.assertEqual(exclude.read_text(encoding="utf-8"), original)
+        self.assertFalse((self.vault / "scripts/retrieve.py").exists())
+        self.assertFalse((self.vault / "scripts/bm25-index.py").exists())
+        self.assertFalse((self.vault / "scripts/contextual-prefix.py").exists())
+
+    def test_provision_refuses_concurrently_changed_exclude(self):
+        git_info = self.vault / ".git/info"
+        git_info.mkdir(parents=True)
+        exclude = git_info / "exclude"
+        original = "# user rules\n*.private\n"
+        concurrent = "# concurrent user edit\n*.important\n"
+        exclude.write_text(original, encoding="utf-8")
+        preview = subprocess.run([sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(self.vault)], check=True, text=True, capture_output=True)
+        plan = json.loads(preview.stdout)
+        spec = importlib.util.spec_from_file_location("provision_retrieval_concurrent", ROOT / "scripts/provision-retrieval.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real_read_bytes = Path.read_bytes
+        changed = False
+
+        def edit_exclude_after_snapshot(path):
+            nonlocal changed
+            content = real_read_bytes(path)
+            if path == exclude and not changed:
+                exclude.write_text(concurrent, encoding="utf-8")
+                changed = True
+            return content
+
+        argv = ["provision-retrieval.py", "--vault", str(self.vault), "--apply", "--confirm", plan["planHash"]]
+        with patch.object(sys, "argv", argv), patch.object(Path, "read_bytes", edit_exclude_after_snapshot), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                module.main()
+        self.assertTrue(changed)
+        self.assertEqual(exclude.read_text(encoding="utf-8"), concurrent)
+        self.assertFalse((self.vault / "scripts/retrieve.py").exists())
+        self.assertFalse((self.vault / "scripts/bm25-index.py").exists())
+        self.assertFalse((self.vault / "scripts/contextual-prefix.py").exists())
+
+    def test_provision_rollback_does_not_restore_over_concurrent_exclude_edit(self):
+        git_info = self.vault / ".git/info"
+        git_info.mkdir(parents=True)
+        exclude = git_info / "exclude"
+        original = "# user rules\n*.private\n"
+        concurrent = "# concurrent user edit\n*.important\n"
+        exclude.write_text(original, encoding="utf-8")
+        preview = subprocess.run([sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(self.vault)], check=True, text=True, capture_output=True)
+        plan = json.loads(preview.stdout)
+        spec = importlib.util.spec_from_file_location("provision_retrieval_rollback_race", ROOT / "scripts/provision-retrieval.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real_replace = os.replace
+        injected = False
+
+        def fail_after_concurrent_edit(source, destination, *args, **kwargs):
+            nonlocal injected
+            result = real_replace(source, destination, *args, **kwargs)
+            if Path(destination).name == "exclude" and not injected:
+                exclude.write_text(concurrent, encoding="utf-8")
+                injected = True
+                raise OSError("injected failure after concurrent edit")
+            return result
+
+        argv = ["provision-retrieval.py", "--vault", str(self.vault), "--apply", "--confirm", plan["planHash"]]
+        with patch.object(sys, "argv", argv), patch.object(module.os, "replace", fail_after_concurrent_edit), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                module.main()
+        self.assertTrue(injected)
+        self.assertEqual(exclude.read_text(encoding="utf-8"), concurrent)
         self.assertFalse((self.vault / "scripts/retrieve.py").exists())
         self.assertFalse((self.vault / "scripts/bm25-index.py").exists())
         self.assertFalse((self.vault / "scripts/contextual-prefix.py").exists())
@@ -305,6 +396,32 @@ class RetrievalTests(unittest.TestCase):
         apply = subprocess.run([sys.executable, str(provision), "--vault", str(linked), "--apply", "--confirm", plan["planHash"]], check=True, text=True, capture_output=True)
         self.assertIn("Provisioned", apply.stdout)
         self.assertEqual(gitignore.read_text(encoding="utf-8"), "!.vault-meta/retrieval/\n.vault-meta/retrieval/\n")
+
+    def test_provision_scripts_parent_swap_cannot_redirect_write(self):
+        outside = self.vault / "outside"
+        outside.mkdir()
+        scripts = self.vault / "scripts"
+        preview = subprocess.run([sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(self.vault)], check=True, text=True, capture_output=True)
+        plan = json.loads(preview.stdout)
+        spec = importlib.util.spec_from_file_location("provision_retrieval_swap", ROOT / "scripts/provision-retrieval.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real_open = os.open
+        swapped = False
+
+        def swap_before_scripts_open(path, *args, **kwargs):
+            nonlocal swapped
+            if path == "scripts" and not swapped:
+                scripts.rmdir()
+                scripts.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return real_open(path, *args, **kwargs)
+
+        argv = ["provision-retrieval.py", "--vault", str(self.vault), "--apply", "--confirm", plan["planHash"]]
+        with patch.object(sys, "argv", argv), patch.object(module.os, "open", swap_before_scripts_open), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                module.main()
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_provision_refuses_symlinked_paths(self):
         outside = self.vault / "outside"

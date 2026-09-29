@@ -241,6 +241,32 @@ output=$(OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash 
 [ "$output" = disabled ]
 rm -f "$properties"
 
+# Null/missing vaultPath is intentionally inactive; malformed config and a
+# non-string configured path fail closed instead of silently disabling hooks.
+printf '{"vaultPath":null}\n' >"$properties"
+[ -z "$(OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start)" ]
+printf '{"features":{}}\n' >"$properties"
+[ -z "$(OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start)" ]
+printf '{"vaultPath":"/wrong/vault"}\n' >"$properties"
+output=$(OBSIDIAN_AGENT_CONFIG=$properties OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start)
+printf '%s' "$output" | grep -F 'Quickstart' >/dev/null
+printf '{"vaultPath":42}\n' >"$properties"
+if OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start >/dev/null 2>&1; then
+  echo "wrong-type vaultPath did not fail" >&2
+  exit 1
+fi
+printf '[1,2]\n' >"$properties"
+if OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start >/dev/null 2>&1; then
+  echo "non-object config did not fail" >&2
+  exit 1
+fi
+printf '{invalid json\n' >"$properties"
+if OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start >/dev/null 2>&1; then
+  echo "malformed config did not fail" >&2
+  exit 1
+fi
+rm -f "$properties"
+
 # Retrieval helpers are optional and derived state is never staged/committed.
 rm -rf scripts .vault-meta
 OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop

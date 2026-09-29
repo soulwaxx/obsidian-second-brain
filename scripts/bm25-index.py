@@ -52,6 +52,32 @@ def safe_output(root, output):
     return output
 
 
+def open_output_parent(root, output):
+    """Create/open cache parents without following a swapped directory or symlink."""
+    rel = output.relative_to(root)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(root, flags)
+    current = root
+    try:
+        for part in rel.parts[:-1]:
+            current = current / part
+            try:
+                os.mkdir(part, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        actual = os.stat(current, follow_symlinks=False)
+        opened = os.fstat(fd)
+        if (actual.st_dev, actual.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"index parent changed during build: {current}")
+        return fd, current
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def tokens(text):
     return [word.casefold() for word in TOKEN.findall(text)]
 
@@ -85,24 +111,54 @@ def build(root=Path("."), output=None):
         for word, count in frequencies.items():
             postings.setdefault(word, {})[page] = count
     data = {"version": 1, "documents": len(documents), "lengths": lengths, "terms": postings, "titles": titles}
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temp = output.with_suffix(output.suffix + ".tmp")
-    if temp.is_symlink() or output.is_symlink():
+    temp_name = output.name + ".tmp"
+    output_name = output.name
+    if output.is_symlink() or output.with_name(temp_name).is_symlink():
         raise ValueError("refusing symlinked index or temporary output")
     payload = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    parent_fd, parent_path = open_output_parent(root, output)
     temp_created = False
+    temp_identity = None
     try:
-        with temp.open("x", encoding="utf-8") as stream:
-            temp_created = True
+        try:
+            initial_output = os.stat(output_name, dir_fd=parent_fd, follow_symlinks=False)
+            output_identity = (initial_output.st_dev, initial_output.st_ino)
+        except FileNotFoundError:
+            output_identity = None
+        # Recheck through the pinned directory, then ensure the path still names it.
+        actual = os.stat(parent_path, follow_symlinks=False)
+        opened = os.fstat(parent_fd)
+        if (actual.st_dev, actual.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"index parent changed during build: {parent_path}")
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666, dir_fd=parent_fd)
+        temp_created = True
+        temp_stat = os.fstat(fd)
+        temp_identity = (temp_stat.st_dev, temp_stat.st_ino)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(payload)
-        temp.replace(output)
+        actual = os.stat(parent_path, follow_symlinks=False)
+        opened = os.fstat(parent_fd)
+        if (actual.st_dev, actual.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"index parent changed during build: {parent_path}")
+        try:
+            current_output = os.stat(output_name, dir_fd=parent_fd, follow_symlinks=False)
+            current_identity = (current_output.st_dev, current_output.st_ino)
+        except FileNotFoundError:
+            current_identity = None
+        if current_identity != output_identity:
+            raise ValueError("index output changed during build; refusing to replace concurrent update")
+        os.replace(temp_name, output_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     except BaseException:
         if temp_created:
             try:
-                temp.unlink()
+                current_temp = os.stat(temp_name, dir_fd=parent_fd, follow_symlinks=False)
+                if temp_identity == (current_temp.st_dev, current_temp.st_ino):
+                    os.unlink(temp_name, dir_fd=parent_fd)
             except FileNotFoundError:
                 pass
         raise
+    finally:
+        os.close(parent_fd)
     return len(documents)
 
 

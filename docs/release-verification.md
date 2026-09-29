@@ -7,7 +7,7 @@ A [macOS and Ubuntu CI run](https://github.com/soulwaxx/obsidian-second-brain/ac
 `.github/workflows/test.yml` defines jobs for `ubuntu-latest` and `macos-latest` on pushes, pull requests, and manual dispatch. Each job installs Python 3.12, PyYAML, `jq`, Git, Node.js, Pi, and Claude Code. It runs these checks:
 
 1. Check shell syntax and run ShellCheck on `tests/install-smoke.sh`.
-2. Run `npm test` for lifecycle, middleware, bootstrap, retrieval, and Pi extension tests.
+2. Run `npm test` for lifecycle, middleware, bootstrap, retrieval, Pi extension, and packaged-agent metadata tests.
 3. Run `claude plugin validate .` and `bash tests/install-smoke.sh`.
 
 The install smoke sets temporary `HOME`, `PI_CODING_AGENT_DIR`, and `CLAUDE_CONFIG_DIR` paths. It installs the local checkout in each agent, checks installed resources, and confirms that a direct hook invocation outside a temporary vault leaves it unchanged. It does not launch an authenticated client session or send a model prompt.
@@ -37,7 +37,7 @@ For each row, complete the following steps in the actual client:
 
 1. Install this checkout through the client's local package path. Confirm that the client lists the wiki skill and loads the plugin or extension.
 2. [Bootstrap](setup.md#2-preview-bootstrap) a disposable vault. Review its plan, apply the matching hash, and check that unrelated files remain unchanged.
-3. Start the authenticated client from inside the vault. Invoke `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki` in Pi. Confirm the skill loads and the session-start index appears when `features.toc` is on.
+3. Start the authenticated client from inside the vault. Invoke `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki` in Pi. Confirm the skill loads and the session-start index appears when `features.toc` is on. Then request a read-only summary from `@agent-obsidian-second-brain:wiki-vault` in Claude Code. For Pi, install the optional `pi-subagents` runner into the disposable profile, restart Pi, and run `/run obsidian-second-brain.wiki-vault "summarize wiki/quickstart.md"`. Confirm each specialist loads its packaged skill and reads the disposable vault, not the package checkout.
 4. Ask the client to attempt a harmless edit to a protected generated path in the disposable vault. Confirm that the pre-write guard denies the edit and leaves the path unchanged. Check the expected session-end index behavior.
 5. Start the same client from a directory outside the configured vault. Confirm that session start and shutdown leave the vault unchanged.
 6. Record `PASS`, `FAIL`, or `UNTESTED`, along with the client version, operating-system version, commit, consent, and observed behavior. Keep `UNTESTED` if authentication, skill invocation, or any check above was skipped.

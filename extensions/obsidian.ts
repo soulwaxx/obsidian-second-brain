@@ -10,7 +10,18 @@ const configPath = process.env.OBSIDIAN_AGENT_CONFIG ?? path.join(os.homedir(), 
 let config: { vaultPath?: string | null; features?: { guard?: boolean; autoCommit?: boolean } } = {};
 let configError: string | null = null;
 try {
-	config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+	const loaded: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
+	if (loaded === null || typeof loaded !== "object" || Array.isArray(loaded)) {
+		throw new Error("config must be a JSON object");
+	}
+	const candidate = loaded as Record<string, unknown>;
+	if (candidate.vaultPath != null && typeof candidate.vaultPath !== "string") {
+		throw new Error("vaultPath must be a string or null");
+	}
+	if (candidate.features != null && (typeof candidate.features !== "object" || Array.isArray(candidate.features))) {
+		throw new Error("features must be an object or null");
+	}
+	config = loaded as typeof config;
 } catch (err) {
 	if ((err as NodeJS.ErrnoException).code !== "ENOENT") configError = `cannot load ${configPath}: ${(err as Error).message}`;
 }
@@ -31,7 +42,8 @@ function canonicalDirectory(p: string | null): string | null {
 }
 
 const HOOK = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/obsidian-session.sh");
-const VAULT_PATH = canonicalDirectory(resolveHome(config.vaultPath));
+const configuredVaultPath = process.env.OBSIDIAN_VAULT_PATH ?? config.vaultPath;
+const VAULT_PATH = canonicalDirectory(resolveHome(configuredVaultPath));
 const execFileAsync = promisify(execFile);
 
 function canonicalPath(p: string, cwd: string): string | null {
@@ -91,6 +103,10 @@ export default function (pi: ExtensionAPI) {
 	const touched = new Set<string>();
 
 	pi.on("session_start", async (_event, ctx) => {
+		if (configError) {
+			ctx.ui.notify(`obsidian integration disabled: ${configError}`, "warning");
+			return;
+		}
 		if (!VAULT_PATH || !isInsideVault(ctx.cwd)) return;
 		const result = await runHook("start", VAULT_PATH);
 		toc = result.output.trim();

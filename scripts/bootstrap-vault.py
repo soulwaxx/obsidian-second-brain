@@ -18,10 +18,11 @@ QUICKSTART = """---\ntype: note\ntitle: Quickstart\ndescription: Entry point and
 
 
 def config_path() -> Path:
-    return Path(os.environ.get(
+    path = Path(os.environ.get(
         "OBSIDIAN_AGENT_CONFIG",
         str(Path.home() / ".config/obsidian-second-brain/properties.json"),
     )).expanduser().absolute()
+    return path
 
 
 def config_text(vault: Path) -> str:
@@ -72,8 +73,9 @@ def plan_for(vault: Path, config: Path) -> dict:
             if path.is_symlink():
                 raise ValueError(f"refusing symlink in wiki tree: {path}")
 
-    if config.is_symlink():
-        raise ValueError(f"refusing symlinked agent config: {config}")
+    for component in (config, *config.parents):
+        if component.is_symlink() and not _system_path_alias(component):
+            raise ValueError(f"refusing symlinked agent config path: {component}")
     if wiki.exists():
         for path in wiki.rglob("*"):
             if path.name.casefold() == "log.md":
@@ -202,6 +204,136 @@ def digest(plan: dict) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _system_path_alias(path: Path) -> bool:
+    return sys.platform == "darwin" and path == Path("/var")
+
+
+def _check_path(path: Path, expect_dir: bool):
+    """Reject symlinked ancestors and incompatible existing destinations."""
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink() and not _system_path_alias(current):
+            raise ValueError(f"refusing symlinked destination: {current}")
+        if current.exists() and current != absolute and not current.is_dir():
+            raise ValueError(f"collision: parent is not a directory: {current}")
+    if absolute.exists():
+        if expect_dir and not absolute.is_dir():
+            raise ValueError(f"collision: destination is not a directory: {absolute}")
+        if not expect_dir and not absolute.is_file():
+            raise ValueError(f"collision: destination is not a regular file: {absolute}")
+
+
+def _directory_fd(path: Path, created_dirs: list) -> int:
+    """Open/create a directory chain without following any user-controlled link."""
+    absolute = path.absolute()
+    if sys.platform == "darwin" and absolute.parts[:2] == ("/", "var"):
+        absolute = Path("/private", *absolute.parts[1:])
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(absolute.anchor, flags)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        try:
+            child_fd = os.open(part, flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(part, dir_fd=fd)
+            except FileExistsError:
+                pass
+            else:
+                created_dirs.append((os.dup(fd), part, None))
+            child_fd = os.open(part, flags, dir_fd=fd)
+            if created_dirs and created_dirs[-1][1] == part and created_dirs[-1][2] is None:
+                parent_fd, name, _ = created_dirs[-1]
+                stat = os.fstat(child_fd)
+                created_dirs[-1] = (parent_fd, name, (stat.st_dev, stat.st_ino))
+        os.close(fd)
+        fd = child_fd
+        current = current / part
+    return fd
+
+
+def apply_plan(plan: dict) -> None:
+    """Apply a reviewed plan, guarding races and rolling back owned creations."""
+    directories = [Path(value) for value in plan["directories"]]
+    writes = [(Path(item["path"]), item["content"]) for item in plan["writes"]]
+    # Preflight the complete write set before making any changes.
+    for directory in directories:
+        _check_path(directory, True)
+    for target, content in writes:
+        _check_path(target.parent, True)
+        _check_path(target, False)
+        if target.exists() and target.read_text(encoding="utf-8") != content:
+            raise ValueError(f"collision appeared during apply: {target}")
+
+    created_files = []
+    created_dirs = []
+    try:
+        for directory in sorted(directories, key=lambda item: len(item.parts)):
+            fd = _directory_fd(directory, created_dirs)
+            os.close(fd)
+        for target, content in writes:
+            parent_fd = _directory_fd(target.parent, created_dirs)
+            name = target.name
+            try:
+                try:
+                    existing_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                                          dir_fd=parent_fd)
+                except FileNotFoundError:
+                    existing_fd = None
+                if existing_fd is not None:
+                    with os.fdopen(existing_fd, "r", encoding="utf-8") as stream:
+                        if stream.read() != content:
+                            raise ValueError(f"collision appeared during apply: {target}")
+                    continue
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                try:
+                    fd = os.open(name, flags, 0o666, dir_fd=parent_fd)
+                except FileExistsError as exc:
+                    raise ValueError(f"collision appeared during apply: {target}") from exc
+                stat = os.fstat(fd)
+                created_files.append((os.dup(parent_fd), name, (stat.st_dev, stat.st_ino)))
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        stream.write(content)
+                except BaseException:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                os.close(parent_fd)
+        for target, _ in writes:
+            _check_path(target.parent, True)
+        result = subprocess.run([sys.executable, str(MIDDLEWARE / "sync.py"), plan["vault"]],
+                                text=True, capture_output=True, check=False)
+        if result.returncode:
+            raise ValueError("index synchronization failed: " + result.stderr.strip())
+    except (OSError, ValueError):
+        for parent_fd, name, identity in reversed(created_files):
+            try:
+                stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (stat.st_dev, stat.st_ino) == identity:
+                    os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        for parent_fd, name, identity in reversed(created_dirs):
+            try:
+                stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if identity is not None and (stat.st_dev, stat.st_ino) == identity:
+                    os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        raise
+    finally:
+        for parent_fd, _, _ in created_files:
+            os.close(parent_fd)
+        for parent_fd, _, _ in created_dirs:
+            os.close(parent_fd)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True, type=Path, help="existing vault directory")
@@ -223,20 +355,7 @@ def main() -> int:
         print(f"bootstrap-vault: stale or unconfirmed plan; preview again (hash {plan_hash})", file=sys.stderr)
         return 1
     try:
-        for dirname in plan["directories"]:
-            Path(dirname).mkdir(parents=True, exist_ok=True)
-        for item in plan["writes"]:
-            target = Path(item["path"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                if target.read_text(encoding="utf-8") != item["content"]:
-                    raise ValueError(f"collision appeared during apply: {target}")
-                continue
-            target.write_text(item["content"], encoding="utf-8")
-        result = subprocess.run([sys.executable, str(MIDDLEWARE / "sync.py"), str(vault)],
-                                text=True, capture_output=True, check=False)
-        if result.returncode:
-            raise ValueError("index synchronization failed: " + result.stderr.strip())
+        apply_plan(plan)
     except (OSError, ValueError) as exc:
         print(f"bootstrap-vault: {exc}", file=sys.stderr)
         return 1

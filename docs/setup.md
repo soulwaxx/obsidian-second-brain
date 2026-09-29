@@ -73,9 +73,38 @@ claude
 
 For Pi, run `pi` in the same directory instead. Run `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki` in Pi. Ask the skill to build the wiki from your chosen sources, or use the existing `wiki/quickstart.md` as the first page. The agent reads the index at session start when `features.toc` is on.
 
-Write normal pages under `wiki/` with YAML frontmatter. Each non-reserved Markdown page needs a `type` field. The [frontmatter guide](../skills/wiki/references/frontmatter.md) covers optional fields; [Init mode](../skills/wiki/references/init-mode.md) describes the first-page workflow. Leave generated `index.md` files and `wiki/log.md` to the middleware and hook.
+Write normal pages under `wiki/` with YAML frontmatter. Each non-reserved Markdown page needs a `type` field. The [frontmatter guide](../skills/wiki/references/frontmatter.md) covers optional fields; [Init mode](../skills/wiki/references/init-mode.md) describes the first-page workflow. Leave generated `index.md` files and `wiki/log.md` to the middleware and hook. Older unmarked indexes remain usable while their content matches the generated version, but syncing refuses to replace them once they differ. If an index is reported as unmarked, back it up outside `wiki/`, preserve any custom text in a normal page, and have the vault owner review and remove or migrate the old index before rerunning sync. Do not delete an unreviewed index to clear the error.
 
 The lifecycle hook checks supported agent file writes inside the configured vault. Shell writes bypass that pre-write check, so use the skill's guard and validator if you write wiki pages through a shell. A session launched outside the vault does not run vault lifecycle work.
+
+### Configure the vault agent
+
+The package also includes one optional specialist for delegated vault tasks. In Claude Code, mention `@agent-obsidian-second-brain:wiki-vault` with a concrete task. In Pi, install the optional runner with `pi install npm:pi-subagents`, restart Pi in the vault, and run `/run obsidian-second-brain.wiki-vault "summarize the pages about my project"`. Pi without this runner still supports `/skill:wiki` and all vault hooks.
+
+Neither packaged agent pins a model or effort level. To choose a Claude Code subagent model and effort for a session, start Claude Code with:
+
+```sh
+CLAUDE_CODE_SUBAGENT_MODEL=sonnet CLAUDE_CODE_EFFORT_LEVEL=high claude
+```
+
+The effort variable also affects the main session. For an agent-specific setting, copy `agents/claude/wiki-vault.md` from the package into your vault's `.claude/agents/wiki-vault.md`, add `model: sonnet` and `effort: high` to its frontmatter, and add `Skill` to its `tools` list. In the copied file, replace the first body sentence (which contains the plugin-only `${CLAUDE_PLUGIN_ROOT}` substitution) with `Invoke /obsidian-second-brain:wiki using the Skill tool and follow its relevant references before vault work.` Invoke the local agent as `@agent-wiki-vault`. This copy will not automatically pick up later package-agent changes. Claude Code may substitute an unavailable model or cap effort according to your account and policy.
+
+For Pi, add a user-level override to `~/.pi/agent/settings.json` (merge it with your existing settings instead of replacing the file):
+
+```json
+{
+  "subagents": {
+    "agentOverrides": {
+      "obsidian-second-brain.wiki-vault": {
+        "model": "your-provider/your-model",
+        "thinking": "high"
+      }
+    }
+  }
+}
+```
+
+Use a model identifier available in your Pi installation; `thinking` can also be `off`, `minimal`, `low`, `medium`, `xhigh`, or `max` when supported. Without an override, the Pi subagent inherits the runner's configured default model and thinking level. These settings control only the specialist, not the parent Pi session. Keep the agent in the vault so the installed lifecycle integration can guard file-tool writes.
 
 ## Optional local retrieval
 
