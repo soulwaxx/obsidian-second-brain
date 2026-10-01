@@ -1,6 +1,6 @@
 # Release verification
 
-A [macOS and Ubuntu CI run](https://github.com/soulwaxx/obsidian-second-brain/actions/runs/36339968047) passed after the Bash 3 fix. A public release still requires passing CI for the release commit and all four authenticated client checks below. Authenticated first runs have not been recorded.
+A [macOS and Ubuntu CI run](https://github.com/soulwaxx/obsidian-second-brain/actions/runs/36339968047) passed after the Bash 3 fix. A public release still requires passing CI for the release commit and all four authenticated client checks below. Authenticated first runs have not been recorded. Claude Code work-host live verification is tracked in [issue #1](https://github.com/soulwaxx/obsidian-second-brain/issues/1); package validation and install smoke do not count as live-client checks.
 
 ## Automated checks
 

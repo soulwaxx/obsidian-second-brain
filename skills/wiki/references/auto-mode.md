@@ -49,7 +49,8 @@ for research:
 **Cleanup:**
 
 - Delete `_plan.md`.
-- The lifecycle hook runs sync.py and commits generated indexes atomically with
-  each changed page (run it yourself when outside the vault workflow).
+- The lifecycle validates changed Markdown and synchronizes generated indexes
+  after each successful page write, independently of optional auto-commit. Run
+  sync.py yourself when outside the vault workflow; commit remains separate.
   `wiki/log.md` is written by the lifecycle hook, not by you (see Changelog &
   Logging in `SKILL.md`); put the run narrative in the commit message.

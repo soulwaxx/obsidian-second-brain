@@ -107,7 +107,7 @@ _BLOCK_ID_RE = re.compile(
 )
 _WIKILINK_RE = re.compile(r"(?P<embed>!)?\[\[(?P<body>[^\]\r\n]+?)\]\]")
 _MARKDOWN_LINK_RE = re.compile(
-    r"(?P<embed>!)?\[(?P<label>[^\]\r\n]*)\]\((?P<destination>[^\r\n)]*)\)"
+    r"(?P<embed>!)?\[(?P<label>(?:\\.|[^\]\r\n])*)\]\((?P<destination>[^\r\n)]*)\)"
 )
 _HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -500,8 +500,12 @@ def _parse_links(page: _Page) -> list[_Link]:
             or _URI_SCHEME_RE.match(destination)
         ):
             continue
-        decoded = urllib.parse.unquote(destination)
-        file_part, fragment, fragment_kind = _split_fragment(decoded)
+        raw_file_part, raw_fragment, fragment_kind = _split_fragment(destination)
+        file_part = urllib.parse.unquote(raw_file_part)
+        fragment = (
+            urllib.parse.unquote(raw_fragment) if raw_fragment is not None else None
+        )
+        decoded = file_part + (f"#{fragment}" if fragment is not None else "")
         syntax = "markdown-embed" if match.group("embed") else "markdown-link"
         links.append(
             _Link(
@@ -568,7 +572,10 @@ class _Resolver:
         return self._deduplicate(candidates)
 
     def resolve(self, link: _Link) -> list[_Target]:
-        raw = urllib.parse.unquote(link.file_part.strip()).replace("\\", "/")
+        raw = link.file_part.strip()
+        if not link.markdown_relative:
+            raw = urllib.parse.unquote(raw)
+        raw = raw.replace("\\", "/")
         if not raw:
             return self._exact(link.source)
 

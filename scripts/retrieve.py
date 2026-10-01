@@ -17,6 +17,54 @@ DEFAULT_INDEX = Path(".vault-meta/retrieval/bm25.json")
 MAX_DOCUMENT_CHARS = 8000
 MAX_QUERY_CHARS = 4000
 DATE = re.compile(r"(?<!\d)\d{4}-\d{2}(?:-\d{2})?(?!\d)")
+HEADING = re.compile(r"(?m)^(#{2,6})\s+([^\n]+)$")
+TOKEN = re.compile(r"[\w]+", re.UNICODE)
+
+
+def dated_matches(data, results, query, date, vault):
+    """Return exact dated notes and canonical pages with relevant dated sections."""
+    terms = {word.casefold() for word in TOKEN.findall(DATE.sub(" ", query))}
+    query_terms = [word.casefold() for word in TOKEN.findall(DATE.sub(" ", query))]
+    titles = data.get("titles", {})
+    topics = [title for title in titles.values()
+              if title and len(title) <= len(query_terms)
+              and query_terms[:len(title)] == title]
+    dated_stems = {}
+    for page, _ in results:
+        stem = Path(page).stem
+        if stem.endswith("-" + date.group()):
+            stem_terms = [word.casefold() for word in TOKEN.findall(stem[:-len(date.group()) - 1])]
+            if stem_terms:
+                dated_stems[page] = stem_terms
+                if len(stem_terms) <= len(query_terms) and query_terms[:len(stem_terms)] == stem_terms:
+                    topics.append(stem_terms)
+    topic = max(topics, key=len, default=[])
+    topic_terms = set(topic)
+    exact, canonical = set(), set()
+    for page, _ in results:
+        if dated_stems.get(page) == topic and topic:
+            exact.add(page)
+            continue
+        title = titles.get(page, [])
+        if not topic or title != topic:
+            continue
+        qualifiers = terms - topic_terms
+        text = (vault / page).read_text(encoding="utf-8", errors="replace")
+        headings = list(HEADING.finditer(text))
+        for index, heading in enumerate(headings):
+            if not DATE.search(heading.group(2)) or date.group() not in heading.group(2):
+                continue
+            end = len(text)
+            for following in headings[index + 1:]:
+                if len(following.group(1)) <= len(heading.group(1)):
+                    end = following.start()
+                    break
+            section = text[heading.start():end]
+            section_terms = {word.casefold() for word in TOKEN.findall(section)}
+            if not qualifiers or qualifiers & section_terms:
+                canonical.add(page)
+                break
+    return exact, canonical
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -107,15 +155,9 @@ def main():
         date = DATE.search(args.query)
         matched = set()
         if date:
-            topic = _index_module.tokens(DATE.sub(" ", args.query))
-            filename = "-".join(topic + [date.group()])
-            matched = {page for page, _ in results if Path(page).stem == filename}
-            if not matched and topic:
-                heading = re.compile(r"(?m)^#{2,6}\s+[^\n]*" + re.escape(date.group()) + r"\b")
-                for page, _ in results:
-                    if data.get("titles", {}).get(page) == topic and heading.search((vault / page).read_text(encoding="utf-8", errors="replace")):
-                        matched.add(page)
-            results.sort(key=lambda item: (item[0] not in matched, -item[1], item[0]))
+            exact, canonical = dated_matches(data, results, args.query, date, vault)
+            matched = exact | canonical
+            results.sort(key=lambda item: (0 if item[0] in exact else 1 if item[0] in canonical else 2, -item[1], item[0]))
         results = results[:max(args.limit, 0)]
         if not results:
             print("No indexed matches; use wiki/index.md navigation.")
