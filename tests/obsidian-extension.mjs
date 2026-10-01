@@ -58,6 +58,25 @@ try {
     "outside-vault work must not receive another vault's repair directive");
   const repairDiagnostic = await repairHandlers.get("before_agent_start")({}, ctx);
   assert.match(repairDiagnostic.message.content, /exact minimal changes/);
+  // A repeated identical diagnostic after an explicit approval must not restart
+  // the pending repair conversation or ask the user to approve the same change.
+  assert.equal(await repairHandlers.get("before_agent_start")({}, ctx), undefined,
+    "unchanged config diagnostics must not renew an already proposed repair");
+  const changedInvalidConfig = JSON.parse(fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8"));
+  changedInvalidConfig.custom.repairRevision = 2;
+  fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify(changedInvalidConfig));
+  const changedRepairDiagnostic = await repairHandlers.get("before_agent_start")({}, ctx);
+  assert.match(changedRepairDiagnostic.message.content, /exact minimal changes/,
+    "a changed invalid config must present a new exact repair proposal");
+  const alternateVault = path.join(tmp, "alternate-vault");
+  fs.mkdirSync(alternateVault);
+  process.env.OBSIDIAN_VAULT_PATH = alternateVault;
+  const changedVaultDiagnostic = await repairHandlers.get("before_agent_start")({}, { cwd: alternateVault });
+  assert.match(changedVaultDiagnostic.message.content, /exact minimal changes/,
+    "a changed configured vault must present a new repair proposal");
+  process.env.OBSIDIAN_VAULT_PATH = vault;
+  assert.match((await repairHandlers.get("before_agent_start")({}, ctx)).message.content, /exact minimal changes/,
+    "returning to the original vault must not reuse another vault's proposal");
   assert.equal((await repairHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/topic/page.md" } }, ctx))?.block, true,
     "wiki writes remain blocked while config is invalid");
   assert.equal((await repairHandlers.get("tool_call")({ toolName: "write", input: { path: path.join(tmp, "other-settings.json") } }, ctx))?.block, true,
@@ -71,7 +90,7 @@ try {
   const selectedConfig = JSON.parse(fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8"));
   selectedConfig.features.guard = true;
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify(selectedConfig));
-  assert.deepEqual(JSON.parse(fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8")).custom, { preserve: true });
+  assert.deepEqual(JSON.parse(fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8")).custom, { preserve: true, repairRevision: 2 });
   assert.equal(await repairHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/topic/page.md" } }, ctx), undefined,
     "the same loaded session accepts page writes after config revalidation");
 
@@ -215,6 +234,38 @@ try {
     "successful repair must refresh generated navigation");
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "read", input: { path: fs.realpathSync(topicIndex) } }, repairCtx), undefined,
     "generated navigation is readable again after recovery");
+
+  // Shutdown must not publish a valid later page while an earlier ordinary
+  // page remains invalid, even after its immediate postwrite failure.
+  const shutdownInvalid = path.join(vault, "wiki/topic/shutdown-invalid.md");
+  const shutdownLater = path.join(vault, "wiki/topic/shutdown-later.md");
+  fs.writeFileSync(shutdownInvalid, "# Missing frontmatter\n");
+  await featureHandlers.get("tool_call")({ toolCallId: "shutdown-invalid", toolName: "write", input: { path: shutdownInvalid } }, repairCtx);
+  await featureHandlers.get("tool_result")({ toolCallId: "shutdown-invalid", toolName: "write", input: { path: shutdownInvalid }, isError: false }, repairCtx);
+  fs.writeFileSync(shutdownLater, "---\ntype: note\ntitle: Shutdown Later\n---\n# Shutdown Later\n");
+  await featureHandlers.get("tool_call")({ toolCallId: "shutdown-later", toolName: "write", input: { path: shutdownLater } }, repairCtx);
+  await featureHandlers.get("tool_result")({ toolCallId: "shutdown-later", toolName: "write", input: { path: shutdownLater }, isError: false }, repairCtx);
+  assert.equal(fs.readFileSync(topicIndex, "utf8").includes("shutdown-later.md"), false,
+    "a valid later write must not refresh navigation while an ordinary page remains invalid");
+  const indexBeforeShutdown = fs.readFileSync(topicIndex, "utf8");
+  await featureHandlers.get("session_shutdown")({}, repairCtx);
+  assert.equal(fs.readFileSync(topicIndex, "utf8"), indexBeforeShutdown,
+    "shutdown must preserve generated indexes byte-for-byte while validation is unresolved");
+  assert.equal(fs.readFileSync(topicIndex, "utf8").includes("shutdown-later.md"), false,
+    "shutdown must preserve the navigation barrier for unresolved invalid pages");
+  fs.writeFileSync(shutdownInvalid, "---\ntype: note\ntitle: Shutdown Repaired\n---\n# Shutdown Repaired\n");
+  await featureHandlers.get("tool_call")({ toolCallId: "shutdown-repair", toolName: "write", input: { path: shutdownInvalid } }, repairCtx);
+  await featureHandlers.get("tool_result")({ toolCallId: "shutdown-repair", toolName: "write", input: { path: shutdownInvalid }, isError: false }, repairCtx);
+  assert.match(fs.readFileSync(topicIndex, "utf8"), /\[Shutdown Later\]/,
+    "repair must recover the navigation refresh");
+  const deletedInvalid = path.join(vault, "wiki/topic/deleted-invalid.md");
+  fs.writeFileSync(deletedInvalid, "# Invalid then deleted\n");
+  await featureHandlers.get("tool_call")({ toolCallId: "deleted-invalid", toolName: "write", input: { path: deletedInvalid } }, repairCtx);
+  await featureHandlers.get("tool_result")({ toolCallId: "deleted-invalid", toolName: "write", input: { path: deletedInvalid }, isError: false }, repairCtx);
+  fs.unlinkSync(deletedInvalid);
+  await featureHandlers.get("session_shutdown")({}, repairCtx);
+  assert.equal(fs.readFileSync(topicIndex, "utf8").includes("deleted-invalid.md"), false,
+    "deleting an unresolved invalid page must allow safe shutdown recovery");
   console.log("pi Obsidian lifecycle checks PASS");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

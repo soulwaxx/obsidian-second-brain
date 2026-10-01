@@ -102,9 +102,12 @@ exact minimal change to the selected config, preserving unrelated fields, and
 obtain explicit user approval for those actual changes before editing. That
 approval permits editing only the selected integration config as an exception
 to the wiki-only write boundary. Never reset the config, edit other settings,
-or enable `autoCommit` without separate direction. Revalidate the effective
-config and vault boundary in the same session before resuming wiki work. If the
-vault/config selection is ambiguous, ask; do not guess.
+or enable `autoCommit` without separate direction. An identical repeated
+diagnostic is the same pending proposal: do not restart the repair conversation
+or ask for approval again. A changed diagnostic is a new proposal and requires
+its own exact approval. Revalidate the effective config and vault boundary in
+the same session before resuming wiki work. If the vault/config selection is
+ambiguous, ask; do not guess.
 
 Distinct from the skill middleware are optional **vault-provided** scripts under
 `<vault>/scripts/` (`retrieve.py`, `contextual-prefix.py`, and `bm25-index.py`).

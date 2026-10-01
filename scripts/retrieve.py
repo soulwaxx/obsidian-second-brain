@@ -26,29 +26,24 @@ def dated_matches(data, results, query, date, vault):
     terms = {word.casefold() for word in TOKEN.findall(DATE.sub(" ", query))}
     query_terms = [word.casefold() for word in TOKEN.findall(DATE.sub(" ", query))]
     titles = data.get("titles", {})
-    topics = [title for title in titles.values()
-              if title and len(title) <= len(query_terms)
-              and query_terms[:len(title)] == title]
-    dated_stems = {}
+    matching_stems = {}
     for page, _ in results:
         stem = Path(page).stem
         if stem.endswith("-" + date.group()):
             stem_terms = [word.casefold() for word in TOKEN.findall(stem[:-len(date.group()) - 1])]
             if stem_terms:
-                dated_stems[page] = stem_terms
                 if len(stem_terms) <= len(query_terms) and query_terms[:len(stem_terms)] == stem_terms:
-                    topics.append(stem_terms)
-    topic = max(topics, key=len, default=[])
-    topic_terms = set(topic)
-    exact, canonical = set(), set()
+                    matching_stems[page] = stem_terms
+    most_specific_stem = max((len(stem) for stem in matching_stems.values()), default=0)
+    exact = {page for page, stem in matching_stems.items() if len(stem) == most_specific_stem}
+    canonical = set()
     for page, _ in results:
-        if dated_stems.get(page) == topic and topic:
-            exact.add(page)
+        if page in exact:
             continue
         title = titles.get(page, [])
-        if not topic or title != topic:
+        if not title or len(title) > len(query_terms) or query_terms[:len(title)] != title:
             continue
-        qualifiers = terms - topic_terms
+        qualifiers = terms - set(title)
         text = (vault / page).read_text(encoding="utf-8", errors="replace")
         headings = list(HEADING.finditer(text))
         for index, heading in enumerate(headings):

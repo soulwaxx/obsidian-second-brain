@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -22,6 +23,20 @@ async function selectedConfigRepairTarget(rawPath: unknown, cwd: string): Promis
 	} catch {
 		return false;
 	}
+}
+
+function configDiagnosticKey(): string {
+	let configState = "unavailable";
+	try {
+		const stat = fs.lstatSync(configPath);
+		configState = stat.isFile()
+			? createHash("sha256").update(fs.readFileSync(configPath)).digest("hex")
+			: `${stat.mode}:${stat.size}:${stat.mtimeMs}`;
+	} catch {
+		// The diagnostic itself still identifies load failures; missing/unreadable
+		// selected configs share a key until their state changes.
+	}
+	return createHash("sha256").update(JSON.stringify([configError, knownVault, configState])).digest("hex");
 }
 
 async function refreshConfig(): Promise<void> {
@@ -148,6 +163,7 @@ export default function (pi: ExtensionAPI) {
 	const pendingWikiWrites = new Map<string, { vault: string; done: Promise<boolean>; release: (synced: boolean) => void }>();
 	const postwriteQueues = new Map<string, Promise<void>>();
 	const pendingSyncFailures = new Map<string, string>();
+	let lastConfigDiagnostic: string | null = null;
 
 	pi.on("session_start", async (_event, ctx) => {
 		await refreshConfig();
@@ -160,7 +176,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		await refreshConfig();
-		if (configError && knownVault && isInsideVault(ctx.cwd)) return { message: { customType: "obsidian-config-diagnostic", content: `Obsidian wiki integration is fail-closed: ${configError}. Do not resume wiki writes. Propose the exact minimal changes to ${configPath}, preserving unrelated fields. Ask the user to approve those exact changes before editing; after approval edit only this selected config, then revalidate it in this session. Do not reset settings or enable autoCommit.`, display: false } };
+		if (configError && knownVault && isInsideVault(ctx.cwd)) {
+			const diagnostic = configDiagnosticKey();
+			if (diagnostic === lastConfigDiagnostic) return;
+			lastConfigDiagnostic = diagnostic;
+			return { message: { customType: "obsidian-config-diagnostic", content: `Obsidian wiki integration is fail-closed: ${configError}. Do not resume wiki writes. Propose the exact minimal changes to ${configPath}, preserving unrelated fields. Ask the user to approve those exact changes before editing; after approval edit only this selected config, then revalidate it in this session. Do not reset settings or enable autoCommit.`, display: false } };
+		}
+		if (!configError) lastConfigDiagnostic = null;
 		if (injected || toc.length === 0 || !isInsideVault(ctx.cwd)) return;
 		injected = true;
 		return { message: { customType: "obsidian-toc", content: "Obsidian wiki table of contents (auto-loaded):\n\n" + toc, display: false } };

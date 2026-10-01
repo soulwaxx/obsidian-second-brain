@@ -70,6 +70,50 @@ guard_path() {
   python3 "$mw/guard.py" --if-wiki "$vault" "$target"
 }
 
+validate_publishable_pages() {
+  local mw rel validation_output
+  mw=$(middleware_dir)
+  [ -n "$mw" ] && [ -f "$mw/validate.py" ] || {
+    echo "obsidian lifecycle: wiki validation middleware is unavailable" >&2
+    return 1
+  }
+  while IFS= read -r -d '' rel; do
+    if validation_output=$(python3 "$mw/validate.py" "$rel" 2>&1); then
+      continue
+    fi
+    printf 'obsidian lifecycle: validation failed for %s; repair or remove it before navigation refresh\n' "$rel" >&2
+    [ -z "$validation_output" ] || printf '%s\n' "$validation_output" >&2
+    return 1
+  done < <(python3 - "$vault/wiki" <<'PY'
+import os
+import sys
+
+root = sys.argv[1]
+skip = {"index.md", "log.md", "_plan.md", "instructions.md"}
+
+def walk(directory, relative):
+    try:
+        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith(".") or entry.is_symlink():
+            continue
+        path = os.path.join(directory, entry.name)
+        rel = os.path.join(relative, entry.name)
+        if entry.is_dir(follow_symlinks=False):
+            yield from walk(path, rel)
+        elif (entry.is_file(follow_symlinks=False)
+              and entry.name.lower().endswith(".md")
+              and entry.name.casefold() not in skip):
+            yield rel
+
+for page in walk(root, "wiki"):
+    sys.stdout.buffer.write(os.fsencode(page) + b"\0")
+PY
+)
+}
+
 vault_git_root() {
   local root
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
@@ -204,17 +248,7 @@ PY
     echo "obsidian lifecycle: wiki middleware is unavailable" >&2
     exit 1
   }
-  for touched_path in "${touched[@]}"; do
-    rel=${touched_path#"$vault"/}
-    case "$rel" in
-      *.[mM][dD])
-        if ! python3 "$mw/validate.py" "$rel" >/dev/null; then
-          echo "obsidian lifecycle: validation failed for $rel; repair it before commit" >&2
-          exit 1
-        fi
-        ;;
-    esac
-  done
+  validate_publishable_pages || exit 1
   sync_output=$(python3 "$mw/sync.py" . --json)
   sync_status=$?
   if [ "$sync_status" -ne 0 ]; then
@@ -439,10 +473,18 @@ stop)
   fi
   mw=$(middleware_dir)
   if [ -n "$mw" ] && [ -f "$mw/sync.py" ]; then
-    python3 "$mw/sync.py" . >/dev/null || {
-      echo "obsidian lifecycle: shutdown index synchronization failed" >&2
+    validate_publishable_pages || exit 1
+    shutdown_sync_output=$(python3 "$mw/sync.py" . --json)
+    shutdown_sync_status=$?
+    if [ "$shutdown_sync_status" -ne 0 ]; then
+      shutdown_sync_errors=$(printf '%s\n' "$shutdown_sync_output" | jq -r '.results[]? | select(.status == "ERROR") | "obsidian lifecycle: " + .path + ": " + .detail' 2>/dev/null) || shutdown_sync_errors=
+      if [ -n "$shutdown_sync_errors" ]; then
+        printf '%s\n' "$shutdown_sync_errors" >&2
+      else
+        printf 'obsidian lifecycle: shutdown index synchronization failed; middleware output follows:\n%s\n' "$shutdown_sync_output" >&2
+      fi
       exit 1
-    }
+    fi
     if [ "$has_vault_git" = 1 ] && feature_enabled autoCommit && [ ! -f .vault-meta/auto-commit.disabled ] &&
       [ -n "$(git status --porcelain -- 'wiki/**/index.md' wiki/index.md)" ]; then
       echo "obsidian lifecycle: generated indexes drifted at shutdown; repair and commit with the page change" >&2

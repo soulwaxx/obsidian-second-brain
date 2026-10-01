@@ -379,6 +379,9 @@ if OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook
   echo "invalid page passed lifecycle with auto-commit disabled" >&2
   exit 1
 fi
+# The invalid page remains publishable input until removed; clear this fixture
+# before later shutdown checks exercise unrelated behavior.
+rm wiki/topic/disabled-invalid.md
 rm -f "$properties"
 
 # Empty invocation overrides fall back to the same valid config as Pi. Invalid
@@ -505,6 +508,57 @@ EOF
 output=$(cd "$plain" && OBSIDIAN_AGENT_CONFIG=$work/no-properties.json OBSIDIAN_VAULT_PATH=$plain WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" autocommit "$plain/wiki/page.md")
 [ "$output" = clean ]
 grep -Fq '[Non-Git Page](page.md)' "$plain/wiki/index.md"
+
+# Stateless Claude PostToolUse events must keep an earlier invalid ordinary
+# page from allowing a later valid page to publish navigation.
+claude_properties=$work/claude-properties.json
+printf '{"vaultPath":"%s","features":{"autoCommit":false}}\n' "$plain" >"$claude_properties"
+cat >"$plain/wiki/claude-bad.md" <<'EOF'
+# Missing frontmatter
+EOF
+if diagnostic=$(cd "$plain" && printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"wiki/claude-bad.md"}}' |
+  OBSIDIAN_AGENT_CONFIG=$claude_properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" autocommit 2>&1); then
+  echo "Claude PostToolUse accepted invalid page" >&2
+  exit 1
+fi
+printf '%s' "$diagnostic" | grep -F 'wiki/claude-bad.md' >/dev/null
+cat >"$plain/wiki/claude-good.md" <<'EOF'
+---
+type: note
+title: Claude Good
+---
+# Claude Good
+EOF
+if diagnostic=$(cd "$plain" && printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"wiki/claude-good.md"}}' |
+  OBSIDIAN_AGENT_CONFIG=$claude_properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" autocommit 2>&1); then
+  echo "later Claude PostToolUse bypassed earlier invalid page barrier" >&2
+  exit 1
+fi
+printf '%s' "$diagnostic" | grep -F 'wiki/claude-bad.md' >/dev/null
+if grep -Fq 'claude-good.md' "$plain/wiki/index.md"; then
+  echo "later Claude PostToolUse exposed navigation while earlier page remained invalid" >&2
+  exit 1
+fi
+cat >"$plain/wiki/claude-bad.md" <<'EOF'
+---
+type: note
+title: Claude Repaired
+---
+# Claude Repaired
+EOF
+output=$(cd "$plain" && printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"wiki/claude-bad.md"}}' |
+  OBSIDIAN_AGENT_CONFIG=$claude_properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" autocommit)
+[ "$output" = disabled ]
+grep -Fq '[Claude Good](claude-good.md)' "$plain/wiki/index.md"
+# Private and foreign-symlink Markdown are not publishable pages and must not
+# be read or turned into validation barriers.
+printf '# Private invalid fixture\n' >"$plain/wiki/.private.md"
+printf '# Foreign invalid fixture\n' >"$work/foreign-invalid.md"
+ln -s "$work/foreign-invalid.md" "$plain/wiki/foreign-link.md"
+output=$(cd "$plain" && OBSIDIAN_AGENT_CONFIG=$claude_properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" autocommit "$plain/wiki/page.md")
+[ "$output" = disabled ]
+rm "$plain/wiki/.private.md" "$plain/wiki/foreign-link.md"
+
 # A non-Git vault transitioning into Git must report the existing runtime
 # metadata and safe remediation without changing its generated index.
 plain_index_before=$(shasum -a 256 "$plain/wiki/index.md" | awk '{print $1}')
@@ -523,6 +577,35 @@ if printf '%s' "$transition_diagnostic" | grep -Eiq 'jq:|parse error'; then
   exit 1
 fi
 [ "$(shasum -a 256 "$plain/wiki/index.md" | awk '{print $1}')" = "$plain_index_before" ]
+if shutdown_diagnostic=$(cd "$plain" && OBSIDIAN_VAULT_PATH=$plain WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop 2>&1); then
+  echo "shutdown accepted visible ownership metadata" >&2
+  exit 1
+fi
+printf '%s' "$shutdown_diagnostic" | grep -F "$plain/.vault-meta/okf-index-ownership.json" >/dev/null
+printf '%s' "$shutdown_diagnostic" | grep -F "$plain/.vault-meta/okf-index-ownership.lock" >/dev/null
+printf '%s' "$shutdown_diagnostic" | grep -F 'safely preserve the files' >/dev/null
+printf '%s' "$shutdown_diagnostic" | grep -F 'exact .vault-meta ignore rule' >/dev/null
+printf '%s' "$shutdown_diagnostic" | grep -F 'untrack any tracked file' >/dev/null
+
+# A shutdown refusal for a handwritten index must retain its exact path and
+# migration guidance while preserving the authored bytes.
+conflict_shutdown=$work/conflict-shutdown
+mkdir -p "$conflict_shutdown/wiki/topic"
+cat >"$conflict_shutdown/wiki/topic/page.md" <<'EOF'
+---
+type: note
+title: Conflict Shutdown
+---
+EOF
+printf 'handwritten index\n' >"$conflict_shutdown/wiki/topic/index.md"
+conflict_index_before=$(shasum -a 256 "$conflict_shutdown/wiki/topic/index.md" | awk '{print $1}')
+if shutdown_conflict=$(cd "$conflict_shutdown" && OBSIDIAN_VAULT_PATH=$conflict_shutdown WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop 2>&1); then
+  echo "shutdown overwrote handwritten index" >&2
+  exit 1
+fi
+printf '%s' "$shutdown_conflict" | grep -F 'wiki/topic/index.md' >/dev/null
+printf '%s' "$shutdown_conflict" | grep -F 'unmarked index differs' >/dev/null
+[ "$(shasum -a 256 "$conflict_shutdown/wiki/topic/index.md" | awk '{print $1}')" = "$conflict_index_before" ]
 
 # Retrieval helpers are optional and derived state is never staged/committed.
 rm -rf scripts .vault-meta
@@ -591,7 +674,9 @@ if nested_diagnostic=$(cd "$no_git_vault" && OBSIDIAN_VAULT_PATH=$no_git_vault W
   echo "nested vault accepted unignored ownership metadata" >&2
   exit 1
 fi
-printf '%s' "$nested_diagnostic" | grep -F 'shutdown index synchronization failed' >/dev/null
+printf '%s' "$nested_diagnostic" | grep -F "$no_git_vault/.vault-meta/okf-index-ownership.json" >/dev/null
+printf '%s' "$nested_diagnostic" | grep -F "$no_git_vault/.vault-meta/okf-index-ownership.lock" >/dev/null
+printf '%s' "$nested_diagnostic" | grep -F 'exact .vault-meta ignore rule' >/dev/null
 if nested_postwrite=$(cd "$no_git_vault" && OBSIDIAN_VAULT_PATH=$no_git_vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" postwrite "$no_git_vault/wiki/no-git-page.md" 2>&1); then
   echo "nested vault accepted unignored ownership metadata during postwrite" >&2
   exit 1
