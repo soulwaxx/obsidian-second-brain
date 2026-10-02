@@ -25,7 +25,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/release-verification.md", "docs/publishing.md",
+    "docs/setup.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }

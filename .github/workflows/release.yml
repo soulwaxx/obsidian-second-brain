@@ -1,113 +1,56 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing stable tag to release; select the same tag as the workflow ref
-        required: true
-        type: string
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  # Serialize npm/latest and GitHub Release mutations across all versions.
   group: release-${{ github.repository }}
   cancel-in-progress: false
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
-  validate:
-    if: github.repository == 'soulwaxx/obsidian-second-brain'
+  release:
+    if: >-
+      github.repository == 'soulwaxx/obsidian-second-brain' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      sha: ${{ steps.release.outputs.sha }}
-      tag: ${{ steps.release.outputs.tag }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Validate versions, tag, and live-client release records
-        id: release
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          WORKFLOW_REF: ${{ github.ref }}
-          WORKFLOW_SHA: ${{ github.sha }}
-        run: |
-          if [ "$WORKFLOW_REF" != "refs/tags/$RELEASE_TAG" ]; then
-            echo '::error::Dispatch Release from the same version tag, not a branch, so npm provenance identifies the released source.'
-            exit 1
-          fi
-          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
-          node scripts/release.mjs check "$RELEASE_TAG"
-          node scripts/release.mjs verify-live
-          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-
-  test:
-    needs: validate
-    uses: ./.github/workflows/test.yml
-    with:
-      ref: ${{ needs.validate.outputs.sha }}
-
-  publish:
-    needs: [validate, test]
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    environment: release
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
+    env:
+      # Preset v10 requires a newer changelog writer than semantic-release 25 provides.
+      # renovate: datasource=npm depName=conventional-changelog-conventionalcommits
+      PRESET_VERSION: '9.3.1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate.outputs.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Install publishing and test prerequisites
+      - name: Install publishing CLI
         env:
           # renovate: datasource=npm depName=npm
           NPM_VERSION: '11.19.0'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-          python -m pip install --requirement .github/requirements-ci.txt
-          npm install --global "npm@$NPM_VERSION"
-      - name: Recheck the remote tag after approval
+        run: npm install --global "npm@$NPM_VERSION"
+      - name: Publish version, tag, GitHub Release, and npm package
+        uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
+        with:
+          # renovate: datasource=npm depName=semantic-release
+          semantic_version: '25.0.9'
+          extra_plugins: conventional-changelog-conventionalcommits@${{ env.PRESET_VERSION }}
         env:
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
-          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$(git rev-parse HEAD)"
-      - name: Publish npm package
-        env:
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-          # Optional bootstrap token for the first publication; OIDC is used afterward.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm run release:publish -- "$RELEASE_TAG"
-      - name: Create or finalize the GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: node scripts/release.mjs github-release "$RELEASE_TAG"
+          GITHUB_TOKEN: ${{ github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'

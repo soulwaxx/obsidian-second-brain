@@ -7,12 +7,11 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const clients = [["macOS", "Claude Code"], ["macOS", "Pi"], ["Linux", "Claude Code"], ["Linux", "Pi"]];
 
 function fixture(t) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-release-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
-  for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "scripts/release.mjs", "docs/release-verification.md"]) {
+  for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "scripts/release.mjs"]) {
     fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
     fs.copyFileSync(path.join(root, file), path.join(work, file));
   }
@@ -25,57 +24,18 @@ function fixture(t) {
   git("config", "user.name", "Release test");
   git("config", "user.email", "release-test@example.invalid");
   git("config", "commit.gpgsign", "false");
-  git("config", "tag.gpgsign", "false");
   git("add", ".");
   git("commit", "-m", "Fixture");
-  const version = JSON.parse(fs.readFileSync(path.join(work, "package.json"), "utf8")).version;
-  const tag = `v${version}`;
-  git("tag", "-a", tag, "-m", tag);
-  const run = (command, releaseTag, extraEnv = {}) => spawnSync(process.execPath,
-    [path.join(work, "scripts/release.mjs"), command, ...(releaseTag === undefined ? [] : [releaseTag])],
-    { cwd: work, env: { ...env, ...extraEnv }, encoding: "utf8" });
-  return { work, env, git, run, version, tag };
+  const run = (command) => spawnSync(process.execPath, [path.join(work, "scripts/release.mjs"), command],
+    { cwd: work, env, encoding: "utf8" });
+  return { work, env, git, run };
 }
 
-function recordPasses(work) {
-  fs.writeFileSync(path.join(work, "docs/release-verification.md"),
-    clients.map(([os, client]) => `| ${os} | ${client} | PASS | Disposable fixture evidence: date, versions, commit, consent, observations |\n`).join(""));
-}
-
-function readyFixture(t) {
-  const data = fixture(t);
-  recordPasses(data.work);
-  data.git("add", "docs/release-verification.md");
-  data.git("commit", "-m", "Record fixture live checks");
-  data.git("tag", "-f", "-a", data.tag, "-m", data.tag);
-  return data;
-}
-
-function mockNpm(work) {
-  const bin = path.join(work, "bin");
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "npm"), `#!/usr/bin/env node
-import fs from "node:fs";
-fs.appendFileSync(process.env.MOCK_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
-if (process.argv[2] === "view") {
-  const latest = process.argv[4] === "dist-tags.latest";
-  console.log(latest ? (process.env.MOCK_LATEST || process.env.MOCK_VIEW) : process.env.MOCK_VIEW);
-  process.exit(Number(latest ? (process.env.MOCK_LATEST_STATUS || process.env.MOCK_STATUS) : process.env.MOCK_STATUS));
-}
-if (process.argv[2] !== "publish") process.exit(99);
-process.exit(Number(process.env.MOCK_PUBLISH_STATUS || 0));
-`, { mode: 0o755 });
-  return { PATH: bin + path.delimiter + process.env.PATH, MOCK_LOG: path.join(work, "npm.log") };
-}
-
-test("versions and matching tag pass; wrong or moved tags fail", (t) => {
-  const { work, git, run, tag } = fixture(t);
-  assert.equal(run("check", tag).status, 0);
-  assert.notEqual(run("check", "v99.0.0").status, 0);
-  fs.writeFileSync(path.join(work, "change"), "next commit");
-  git("add", "change");
-  git("commit", "-m", "Next");
-  assert.notEqual(run("check", tag).status, 0);
+test("version checks need neither tags nor manual release documents", (t) => {
+  const { work, git, run } = fixture(t);
+  assert.equal(git("tag"), "");
+  assert.ok(!fs.existsSync(path.join(work, "docs")));
+  assert.equal(run("check").status, 0);
 });
 
 test("plugin or marketplace version drift fails", (t) => {
@@ -89,18 +49,26 @@ test("plugin or marketplace version drift fails", (t) => {
   }
 });
 
-test("npm version synchronizes all manifests into its commit and annotated tag", (t) => {
-  const { work, env, git } = fixture(t);
-  execFileSync("npm", ["version", "patch", "--sign-git-tag=false", "--commit-hooks=false", "-m", "Release v%s"],
+test("semantic-release npm preparation synchronizes all published manifests without a version commit", (t) => {
+  const { work, env, git, run } = fixture(t);
+  const sha = git("rev-parse", "HEAD");
+  execFileSync("npm", ["version", "1.2.3", "--no-git-tag-version", "--allow-same-version"],
     { cwd: work, env, stdio: ["ignore", "pipe", "pipe"] });
-  const manifest = JSON.parse(fs.readFileSync(path.join(work, "package.json"), "utf8"));
   for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"]) {
-    const committed = JSON.parse(git("show", `HEAD:${file}`));
-    assert.equal(file.endsWith("marketplace.json") ? committed.plugins[0].version : committed.version, manifest.version);
+    const manifest = JSON.parse(fs.readFileSync(path.join(work, file), "utf8"));
+    assert.equal(file.endsWith("marketplace.json") ? manifest.plugins[0].version : manifest.version, "1.2.3");
   }
-  assert.equal(git("rev-parse", `v${manifest.version}^{commit}`), git("rev-parse", "HEAD"));
-  assert.equal(git("cat-file", "-t", `v${manifest.version}`), "tag");
-  assert.equal(git("status", "--porcelain", "--untracked-files=no"), "");
+  assert.equal(git("rev-parse", "HEAD"), sha);
+  assert.equal(git("tag"), "");
+  assert.equal(run("check").status, 0);
+  const [archive] = JSON.parse(execFileSync("npm", ["pack", "--json"], { cwd: work, env, encoding: "utf8" }));
+  const packed = path.join(work, "packed");
+  fs.mkdirSync(packed);
+  execFileSync("tar", ["-xzf", path.join(work, archive.filename), "-C", packed]);
+  for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"]) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(packed, "package", file), "utf8"));
+    assert.equal(file.endsWith("marketplace.json") ? manifest.plugins[0].version : manifest.version, "1.2.3");
+  }
 });
 
 test("stable releases reject prerelease and malformed versions", (t) => {
@@ -112,166 +80,4 @@ test("stable releases reject prerelease and malformed versions", (t) => {
     fs.writeFileSync(target, JSON.stringify(data));
     assert.notEqual(run("sync").status, 0);
   }
-});
-
-test("live-client gate requires all four unique PASS rows with evidence", (t) => {
-  const { work, run } = fixture(t);
-  const file = path.join(work, "docs/release-verification.md");
-  for (const [os, client] of clients) {
-    for (const status of ["UNTESTED", "FAIL"]) {
-      recordPasses(work);
-      fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(`| ${os} | ${client} | PASS |`, `| ${os} | ${client} | ${status} |`));
-      assert.notEqual(run("verify-live").status, 0);
-    }
-  }
-  recordPasses(work);
-  assert.equal(run("verify-live").status, 0);
-  fs.appendFileSync(file, "| macOS | Pi | PASS | duplicate |\n");
-  assert.notEqual(run("verify-live").status, 0);
-  recordPasses(work);
-  fs.writeFileSync(file, fs.readFileSync(file, "utf8").split("\n").slice(1).join("\n"));
-  assert.notEqual(run("verify-live").status, 0);
-  recordPasses(work);
-  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/\| PASS \|[^\n]+/, "| PASS | |"));
-  assert.notEqual(run("verify-live").status, 0);
-});
-
-test("publication refuses incomplete live records before contacting npm", (t) => {
-  const { work, run, tag } = fixture(t);
-  fs.writeFileSync(path.join(work, "docs/release-verification.md"), clients.map(([os, client]) => `| ${os} | ${client} | UNTESTED | |\n`).join(""));
-  const env = mockNpm(work);
-  assert.notEqual(run("publish", tag, env).status, 0);
-  assert.ok(!fs.existsSync(env.MOCK_LOG));
-});
-
-test("publication only starts on E404; an existing identical commit resumes safely", (t) => {
-  const { work, run, git, version, tag } = readyFixture(t);
-  const env = mockNpm(work);
-  const invoke = (status, view) => {
-    fs.rmSync(env.MOCK_LOG, { force: true });
-    const result = run("publish", tag, { ...env, MOCK_STATUS: String(status), MOCK_VIEW: JSON.stringify(view) });
-    const calls = fs.readFileSync(env.MOCK_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    return { result, calls };
-  };
-  const absent = invoke(1, { error: { code: "E404" } });
-  assert.equal(absent.result.status, 0, absent.result.stderr);
-  assert.deepEqual(absent.calls[1], ["view", "@soulwaxx/obsidian-second-brain", "dist-tags.latest", "--json", "--registry=https://registry.npmjs.org/"]);
-  assert.deepEqual(absent.calls[2], ["publish", "--access", "public", "--provenance", "--registry=https://registry.npmjs.org/"]);
-  const existing = invoke(0, { version, gitHead: git("rev-parse", "HEAD") });
-  assert.equal(existing.result.status, 0);
-  assert.equal(existing.calls.length, 1);
-  for (const data of [{ version, gitHead: "different-commit" }, { version }, { version: "99.0.0", gitHead: git("rev-parse", "HEAD") }]) {
-    const collision = invoke(0, data);
-    assert.notEqual(collision.result.status, 0);
-    assert.equal(collision.calls.length, 1);
-  }
-  for (const code of ["E401", "E403", "ECONNRESET"]) {
-    const failure = invoke(1, { error: { code } });
-    assert.notEqual(failure.result.status, 0);
-    assert.equal(failure.calls.length, 1);
-  }
-});
-
-test("publication does not downgrade latest or ignore registry failures", (t) => {
-  const { work, run, tag, version } = readyFixture(t);
-  const env = mockNpm(work);
-  const invoke = (status, latest) => {
-    fs.rmSync(env.MOCK_LOG, { force: true });
-    const result = run("publish", tag, {
-      ...env, MOCK_STATUS: "1", MOCK_VIEW: JSON.stringify({ error: { code: "E404" } }),
-      MOCK_LATEST_STATUS: String(status), MOCK_LATEST: JSON.stringify(latest),
-    });
-    const calls = fs.readFileSync(env.MOCK_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    return { result, calls };
-  };
-  const [major, minor, patch] = version.split(".").map(Number);
-  for (const latest of [version, `${major + 1}.0.0`, `${major}.${minor + 1}.0`, `${major}.${minor}.${patch + 1}`, "1.0.0-beta.1", "invalid"]) {
-    const blocked = invoke(0, latest);
-    assert.notEqual(blocked.result.status, 0, latest);
-    assert.equal(blocked.calls.length, 2);
-  }
-  for (const code of ["E401", "E403", "ECONNRESET"]) {
-    const blocked = invoke(1, { error: { code } });
-    assert.notEqual(blocked.result.status, 0);
-    assert.equal(blocked.calls.length, 2);
-  }
-  const allowed = invoke(0, "0.0.0");
-  assert.equal(allowed.result.status, 0, allowed.result.stderr);
-  assert.equal(allowed.calls[2][0], "publish");
-});
-
-test("dirty tracked files prevent publication before contacting npm", (t) => {
-  const { work, run, tag } = readyFixture(t);
-  fs.appendFileSync(path.join(work, "docs/release-verification.md"), "\nUncommitted change\n");
-  const env = mockNpm(work);
-  assert.notEqual(run("publish", tag, env).status, 0);
-  assert.ok(!fs.existsSync(env.MOCK_LOG));
-});
-
-test("GitHub Release retries only create on 404 and preserve public releases", (t) => {
-  const { work, run, tag } = fixture(t);
-  const bin = path.join(work, "bin");
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "gh"), `#!/usr/bin/env node
-import fs from "node:fs";
-fs.appendFileSync(process.env.MOCK_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
-if (process.argv[2] === "api") {
-  console.log(process.env.MOCK_RESPONSE);
-  process.exit(Number(process.env.MOCK_STATUS));
-}
-if (process.argv[2] !== "release") process.exit(99);
-process.exit(Number(process.env.MOCK_RELEASE_STATUS || 0));
-`, { mode: 0o755 });
-  const env = {
-    PATH: bin + path.delimiter + process.env.PATH,
-    GITHUB_REPOSITORY: "soulwaxx/obsidian-second-brain", MOCK_LOG: path.join(work, "gh.log"),
-  };
-  const invoke = (status, response, extraEnv = {}) => {
-    fs.rmSync(env.MOCK_LOG, { force: true });
-    const result = run("github-release", tag, {
-      ...env, MOCK_STATUS: String(status), MOCK_RESPONSE: JSON.stringify(response), ...extraEnv,
-    });
-    const calls = fs.existsSync(env.MOCK_LOG)
-      ? fs.readFileSync(env.MOCK_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
-    return { result, calls };
-  };
-  const missing = invoke(1, { status: "404" });
-  assert.equal(missing.result.status, 0, missing.result.stderr);
-  assert.deepEqual(missing.calls, [
-    ["api", `repos/soulwaxx/obsidian-second-brain/releases/tags/${tag}`],
-    ["release", "create", tag, "--verify-tag", "--generate-notes", "--title", tag],
-  ]);
-  const draft = invoke(0, { tag_name: tag, draft: true });
-  assert.equal(draft.result.status, 0);
-  assert.deepEqual(draft.calls[1], ["release", "edit", tag, "--draft=false"]);
-  const publicRelease = invoke(0, { tag_name: tag, draft: false });
-  assert.equal(publicRelease.result.status, 0);
-  assert.equal(publicRelease.calls.length, 1);
-  for (const status of [401, 403, 429, 500]) {
-    const blocked = invoke(1, { status });
-    assert.notEqual(blocked.result.status, 0);
-    assert.equal(blocked.calls.length, 1);
-  }
-  for (const response of [{}, { tag_name: "v99.0.0", draft: false }, { tag_name: tag }]) {
-    const blocked = invoke(0, response);
-    assert.notEqual(blocked.result.status, 0);
-    assert.equal(blocked.calls.length, 1);
-  }
-  const networkFailure = invoke(1, "not JSON", { MOCK_RESPONSE: "" });
-  assert.notEqual(networkFailure.result.status, 0);
-  assert.equal(networkFailure.calls.length, 1);
-  const mutationFailure = invoke(1, { status: "404" }, { MOCK_RELEASE_STATUS: "1" });
-  assert.notEqual(mutationFailure.result.status, 0);
-  const wrongRepo = invoke(1, { status: "404" }, { GITHUB_REPOSITORY: "fork/repo" });
-  assert.notEqual(wrongRepo.result.status, 0);
-  assert.equal(wrongRepo.calls.length, 0);
-});
-
-test("npm publication failure is propagated", (t) => {
-  const { work, run, tag } = readyFixture(t);
-  const env = mockNpm(work);
-  const result = run("publish", tag, {
-    ...env, MOCK_STATUS: "1", MOCK_VIEW: JSON.stringify({ error: { code: "E404" } }), MOCK_PUBLISH_STATUS: "1",
-  });
-  assert.notEqual(result.status, 0);
 });
