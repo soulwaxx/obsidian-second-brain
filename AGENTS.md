@@ -18,7 +18,7 @@ This repository packages an Open Knowledge Format (OKF) v0.2 wiki skill for Clau
 
 ## Toolchain and verification
 
-`package.json` defines source, release, and archive/install tests. Its `version` hook synchronizes the two Claude manifests; `prepublishOnly` checks version agreement and runs all three test commands. `.github/workflows/release.yml` checks version tags and recorded live-client passes, calls the macOS/Linux test workflow at the exact release commit, then publishes npm and creates a GitHub Release through the `release` environment. Pi loads the shipped TypeScript directly. There is no lockfile or package build, format, or lint script. CI uses Node.js 22 and Python 3.12; these are CI versions, not declared minimum supported versions.
+`package.json` defines source, release, and archive/install tests. Its `version` hook synchronizes the two Claude manifests; `prepublishOnly` checks version agreement and runs all three test commands. `.github/workflows/release.yml` checks version tags and recorded live-client passes, calls the macOS/Linux test workflow at the exact release commit, then publishes npm and creates a GitHub Release through the `release` environment. Pi loads the shipped TypeScript directly. There is no lockfile or package build, format, or lint script. CI tests Node.js 22/Python 3.12 and Node.js 24/Python 3.14 on both operating systems; these are CI versions, not declared minimum supported versions. `.github/workflows/renovate.yml` maintains SHA-pinned actions and direct CI tool versions through reviewed PRs.
 
 Python needs PyYAML, and the lifecycle hook needs `jq` when a config exists. Git is used by installation and optional vault version control. See `README.md` for a Python virtual environment and agent installation.
 

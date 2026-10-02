@@ -4,18 +4,18 @@ The public npm name is `@soulwaxx/obsidian-second-brain`. npm distributes the Pi
 
 ## What the pipeline does
 
-`.github/workflows/release.yml` follows [pi-subagents' release workflow](https://github.com/nicobailon/pi-subagents/blob/main/.github/workflows/release.yml): a protected `release` environment, GitHub-hosted runners, and npm Trusted Publishing with OIDC. This project additionally coordinates Claude/npm versions, version tags, macOS/Linux verification, and GitHub Releases.
+`.github/workflows/release.yml` uses a protected `release` environment, GitHub-hosted runners, and npm Trusted Publishing with OIDC. It coordinates Claude/npm versions, existing version tags, macOS/Linux verification, and GitHub Releases. Actions use full commit SHAs and publication is serialized across all version tags.
 
 Pushing a stable version tag, such as `v0.1.0`, starts the release workflow. It:
 
-1. Checks that the tag, npm version, Claude plugin version, and marketplace entry version agree, and that the tag points to the checkout.
+1. Checks that the workflow ref is the requested version tag, its event SHA matches the checkout, and the tag, npm version, Claude plugin version, and marketplace entry version agree. This keeps npm provenance tied to the tested release source.
 2. Refuses release while any of the four [live-client verification records](release-verification.md#manual-live-client-checks) is missing, not `PASS`, or lacks evidence.
-3. Runs the existing macOS and Ubuntu test/install workflow against the exact tagged commit.
-4. Enters the GitHub `release` environment. When required reviewers are configured, publication waits for approval.
-5. Publishes the public npm package with provenance. npm's pre-publish hook rechecks versions and runs the source, release, and packed-runtime tests.
+3. Runs workflow/shell quality checks and the macOS/Ubuntu test workflow against the exact tagged commit, covering Node 22/Python 3.12 and Node 24/Python 3.14. The original runtime pair also runs agent install smoke.
+4. Enters the GitHub `release` environment. When required reviewers are configured, publication waits for approval. After approval, re-fetches the remote tag and refuses publication if it no longer points at the tested commit.
+5. Publishes the public npm package with provenance. A new version must exceed npm's stable latest version, preventing older tags from downgrading latest. npm's pre-publish hook rechecks versions and runs the source, release, and packed-runtime tests.
 6. Creates a GitHub Release for the existing tag with generated notes, or publishes an existing draft.
 
-Normal branch pushes and pull requests run tests but do not publish. The release workflow also supports manual dispatch with an existing version tag, following the example project's manually initiated release pattern. Only `soulwaxx/obsidian-second-brain` can run its release jobs; forks cannot publish through this workflow.
+Normal branch pushes and pull requests run tests but do not publish. The release workflow also supports manual dispatch from an existing version tag, with that same tag supplied as the input. Only `soulwaxx/obsidian-second-brain` can run its release jobs; forks cannot publish through this workflow.
 
 ## One-time account setup
 
@@ -24,7 +24,8 @@ Normal branch pushes and pull requests run tests but do not publish. The release
 In this repository's **Settings → Environments**, create an environment named **release**:
 
 - Add a required reviewer. For a solo project, allow self-review so the maintainer can approve their own release.
-- Restrict deployments to version tags matching `v*`.
+- Restrict deployments to version tags matching `v*`. Manual retries must dispatch from the same tag, not main, because GitHub deployment policies and npm provenance use the workflow ref, not just the checked-out source.
+- Protect existing `v*` tags against updates and deletion with a tag ruleset.
 - Confirm approval covers the recorded live checks for the exact code being released. CI does not perform authenticated model sessions.
 
 The `environment: release` line alone does not enforce approval: GitHub's environment settings must contain the reviewer rule. The workflow grants write permissions only to the publishing job: OIDC identity for npm and repository contents for the GitHub Release. It does not need a personal GitHub token.
@@ -58,7 +59,7 @@ After the package exists, open its **Settings → Trusted Publisher** on npmjs.c
 | Environment name | `release` |
 | Allowed actions | Allow direct `npm publish` |
 
-Then delete the GitHub `NPM_TOKEN` secret and revoke the bootstrap token in npm. Subsequent releases use GitHub's short-lived OIDC identity. npm requires CLI 11.5.1 or later and Node 22.14.0 or later for this; the publishing job uses Node 24 and npm 11.
+Then delete the GitHub `NPM_TOKEN` secret and revoke the bootstrap token in npm. Subsequent releases use GitHub's short-lived OIDC identity. npm requires CLI 11.5.1 or later and Node 22.14.0 or later for this; the publishing job uses Node 24 and a pinned npm 11 version maintained by Renovate. Dependency caches are disabled for publication.
 
 Account permissions, secrets, and Trusted Publisher settings are external account configuration, not settings a repository commit can supply.
 
@@ -111,17 +112,21 @@ This pipeline supports stable `X.Y.Z` releases. npm cannot overwrite a published
 
 ## Retry and failure behavior
 
-Use **Actions → Release → Run workflow**, supplying the existing tag, or use the GitHub CLI:
+Use **Actions → Release → Run workflow**, selecting the existing tag in **Use workflow from** and supplying the same tag as the input, or use the GitHub CLI:
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.1.0
+gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0
 ```
 
-The workflow checks out the tag, not the dispatch branch's latest code. A retry reruns verification and environment approval.
+The workflow checks out the tag and verifies it matches the dispatch event's ref and SHA. Dispatching from a branch or supplying a different tag fails validation. A retry reruns verification and environment approval.
 
 If npm already has that version, publication is skipped only when its recorded `gitHead` matches the exact tagged commit. A different or missing `gitHead`, registry authentication failure, or network error stops the workflow rather than pretending publication succeeded. This allows a retry to finish GitHub Release creation after npm publication succeeded.
 
-An npm publishing failure prevents GitHub Release creation. Neither failure moves the tag or bumps versions. Existing public GitHub Releases keep their notes; existing drafts are finalized after npm succeeds.
+A previously unpublished version at or below npm latest is refused rather than moving latest backward. A matching already-published version still permits GitHub Release recovery without altering npm dist-tags.
+
+An npm publishing failure prevents GitHub Release creation. Neither failure moves the tag or bumps versions. GitHub Release creation is attempted only after an API 404 confirms absence; authentication, rate-limit, network, or invalid-response errors stop recovery. Existing public GitHub Releases keep their notes; existing drafts are finalized after npm succeeds.
+
+New tags must contain the updated workflows, CI requirements, and release script. Pipeline changes do not rewrite historical tags or retroactively change the workflow stored in those tags. Prepare a new version rather than moving an existing tag.
 
 ## Local checks and archive contents
 

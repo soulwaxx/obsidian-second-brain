@@ -58,8 +58,9 @@ function mockNpm(work) {
 import fs from "node:fs";
 fs.appendFileSync(process.env.MOCK_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 if (process.argv[2] === "view") {
-  console.log(process.env.MOCK_VIEW);
-  process.exit(Number(process.env.MOCK_STATUS));
+  const latest = process.argv[4] === "dist-tags.latest";
+  console.log(latest ? (process.env.MOCK_LATEST || process.env.MOCK_VIEW) : process.env.MOCK_VIEW);
+  process.exit(Number(latest ? (process.env.MOCK_LATEST_STATUS || process.env.MOCK_STATUS) : process.env.MOCK_STATUS));
 }
 if (process.argv[2] !== "publish") process.exit(99);
 process.exit(Number(process.env.MOCK_PUBLISH_STATUS || 0));
@@ -154,7 +155,8 @@ test("publication only starts on E404; an existing identical commit resumes safe
   };
   const absent = invoke(1, { error: { code: "E404" } });
   assert.equal(absent.result.status, 0, absent.result.stderr);
-  assert.deepEqual(absent.calls[1], ["publish", "--access", "public", "--provenance", "--registry=https://registry.npmjs.org/"]);
+  assert.deepEqual(absent.calls[1], ["view", "@soulwaxx/obsidian-second-brain", "dist-tags.latest", "--json", "--registry=https://registry.npmjs.org/"]);
+  assert.deepEqual(absent.calls[2], ["publish", "--access", "public", "--provenance", "--registry=https://registry.npmjs.org/"]);
   const existing = invoke(0, { version, gitHead: git("rev-parse", "HEAD") });
   assert.equal(existing.result.status, 0);
   assert.equal(existing.calls.length, 1);
@@ -170,12 +172,99 @@ test("publication only starts on E404; an existing identical commit resumes safe
   }
 });
 
+test("publication does not downgrade latest or ignore registry failures", (t) => {
+  const { work, run, tag, version } = readyFixture(t);
+  const env = mockNpm(work);
+  const invoke = (status, latest) => {
+    fs.rmSync(env.MOCK_LOG, { force: true });
+    const result = run("publish", tag, {
+      ...env, MOCK_STATUS: "1", MOCK_VIEW: JSON.stringify({ error: { code: "E404" } }),
+      MOCK_LATEST_STATUS: String(status), MOCK_LATEST: JSON.stringify(latest),
+    });
+    const calls = fs.readFileSync(env.MOCK_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    return { result, calls };
+  };
+  const [major, minor, patch] = version.split(".").map(Number);
+  for (const latest of [version, `${major + 1}.0.0`, `${major}.${minor + 1}.0`, `${major}.${minor}.${patch + 1}`, "1.0.0-beta.1", "invalid"]) {
+    const blocked = invoke(0, latest);
+    assert.notEqual(blocked.result.status, 0, latest);
+    assert.equal(blocked.calls.length, 2);
+  }
+  for (const code of ["E401", "E403", "ECONNRESET"]) {
+    const blocked = invoke(1, { error: { code } });
+    assert.notEqual(blocked.result.status, 0);
+    assert.equal(blocked.calls.length, 2);
+  }
+  const allowed = invoke(0, "0.0.0");
+  assert.equal(allowed.result.status, 0, allowed.result.stderr);
+  assert.equal(allowed.calls[2][0], "publish");
+});
+
 test("dirty tracked files prevent publication before contacting npm", (t) => {
   const { work, run, tag } = readyFixture(t);
   fs.appendFileSync(path.join(work, "docs/release-verification.md"), "\nUncommitted change\n");
   const env = mockNpm(work);
   assert.notEqual(run("publish", tag, env).status, 0);
   assert.ok(!fs.existsSync(env.MOCK_LOG));
+});
+
+test("GitHub Release retries only create on 404 and preserve public releases", (t) => {
+  const { work, run, tag } = fixture(t);
+  const bin = path.join(work, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "gh"), `#!/usr/bin/env node
+import fs from "node:fs";
+fs.appendFileSync(process.env.MOCK_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (process.argv[2] === "api") {
+  console.log(process.env.MOCK_RESPONSE);
+  process.exit(Number(process.env.MOCK_STATUS));
+}
+if (process.argv[2] !== "release") process.exit(99);
+process.exit(Number(process.env.MOCK_RELEASE_STATUS || 0));
+`, { mode: 0o755 });
+  const env = {
+    PATH: bin + path.delimiter + process.env.PATH,
+    GITHUB_REPOSITORY: "soulwaxx/obsidian-second-brain", MOCK_LOG: path.join(work, "gh.log"),
+  };
+  const invoke = (status, response, extraEnv = {}) => {
+    fs.rmSync(env.MOCK_LOG, { force: true });
+    const result = run("github-release", tag, {
+      ...env, MOCK_STATUS: String(status), MOCK_RESPONSE: JSON.stringify(response), ...extraEnv,
+    });
+    const calls = fs.existsSync(env.MOCK_LOG)
+      ? fs.readFileSync(env.MOCK_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+    return { result, calls };
+  };
+  const missing = invoke(1, { status: "404" });
+  assert.equal(missing.result.status, 0, missing.result.stderr);
+  assert.deepEqual(missing.calls, [
+    ["api", `repos/soulwaxx/obsidian-second-brain/releases/tags/${tag}`],
+    ["release", "create", tag, "--verify-tag", "--generate-notes", "--title", tag],
+  ]);
+  const draft = invoke(0, { tag_name: tag, draft: true });
+  assert.equal(draft.result.status, 0);
+  assert.deepEqual(draft.calls[1], ["release", "edit", tag, "--draft=false"]);
+  const publicRelease = invoke(0, { tag_name: tag, draft: false });
+  assert.equal(publicRelease.result.status, 0);
+  assert.equal(publicRelease.calls.length, 1);
+  for (const status of [401, 403, 429, 500]) {
+    const blocked = invoke(1, { status });
+    assert.notEqual(blocked.result.status, 0);
+    assert.equal(blocked.calls.length, 1);
+  }
+  for (const response of [{}, { tag_name: "v99.0.0", draft: false }, { tag_name: tag }]) {
+    const blocked = invoke(0, response);
+    assert.notEqual(blocked.result.status, 0);
+    assert.equal(blocked.calls.length, 1);
+  }
+  const networkFailure = invoke(1, "not JSON", { MOCK_RESPONSE: "" });
+  assert.notEqual(networkFailure.result.status, 0);
+  assert.equal(networkFailure.calls.length, 1);
+  const mutationFailure = invoke(1, { status: "404" }, { MOCK_RELEASE_STATUS: "1" });
+  assert.notEqual(mutationFailure.result.status, 0);
+  const wrongRepo = invoke(1, { status: "404" }, { GITHUB_REPOSITORY: "fork/repo" });
+  assert.notEqual(wrongRepo.result.status, 0);
+  assert.equal(wrongRepo.calls.length, 0);
 });
 
 test("npm publication failure is propagated", (t) => {

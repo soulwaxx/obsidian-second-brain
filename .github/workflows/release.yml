@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing stable version tag to release (for example v0.1.0)
+        description: Existing stable tag to release; select the same tag as the workflow ref
         required: true
         type: string
 
@@ -14,30 +14,44 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  # Serialize npm/latest and GitHub Release mutations across all versions.
+  group: release-${{ github.repository }}
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   validate:
     if: github.repository == 'soulwaxx/obsidian-second-brain'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       sha: ${{ steps.release.outputs.sha }}
       tag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: '24'
+          package-manager-cache: false
       - name: Validate versions, tag, and live-client release records
         id: release
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
+          if [ "$WORKFLOW_REF" != "refs/tags/$RELEASE_TAG" ]; then
+            echo '::error::Dispatch Release from the same version tag, not a branch, so npm provenance identifies the released source.'
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
           node scripts/release.mjs check "$RELEASE_TAG"
           node scripts/release.mjs verify-live
           printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -52,29 +66,40 @@ jobs:
   publish:
     needs: [validate, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment: release
     permissions:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: '24'
           registry-url: https://registry.npmjs.org
-      - uses: actions/setup-python@v5
+          package-manager-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install publishing and test prerequisites
+        env:
+          # renovate: datasource=npm depName=npm
+          NPM_VERSION: '11.19.0'
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
-          python -m pip install PyYAML
-          npm install --global npm@11
+          python -m pip install --requirement .github/requirements-ci.txt
+          npm install --global "npm@$NPM_VERSION"
+      - name: Recheck the remote tag after approval
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$(git rev-parse HEAD)"
       - name: Publish npm package
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
@@ -85,11 +110,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
-            if [ "$draft" = true ]; then
-              gh release edit "$RELEASE_TAG" --draft=false
-            fi
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
-          fi
+        run: node scripts/release.mjs github-release "$RELEASE_TAG"

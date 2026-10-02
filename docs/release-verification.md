@@ -4,13 +4,15 @@ A [macOS and Ubuntu CI run](https://github.com/soulwaxx/obsidian-second-brain/ac
 
 ## Automated checks
 
-`.github/workflows/test.yml` defines jobs for `ubuntu-latest` and `macos-latest` on pushes, pull requests, manual dispatch, and calls from the release workflow. A release call tests the exact tagged commit. Each job installs Python 3.12, PyYAML, `jq`, Git, Node.js, Pi, and Claude Code. It runs these checks:
+`.github/workflows/test.yml` defines CI on main pushes, pull requests, merge groups, manual dispatch, and calls from the release workflow. A release call tests the exact tagged commit. Ubuntu and macOS each test Node 22/Python 3.12 and Node 24/Python 3.14. Direct tool versions and action SHAs are pinned.
 
-1. Check shell syntax and run ShellCheck on `tests/install-smoke.sh`.
-2. Run `npm test` for lifecycle, middleware, bootstrap, retrieval, Pi extension, and packaged-agent metadata tests.
-3. Run `npm run test:release` to check version synchronization, tags, publication refusal/retry behavior, and workflow guards.
-4. Run `npm run test:package` to inspect the npm archive, install it in a temporary directory, and test its packed Pi extension and middleware.
-5. Run `claude plugin validate .` and `bash tests/install-smoke.sh`.
+1. Run actionlint on all workflows, check shell syntax, and run ShellCheck on `tests/install-smoke.sh` in the quality job.
+2. Run `npm run release:check` to verify agreement among all three manifests in every runtime job.
+3. Run `npm test` for lifecycle, middleware, bootstrap, retrieval, Pi extension, and packaged-agent metadata tests in every runtime job.
+4. Run `npm run test:release` to check version synchronization, tags, publication refusal/retry behavior, npm latest protection, GitHub API failure handling, and workflow guards in every runtime job.
+5. Run `npm run test:package` to inspect the npm archive, install it in a temporary directory, and test its packed Pi extension and middleware in every runtime job.
+6. Install the pinned Pi and Claude Code CLIs, then run `claude plugin validate .` and `bash tests/install-smoke.sh` on the Node 22/Python 3.12 pair for each operating system.
+7. Require every quality and matrix job to succeed through **CI passed**.
 
 The install smoke sets temporary `HOME`, `PI_CODING_AGENT_DIR`, and `CLAUDE_CONFIG_DIR` paths. It installs the local checkout in each agent, checks installed resources, and confirms that a direct hook invocation outside a temporary vault leaves it unchanged. It does not launch an authenticated client session or send a model prompt.
 

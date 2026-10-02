@@ -1,8 +1,10 @@
-name: Test and install smoke
+name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -14,48 +16,127 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Release calls must not cancel branch CI or another release's verification.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.ref || 'branch' }}
+  cancel-in-progress: ${{ inputs.ref == '' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  quality:
+    name: Workflow and shell checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install system prerequisites (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Install ShellCheck
         run: |
           sudo apt-get update
-          sudo apt-get install -y git jq shellcheck
-          python -m pip install --upgrade PyYAML
-      - name: Install system prerequisites (macOS)
-        if: runner.os == 'macOS'
+          sudo apt-get install -y shellcheck
+      - name: Validate GitHub Actions workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # renovate: datasource=github-releases depName=rhysd/actionlint
+          ACTIONLINT_VERSION: v1.7.12
         run: |
-          brew install jq shellcheck
-          python3 -m pip install --upgrade PyYAML
-      - name: Install agent CLIs
-        run: npm install --global @earendil-works/pi-coding-agent @anthropic-ai/claude-code
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          gh release download "$ACTIONLINT_VERSION" --repo rhysd/actionlint \
+            --pattern '*_linux_amd64.tar.gz' --pattern '*_checksums.txt' --dir "$work"
+          (
+            cd "$work"
+            sha256sum --check --ignore-missing ./*_checksums.txt
+            tar -xzf ./*_linux_amd64.tar.gz actionlint
+          )
+          "$work/actionlint" -color
       - name: Shell checks
         run: |
           bash -n hooks/obsidian-session.sh tests/install-smoke.sh
           shellcheck tests/install-smoke.sh
+
+  test:
+    # Preserve the OS check names already required by the main-branch ruleset.
+    name: ${{ matrix.runtime.name }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        runtime:
+          - name: test
+            node: '22'
+            python: '3.12'
+          - name: compatibility
+            node: '24'
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.runtime.node }}
+          package-manager-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.runtime.python }}
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
+      - name: Install system prerequisites (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git jq
+      - name: Install system prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: brew install jq
+      - name: Install Python prerequisites
+        run: python -m pip install --requirement .github/requirements-ci.txt
+      - name: Verify coordinated versions
+        run: npm run release:check
       - name: Test suite
         run: npm test
       - name: Verify release scripts and workflow guards
         run: npm run test:release
       - name: Verify npm package contents and packed runtime
         run: npm run test:package
+      - name: Install agent CLIs
+        if: matrix.runtime.name == 'test'
+        env:
+          # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
+          PI_VERSION: '1.0.0'
+          # renovate: datasource=npm depName=@anthropic-ai/claude-code
+          CLAUDE_VERSION: '2.1.288'
+        run: npm install --global "@earendil-works/pi-coding-agent@$PI_VERSION" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
       - name: Validate Claude plugin and marketplace
+        if: matrix.runtime.name == 'test'
         run: claude plugin validate .
       - name: Isolated local package installation smoke
+        if: matrix.runtime.name == 'test'
         run: bash tests/install-smoke.sh
+
+  ci:
+    name: CI passed
+    if: always()
+    needs: [quality, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to pass
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$TEST_RESULT" = success

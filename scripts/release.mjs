@@ -57,25 +57,56 @@ function verifyLiveChecks() {
   }
 }
 
+function npmMetadata(spec, fields) {
+  const result = spawnSync("npm", ["view", spec, ...fields, "--json", `--registry=${registry}`], { cwd: root, encoding: "utf8" });
+  if (result.error) throw result.error;
+  const data = JSON.parse(result.stdout);
+  if (result.status === 0) return data;
+  // Only an absent package/version permits publication; network/auth failures do not.
+  assert.equal(data.error?.code, "E404", `cannot check npm metadata: ${result.stderr}`);
+  return undefined;
+}
+
 function publish() {
   assert.ok(tag, "publish requires an existing version tag");
   const manifest = checkVersions(tag);
   verifyLiveChecks();
   assert.equal(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" }).trim(), "", "publication requires a clean tracked checkout");
   const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-  const result = spawnSync("npm", ["view", `${manifest.name}@${manifest.version}`, "version", "gitHead", "--json", `--registry=${registry}`], { cwd: root, encoding: "utf8" });
-  if (result.error) throw result.error;
-  if (result.status === 0) {
-    const published = JSON.parse(result.stdout);
+  const published = npmMetadata(`${manifest.name}@${manifest.version}`, ["version", "gitHead"]);
+  if (published !== undefined) {
     assert.equal(published.version, manifest.version, "unexpected registry version");
     assert.equal(published.gitHead, sha, "npm version already exists from a different commit; refusing to release it");
     console.log(`npm version ${manifest.version} already published from ${sha}; resuming GitHub release`);
     return;
   }
-  // Only an absent package/version permits publication; network/auth failures do not.
-  const failure = JSON.parse(result.stdout);
-  assert.equal(failure.error?.code, "E404", `cannot check npm version: ${result.stderr}`);
+  const latest = npmMetadata(manifest.name, ["dist-tags.latest"]);
+  if (latest !== undefined) {
+    assert.match(latest, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "npm latest must be a stable version");
+    const current = manifest.version.split(".").map(Number);
+    const previous = latest.split(".").map(Number);
+    const difference = current.map((part, index) => part - previous[index]).find((part) => part !== 0);
+    assert.ok(difference > 0, "refusing to replace npm latest with an older or equal version");
+  }
   execFileSync("npm", ["publish", "--access", "public", "--provenance", `--registry=${registry}`], { cwd: root, stdio: "inherit" });
+}
+
+function githubRelease() {
+  assert.ok(tag, "github-release requires an existing version tag");
+  checkVersions(tag);
+  assert.equal(process.env.GITHUB_REPOSITORY, "soulwaxx/obsidian-second-brain", "unexpected release repository");
+  const result = spawnSync("gh", ["api", `repos/${process.env.GITHUB_REPOSITORY}/releases/tags/${tag}`], { cwd: root, encoding: "utf8" });
+  if (result.error) throw result.error;
+  const data = JSON.parse(result.stdout);
+  if (result.status === 0) {
+    assert.equal(data.tag_name, tag, "unexpected GitHub Release tag");
+    assert.equal(typeof data.draft, "boolean", "invalid GitHub Release response");
+    if (data.draft) execFileSync("gh", ["release", "edit", tag, "--draft=false"], { cwd: root, stdio: "inherit" });
+  } else {
+    // A missing release is recoverable; authentication and network errors are not.
+    assert.equal(Number(data.status), 404, `cannot check GitHub Release: ${result.stderr}`);
+    execFileSync("gh", ["release", "create", tag, "--verify-tag", "--generate-notes", "--title", tag], { cwd: root, stdio: "inherit" });
+  }
 }
 
 switch (command) {
@@ -93,6 +124,9 @@ switch (command) {
   case "publish":
     publish();
     break;
+  case "github-release":
+    githubRelease();
+    break;
   default:
-    throw new Error("usage: node scripts/release.mjs check [vX.Y.Z] | sync | verify-live | publish vX.Y.Z");
+    throw new Error("usage: node scripts/release.mjs check [vX.Y.Z] | sync | verify-live | publish vX.Y.Z | github-release vX.Y.Z");
 }
