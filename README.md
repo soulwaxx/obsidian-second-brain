@@ -24,11 +24,19 @@ On Linux, install your distribution's `python3-venv` package if the first comman
 
 ## Install the agent package
 
-Choose the command for your agent:
+For Pi, the npm installation command after the first release is published is:
+
+```sh
+pi install npm:@soulwaxx/obsidian-second-brain
+```
+
+Until then, or to install from GitHub, use:
 
 ```sh
 pi install git:github.com/soulwaxx/obsidian-second-brain
 ```
+
+For Claude Code:
 
 ```sh
 claude plugin marketplace add soulwaxx/obsidian-second-brain
@@ -99,11 +107,14 @@ The lifecycle hook runs only when the agent's working directory is inside the co
 Run the repository checks from its checkout:
 
 ```sh
+npm run release:check
 npm test
+npm run test:release
+npm run test:package
 claude plugin validate .
 bash tests/install-smoke.sh
 bash -n hooks/obsidian-session.sh tests/install-smoke.sh
 shellcheck tests/install-smoke.sh
 ```
 
-The install smoke uses temporary agent settings and a temporary vault. It does not send a model prompt. [Release verification](docs/release-verification.md) records the macOS/Linux continuous integration checks and the separate live-client checks required before a release. Authenticated first runs remain untested until those checks are recorded.
+The install smoke uses temporary agent settings and a temporary vault. It does not send a model prompt. [Release verification](docs/release-verification.md) records the macOS/Linux continuous integration checks and the separate live-client checks required before a release. Authenticated first runs remain untested until those checks are recorded. Stable version tags trigger the release pipeline: verify all three manifests and live-client records, run macOS/Linux CI, publish to npm through the protected `release` environment, and create a GitHub Release. For coordinated versioning and one-time GitHub/npm setup, see [Releases and npm publishing](docs/publishing.md).

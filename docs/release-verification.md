@@ -4,18 +4,23 @@ A [macOS and Ubuntu CI run](https://github.com/soulwaxx/obsidian-second-brain/ac
 
 ## Automated checks
 
-`.github/workflows/test.yml` defines jobs for `ubuntu-latest` and `macos-latest` on pushes, pull requests, and manual dispatch. Each job installs Python 3.12, PyYAML, `jq`, Git, Node.js, Pi, and Claude Code. It runs these checks:
+`.github/workflows/test.yml` defines jobs for `ubuntu-latest` and `macos-latest` on pushes, pull requests, manual dispatch, and calls from the release workflow. A release call tests the exact tagged commit. Each job installs Python 3.12, PyYAML, `jq`, Git, Node.js, Pi, and Claude Code. It runs these checks:
 
 1. Check shell syntax and run ShellCheck on `tests/install-smoke.sh`.
 2. Run `npm test` for lifecycle, middleware, bootstrap, retrieval, Pi extension, and packaged-agent metadata tests.
-3. Run `claude plugin validate .` and `bash tests/install-smoke.sh`.
+3. Run `npm run test:release` to check version synchronization, tags, publication refusal/retry behavior, and workflow guards.
+4. Run `npm run test:package` to inspect the npm archive, install it in a temporary directory, and test its packed Pi extension and middleware.
+5. Run `claude plugin validate .` and `bash tests/install-smoke.sh`.
 
 The install smoke sets temporary `HOME`, `PI_CODING_AGENT_DIR`, and `CLAUDE_CONFIG_DIR` paths. It installs the local checkout in each agent, checks installed resources, and confirms that a direct hook invocation outside a temporary vault leaves it unchanged. It does not launch an authenticated client session or send a model prompt.
 
 Run the same package checks from the repository checkout:
 
 ```sh
+npm run release:check
 npm test
+npm run test:release
+npm run test:package
 claude plugin validate .
 bash tests/install-smoke.sh
 ```
@@ -43,6 +48,10 @@ For each row, complete the following steps in the actual client:
 6. Record `PASS`, `FAIL`, or `UNTESTED`, along with the client version, operating-system version, commit, consent, and observed behavior. Keep `UNTESTED` if authentication, skill invocation, or any check above was skipped.
 
 Directly running the hook is useful for diagnosis. It does not satisfy an actual-client check. Keep a failed result until you repeat the check on a fixed commit and record that run.
+
+## npm distribution
+
+[Releases and npm publishing](publishing.md) documents coordinated versioning, tags, the release pipeline, and one-time GitHub/npm setup. The release workflow checks these four rows for `PASS` with nonempty evidence before running macOS/Linux CI against the tag and entering the protected `release` environment. Approval must confirm that the evidence covers the code being released. Preparing or installing an npm archive does not satisfy the authenticated live-client gate. Complete the checks above for the release commit before publishing.
 
 ## Release decision
 

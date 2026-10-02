@@ -18,14 +18,17 @@ This repository packages an Open Knowledge Format (OKF) v0.2 wiki skill for Clau
 
 ## Toolchain and verification
 
-`package.json` defines the sole npm script, `npm test`. There is no lockfile or package build, format, or lint script. CI uses Node.js 22 and Python 3.12; these are CI versions, not declared minimum supported versions.
+`package.json` defines source, release, and archive/install tests. Its `version` hook synchronizes the two Claude manifests; `prepublishOnly` checks version agreement and runs all three test commands. `.github/workflows/release.yml` checks version tags and recorded live-client passes, calls the macOS/Linux test workflow at the exact release commit, then publishes npm and creates a GitHub Release through the `release` environment. Pi loads the shipped TypeScript directly. There is no lockfile or package build, format, or lint script. CI uses Node.js 22 and Python 3.12; these are CI versions, not declared minimum supported versions.
 
 Python needs PyYAML, and the lifecycle hook needs `jq` when a config exists. Git is used by installation and optional vault version control. See `README.md` for a Python virtual environment and agent installation.
 
 Run the relevant commands from the repository root before calling a change complete (sources: `package.json` and `.github/workflows/test.yml`):
 
 ```sh
+npm run release:check
 npm test
+npm run test:release
+npm run test:package
 claude plugin validate .
 bash tests/install-smoke.sh
 bash -n hooks/obsidian-session.sh tests/install-smoke.sh

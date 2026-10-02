@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to verify for a release
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -14,6 +23,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -39,6 +51,10 @@ jobs:
           shellcheck tests/install-smoke.sh
       - name: Test suite
         run: npm test
+      - name: Verify release scripts and workflow guards
+        run: npm run test:release
+      - name: Verify npm package contents and packed runtime
+        run: npm run test:package
       - name: Validate Claude plugin and marketplace
         run: claude plugin validate .
       - name: Isolated local package installation smoke
