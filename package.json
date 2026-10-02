@@ -1,0 +1,59 @@
+{
+  "name": "@soulwaxx/obsidian-second-brain",
+  "version": "0.1.0",
+  "description": "An OKF wiki skill and vault-scoped lifecycle integration for Obsidian, Pi, and Claude Code",
+  "author": "soulwaxx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soulwaxx/obsidian-second-brain.git"
+  },
+  "homepage": "https://github.com/soulwaxx/obsidian-second-brain#readme",
+  "bugs": {
+    "url": "https://github.com/soulwaxx/obsidian-second-brain/issues"
+  },
+  "keywords": ["pi-package", "pi", "obsidian", "wiki", "knowledge-base", "claude-code"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    ".claude-plugin/*.json",
+    "agents/**/*.md",
+    "docs/*.md",
+    "extensions/*.ts",
+    "hooks/*.json",
+    "hooks/*.sh",
+    "scripts/*.py",
+    "skills/wiki/SKILL.md",
+    "skills/wiki/references/*.md",
+    "skills/wiki/scripts/okf_mw/*.py",
+    "skills/wiki/scripts/okf_mw/LICENSE-claude-obsidian",
+    "skills/wiki/scripts/okf_mw/pyrightconfig.json",
+    "properties.example.json",
+    "NOTICE.md"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/obsidian.ts"],
+    "skills": ["./skills/wiki"],
+    "subagents": { "agents": ["./agents/pi"] }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test:package": "node tests/npm-package.mjs",
+    "test:release": "node --test tests/release.test.mjs && python3 tests/test_release_workflows.py",
+    "release:check": "node scripts/release.mjs check",
+    "release:verify": "node scripts/release.mjs verify-live",
+    "release:publish": "node scripts/release.mjs publish",
+    "version": "node scripts/release.mjs sync && git add .claude-plugin/plugin.json .claude-plugin/marketplace.json",
+    "prepublishOnly": "npm run release:check && npm test && npm run test:release && npm run test:package",
+    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_agents.py"
+  }
+}

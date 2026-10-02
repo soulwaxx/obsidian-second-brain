@@ -1,0 +1,13 @@
+{
+  "name": "obsidian-second-brain",
+  "description": "Obsidian wiki integration for Claude Code and Pi",
+  "owner": { "name": "soulwaxx" },
+  "plugins": [
+    {
+      "name": "obsidian-second-brain",
+      "version": "0.1.0",
+      "source": "./",
+      "description": "Obsidian wiki lifecycle and OKF skill for Claude Code"
+    }
+  ]
+}

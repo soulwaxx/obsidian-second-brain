@@ -1,0 +1,9 @@
+{
+  "vaultPath": null,
+  "features": {
+    "guard": true,
+    "toc": true,
+    "autoCommit": true,
+    "retrievalRefresh": true
+  }
+}
