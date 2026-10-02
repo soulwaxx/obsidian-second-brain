@@ -61,7 +61,7 @@ Bootstrap creates `.obsidian/`, `wiki/quickstart.md`, generated `wiki/index.md`,
 
 Bootstrap does not initialize Git or install retrieval helpers.
 
-A new config at `~/.config/obsidian-second-brain/properties.json` points to this vault and sets `features.autoCommit` to `false`. An existing config keeps its values; an omitted `autoCommit` setting still defaults to `true`. If an existing config has a missing or null `vaultPath`, set the absolute vault path and `features.autoCommit` to `false` in that file before retrying. Use `OBSIDIAN_AGENT_CONFIG` to select another config path.
+A new config at `~/.config/obsidian-second-brain/properties.json` points to this vault and sets `features.autoCommit` to `false`. An existing config keeps its values; an omitted `autoCommit` setting still defaults to `true`. If the integration reports a config problem, stop wiki writes. Propose the exact minimal repair to the selected config and get approval for those exact changes before editing only that config. Preserve unrelated fields, never enable `autoCommit` without direction, then revalidate and reload the config in the same session before resuming. Use `OBSIDIAN_AGENT_CONFIG` to select another config path.
 
 For an existing vault, collision rules, and a step-by-step example, read [Set up a vault](docs/setup.md). For optional version control, follow [Git setup](skills/wiki/references/git-setup.md) after reviewing its ignore rules.
 
@@ -84,7 +84,7 @@ python3 scripts/retrieve.py "query terms" --vault .
 
 The generated index lives under `.vault-meta/retrieval/`; keep that directory out of Git. Rebuild it after upgrading the package to enable title-aware ranking for existing vaults. Provisioning adds a local exclusion in an ordinary Git vault and checks the effective exclusion in a linked Git worktree. It refuses to replace existing helper scripts.
 
-Embedding reranking requires a running local Ollama service and an embedding model you install yourself. Run `ollama pull nomic-embed-text`, then add `--rerank` to a retrieval query. Normal retrieval makes no Ollama request. Reranking uses note content over a loopback connection and falls back to text search if Ollama fails. Exact title matches are prioritized for topic-only searches; queries containing an ISO date stay lexical, preferring an exact dated filename or a matching dated section in the canonical titled page. Successful semantic reranks label their output scores `cosine=` rather than BM25. See [Set up a vault](docs/setup.md#optional-local-retrieval) for the exact sequence and privacy limits.
+Embedding reranking requires a running local Ollama service and an embedding model you install yourself. Run `ollama pull nomic-embed-text`, then add `--rerank` to a retrieval query. Normal retrieval makes no Ollama request. Reranking uses note content over a loopback connection and falls back to text search if Ollama fails. Exact title matches are prioritized for topic-only searches; queries containing an ISO date stay lexical, preferring an exact matching dated note and then a relevant dated section in a canonical page. Additional qualifier terms refine dated-section relevance without disabling the date priority. Successful semantic reranks label their output scores `cosine=` rather than BM25. See [Set up a vault](docs/setup.md#optional-local-retrieval) for the exact sequence and privacy limits.
 
 ## Use the wiki
 
@@ -92,7 +92,7 @@ Start your installed agent from the vault directory. Invoke `/obsidian-second-br
 
 To delegate a vault task to the packaged specialist, use `@agent-obsidian-second-brain:wiki-vault` in Claude Code. In Pi, optionally install `pi-subagents` with `pi install npm:pi-subagents`, then ask the parent to run `obsidian-second-brain.wiki-vault` (or use `/run obsidian-second-brain.wiki-vault "your task"`). The Pi agent is not required for `/skill:wiki` or the vault lifecycle. Both agents use the bundled wiki skill and leave their model and effort unpinned; see [agent configuration](docs/setup.md#configure-the-vault-agent) for per-client choices.
 
-The lifecycle hook runs only when the agent's working directory is inside the configured vault. It supplies the generated index at session start, checks protected paths before supported file writes, and synchronizes indexes at shutdown. It auto-commits validated page changes when `features.autoCommit` is true in a Git vault with a `.git` directory. Existing configs with no setting retain the true default. Do not edit generated `index.md` files or the hook-owned `wiki/log.md` by hand.
+The lifecycle hook runs only when the agent's working directory is inside the configured vault. It supplies the generated index at session start and checks protected paths before supported file writes. After each successful page write it validates changed Markdown pages and synchronizes generated indexes independently of Git and `autoCommit`; shutdown also runs a convergence sync. Committing is separate and happens only when `features.autoCommit` is true in a Git vault with a `.git` directory. Existing configs with no setting retain the true default. Do not edit generated `index.md` files or the hook-owned `wiki/log.md` by hand.
 
 ## Verify the package
 
@@ -102,6 +102,8 @@ Run the repository checks from its checkout:
 npm test
 claude plugin validate .
 bash tests/install-smoke.sh
+bash -n hooks/obsidian-session.sh tests/install-smoke.sh
+shellcheck tests/install-smoke.sh
 ```
 
 The install smoke uses temporary agent settings and a temporary vault. It does not send a model prompt. [Release verification](docs/release-verification.md) records the macOS/Linux continuous integration checks and the separate live-client checks required before a release. Authenticated first runs remain untested until those checks are recorded.

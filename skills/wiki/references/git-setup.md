@@ -63,8 +63,11 @@ New bootstrap config files set `features.autoCommit: false`. Existing configs
 are left byte-for-byte unchanged, including configs where `autoCommit` is
 omitted (the integration's omitted default remains enabled). Review your
 config's behavior before opting into agent auto-commits. If the existing
-`vaultPath` is null or absent, configure it to this vault explicitly and set
-`features.autoCommit: false` before rerunning bootstrap.
+`vaultPath` is null or absent, decide which vault it should select; do not
+guess or reset the config. If the active integration reports a config
+diagnostic, stop wiki writes and use the exact, explicitly approved repair
+workflow in `SKILL.md`. An omitted `autoCommit` remains enabled unless changed
+with explicit direction.
 
 ## Obsidian Git Plugin (Optional)
 

@@ -12,8 +12,12 @@ import subprocess
 import sys
 import tempfile
 
+from config_contract import load_config
+
 ROOT = Path(__file__).resolve().parents[1]
 MIDDLEWARE = ROOT / "skills/wiki/scripts/okf_mw"
+sys.path.insert(0, str(MIDDLEWARE))
+from ownership import record_created
 QUICKSTART = """---\ntype: note\ntitle: Quickstart\ndescription: Entry point and backlog for this vault.\n---\n# Quickstart\n\nThis wiki is the entry point for knowledge in this Obsidian vault. Add substantive pages as the vault grows; generated indexes provide navigation.\n\n## Backlog\n\n- Add topics and source references as needed.\n"""
 
 
@@ -110,11 +114,11 @@ def plan_for(vault: Path, config: Path) -> dict:
     if config_write:
         writes[str(config)] = ctext
     else:
-        try:
-            data = json.loads(config.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"existing agent config is unreadable; preserving it: {config}") from exc
-        configured = data.get("vaultPath") if isinstance(data, dict) else None
+        data, config_error = load_config(config)
+        if config_error:
+            raise ValueError(f"existing agent config is invalid; preserving it: {config_error}")
+        data = data or {}
+        configured = data.get("vaultPath")
         if not configured:
             raise ValueError(
                 f"existing agent config has no vaultPath; preserving it. Configure {config} "
@@ -122,7 +126,7 @@ def plan_for(vault: Path, config: Path) -> dict:
             )
         if Path(configured).expanduser().resolve() != vault.resolve():
             raise ValueError(f"existing agent config points elsewhere; preserving it: {config}")
-        features = data.get("features") if isinstance(data.get("features"), dict) else {}
+        features = data.get("features") or {}
         auto_commit = features.get("autoCommit", True)
         if auto_commit is None:
             auto_commit = True
@@ -268,6 +272,7 @@ def apply_plan(plan: dict) -> None:
             raise ValueError(f"collision appeared during apply: {target}")
 
     created_files = []
+    created_indexes = []
     created_dirs = []
     try:
         for directory in sorted(directories, key=lambda item: len(item.parts)):
@@ -293,7 +298,10 @@ def apply_plan(plan: dict) -> None:
                 except FileExistsError as exc:
                     raise ValueError(f"collision appeared during apply: {target}") from exc
                 stat = os.fstat(fd)
-                created_files.append((os.dup(parent_fd), name, (stat.st_dev, stat.st_ino)))
+                identity = (stat.st_dev, stat.st_ino)
+                created_files.append((os.dup(parent_fd), name, identity))
+                if target.name.casefold() == "index.md" and target.is_relative_to(Path(plan["vault"]) / "wiki"):
+                    created_indexes.append((target.relative_to(Path(plan["vault"])).as_posix(), identity, content.encode("utf-8")))
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as stream:
                         stream.write(content)
@@ -311,6 +319,8 @@ def apply_plan(plan: dict) -> None:
                                 text=True, capture_output=True, check=False)
         if result.returncode:
             raise ValueError("index synchronization failed: " + result.stderr.strip())
+        for rel, identity, content in created_indexes:
+            record_created(plan["vault"], rel, identity, content)
     except (OSError, ValueError):
         for parent_fd, name, identity in reversed(created_files):
             try:

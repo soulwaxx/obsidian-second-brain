@@ -90,7 +90,8 @@ def build(root=Path("."), output=None):
     wiki = root / "wiki"
     if wiki.is_symlink() or not wiki.is_dir():
         raise FileNotFoundError(f"wiki directory is missing or symlinked: {wiki}")
-    for path in sorted(wiki.rglob("*.md")):
+    for path in sorted(candidate for candidate in wiki.rglob("*")
+                       if candidate.is_file() and candidate.name.casefold().endswith(".md")):
         if not eligible(path, root):
             continue
         rel = path.relative_to(root).as_posix()

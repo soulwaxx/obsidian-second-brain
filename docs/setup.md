@@ -42,7 +42,7 @@ Bootstrap leaves an existing quickstart page and other notes alone. It refuses a
 
 If the config already points to this vault, bootstrap preserves it byte for byte. Check its `features.autoCommit` value: an omitted value defaults to `true`. A new config sets it to `false`.
 
-If the existing config has a null or missing `vaultPath`, edit that file in place to set the intended absolute vault path and `features.autoCommit` to `false`. Keep its other settings. If it points to a different vault, choose a separate config path with `OBSIDIAN_AGENT_CONFIG` or decide how you want to manage the existing integration before retrying.
+If the config has a null or missing `vaultPath`, decide which vault it should select; do not guess or reset the config. When an active integration reports a config diagnostic, stop wiki writes and have the specialist propose the exact minimal repair. Approve those actual changes explicitly before it edits only the selected integration config; preserve unrelated fields and do not enable `autoCommit` without direction. Revalidate and reload the effective config in the same session before resuming wiki writes. If it points to a different vault, choose a separate config path with `OBSIDIAN_AGENT_CONFIG` or decide how to manage the existing integration.
 
 ## 3. Apply the reviewed plan
 
@@ -75,7 +75,7 @@ For Pi, run `pi` in the same directory instead. Run `/obsidian-second-brain:wiki
 
 Write normal pages under `wiki/` with YAML frontmatter. Each non-reserved Markdown page needs a `type` field. The [frontmatter guide](../skills/wiki/references/frontmatter.md) covers optional fields; [Init mode](../skills/wiki/references/init-mode.md) describes the first-page workflow. Leave generated `index.md` files and `wiki/log.md` to the middleware and hook. Older unmarked indexes remain usable while their content matches the generated version, but syncing refuses to replace them once they differ. If an index is reported as unmarked, back it up outside `wiki/`, preserve any custom text in a normal page, and have the vault owner review and remove or migrate the old index before rerunning sync. Do not delete an unreviewed index to clear the error.
 
-The lifecycle hook checks supported agent file writes inside the configured vault. Shell writes bypass that pre-write check, so use the skill's guard and validator if you write wiki pages through a shell. A session launched outside the vault does not run vault lifecycle work.
+The lifecycle hook checks supported agent file writes inside the configured vault. After each successful page write it validates changed Markdown pages and synchronizes generated indexes independently of Git and `autoCommit`; committing is a separate optional step. Shell writes bypass the pre-write check, so use the skill's guard and validator if you write wiki pages through a shell. A session launched outside the vault does not run vault lifecycle work.
 
 ### Configure the vault agent
 
@@ -134,7 +134,7 @@ ollama pull nomic-embed-text
 python3 scripts/retrieve.py "query terms" --vault . --rerank
 ```
 
-The default reranker sends the query and candidate note content to `http://127.0.0.1:11434/api/embed`. It accepts only localhost or loopback endpoints, ignores proxy settings, and rejects redirects. It does not download models. If Ollama is unavailable or returns invalid embeddings, retrieval keeps the BM25 order; a missing or invalid index sends you back to `wiki/index.md` navigation.
+The default reranker sends the query and candidate note content to `http://127.0.0.1:11434/api/embed`. It accepts only localhost or loopback endpoints, ignores proxy settings, and rejects redirects. It does not download models. If Ollama is unavailable or returns invalid embeddings, retrieval keeps the BM25 order; dated queries remain lexical. Dated note matches rank first, followed by canonical pages with a relevant dated section; extra query qualifiers refine relevance. A missing or invalid index sends you back to `wiki/index.md` navigation.
 
 ## Check a problem
 
@@ -147,4 +147,4 @@ The default reranker sends the query and candidate note content to `http://127.0
 | Ollama reranking falls back to BM25 | Confirm Ollama is running locally and that `nomic-embed-text` is installed. The fallback leaves local text search available. |
 | Linked-worktree provisioning refuses to run | Make Git effectively ignore `.vault-meta/retrieval/`, including custom index filenames. Remove later negation rules, then preview again. |
 
-For package checks and the unverified live-host release gate, read [Release verification](release-verification.md). For optional Obsidian plugins and graph colors, use the [plugin guide](../skills/wiki/references/plugins.md) and [visual guide](../skills/wiki/references/css-snippets.md); neither is required for setup.
+For package checks and the unverified live-host release gate, read [Release verification](release-verification.md). Claude Code work-host live verification is tracked in [issue #1](https://github.com/soulwaxx/obsidian-second-brain/issues/1); do not treat package checks as a live-client pass. For optional Obsidian plugins and graph colors, use the [plugin guide](../skills/wiki/references/plugins.md) and [visual guide](../skills/wiki/references/css-snippets.md); neither is required for setup.

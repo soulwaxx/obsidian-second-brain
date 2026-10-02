@@ -34,9 +34,8 @@ that contains `wiki/`. Always reference files by vault-relative paths (e.g.,
 documentation, or frontmatter.
 
 **Locating the vault.** The vault root is the session's current working
-directory. The intended workflow launches the agent from inside the vault (the
-`brain` shell function `cd`s into it first), so `wiki/`, `scripts/`, `.git`,
-and `.obsidian/` are all in cwd. Resolve the vault before any wiki operation —
+directory. Launch the agent from inside the vault so `wiki/`, `scripts/`,
+`.git`, and `.obsidian/` are all in cwd. Resolve the vault before any wiki operation —
 do not ask where it is once these hold:
 
 - `wiki/` exists in cwd → that is the vault; use vault-relative paths from here.
@@ -44,14 +43,13 @@ do not ask where it is once these hold:
   scaffolds `wiki/` in place.
 - Neither exists → you are **not** in a vault. Do not guess a path, and do not
   create `wiki/` inside an unrelated repo. Ask the user to `cd` into the vault
-  (or run `brain`) and stop.
+  and stop.
 
-The lifecycle hooks — auto-commit on write, session-start ToC injection, and
-the session-end index/retrieval refresh — are **cwd-gated**: they fire only
-when cwd is inside the vault. Run from anywhere else and every one of them
-silently no-ops, so a wiki built outside the vault is unversioned and
-unindexed. The vault is wherever cwd is, and cwd must be the vault; never
-accept a host absolute path as a substitute.
+The lifecycle hooks — protected file writes, session-start index context,
+post-write validation/index synchronization, and optional auto-commit — are
+**cwd-gated**: they run only when cwd is inside the configured vault. Run from
+anywhere else and vault lifecycle work does not run. The vault is wherever cwd
+is, and cwd must be the vault; never accept a host absolute path as a substitute.
 
 Reserved files:
 
@@ -92,9 +90,24 @@ run `git init`, and preserves existing notes, indexes, and logs. A
 newly-created config uses `features.autoCommit: false`; existing configs are
 left unchanged, including omitted defaults. If an existing config has
 `vaultPath: null` or no `vaultPath`,
-set the absolute vault path and explicitly set `features.autoCommit: false`
-before retrying. For Git, opt in separately and write `.gitignore` before
-staging any notes; see [Git setup](references/git-setup.md).
+select the intended vault; do not guess if that choice is ambiguous. If the
+integration reports a config diagnostic, stop wiki writes and use the exact,
+explicitly approved repair workflow below. A missing `autoCommit` setting in
+an existing config retains its `true` default. For Git, opt in separately and
+write `.gitignore` before staging any notes; see [Git setup](references/git-setup.md).
+
+**Configuration repair is explicit and narrow.** When a lifecycle diagnostic
+reports a malformed or stale integration config, stop wiki writes. Explain the
+exact minimal change to the selected config, preserving unrelated fields, and
+obtain explicit user approval for those actual changes before editing. That
+approval permits editing only the selected integration config as an exception
+to the wiki-only write boundary. Never reset the config, edit other settings,
+or enable `autoCommit` without separate direction. An identical repeated
+diagnostic is the same pending proposal: do not restart the repair conversation
+or ask for approval again. A changed diagnostic is a new proposal and requires
+its own exact approval. Revalidate the effective config and vault boundary in
+the same session before resuming wiki work. If the vault/config selection is
+ambiguous, ask; do not guess.
 
 Distinct from the skill middleware are optional **vault-provided** scripts under
 `<vault>/scripts/` (`retrieve.py`, `contextual-prefix.py`, and `bm25-index.py`).
@@ -244,10 +257,11 @@ by `scripts/okf_mw/sync.py` after each successful page write. The middleware
 reads OKF frontmatter `title` and `description` from each file and builds an
 indexed listing. **You never create or edit index.md files.** Your writes and
 edits are to content pages only. The vault root's `index.md` declares
-`okf_version: "0.2"` and is also middleware-generated. Generated indexes commit
-atomically with the page that changed them. The session-end lifecycle is only a
-convergence check and reports index drift. Run sync yourself when working
-outside that hook, or when you need a fresh index mid-session:
+`okf_version: "0.2"` and is also middleware-generated. After each successful
+page write, the lifecycle validates changed Markdown and syncs indexes
+independently of Git and auto-commit; committing is a separate optional step.
+Shutdown also runs a convergence sync. Run sync yourself when working outside
+that hook, or when you need a fresh index mid-session:
 
 ```
 python3 <skill-dir>/scripts/okf_mw/sync.py <vault-root>
@@ -323,8 +337,11 @@ strategically, not exhaustively:
    the overview and section map (see Entry Point & Documentation Layout in
    `references/authoring-standards.md`).
    The index behind `retrieve.py` is refreshed at session end by the vault
-   lifecycle hook when provisioned. If a page written earlier in *this* session
-   must be findable, read it by path rather than expecting retrieval to surface it.
+   lifecycle hook when provisioned. Date queries remain lexical: matching dated
+   notes rank first, then relevant dated sections in canonical pages. Query
+   qualifiers refine section relevance rather than disabling date priority. If a
+   page written earlier in *this* session must be findable, read it by path rather
+   than expecting retrieval to surface it.
    For an exact known string rather than a topic, `obsidian-cli search` is
    faster than a ranked query (see `references/cli-transport.md`).
 2. If the question is narrow, read the relevant section page directly.

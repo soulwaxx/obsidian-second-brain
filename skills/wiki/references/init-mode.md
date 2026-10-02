@@ -8,8 +8,9 @@ scaffold from the plugin checkout with
 plan, then apply with `--apply --confirm <planHash>` using the printed hash.
 Bootstrap does not initialize Git and preserves existing notes/indexes/logs. A
 new config uses `autoCommit: false`; existing config values and omitted
-feature defaults are unchanged. For `vaultPath: null` or a missing path, set
-the target path and explicitly set `features.autoCommit: false` before retrying.
+feature defaults are unchanged. If the active integration reports a config
+diagnostic, stop wiki writes and use the exact, explicitly approved repair
+workflow in `SKILL.md`; do not guess the target vault or reset its config.
 Git history is a separate opt-in; follow [git-setup.md](git-setup.md) and create
 `.gitignore` before staging. Optional Obsidian plugins are described in
 [plugins.md](plugins.md); optional CSS and Graph View customizations are in
@@ -39,9 +40,10 @@ Git history is a separate opt-in; follow [git-setup.md](git-setup.md) and create
    [ingest-recipes.md](ingest-recipes.md).
 
 5. **Middleware.** Run guard.py before each write, then validate.py after the
-   resulting write and before commit. Validation failure blocks auto-commit
-   until the page is repaired. Indexes regenerate and commit atomically with
-   the changed page (run sync.py yourself outside the vault workflow).
+   resulting write and before commit. Validation failure blocks synchronization until the page is repaired.
+   The lifecycle validates changed Markdown and synchronizes indexes after each
+   successful page write, independently of optional auto-commit. Run sync.py
+   yourself outside the vault workflow.
 
 6. **Cleanup.** Delete `_plan.md`. Run the Coverage Self-Check in
    [authoring-standards.md](authoring-standards.md). Leave backlog in

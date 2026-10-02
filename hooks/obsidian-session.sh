@@ -10,16 +10,30 @@ canonical_dir() {
 }
 
 properties=${OBSIDIAN_AGENT_CONFIG:-$HOME/.config/obsidian-second-brain/properties.json}
+script_root=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+config_data='{}'
+config_error=
+explicit_override=${OBSIDIAN_VAULT_PATH:-}
 if [ -f "$properties" ]; then
   command -v jq >/dev/null 2>&1 || exit 2
-  jq -e 'type == "object" and ((.vaultPath? == null) or (.vaultPath | type == "string")) and ((.features? == null) or (.features | type == "object"))' "$properties" >/dev/null || exit 2
-  if [ -z "${OBSIDIAN_VAULT_PATH:-}" ]; then
-    OBSIDIAN_VAULT_PATH=$(jq -r '.vaultPath // empty' "$properties") || exit 2
+  contract=$(python3 "$script_root/scripts/config_contract.py" "$properties") || exit 2
+  config_data=$(printf '%s' "$contract" | jq -c '.config // {}')
+  config_error=$(printf '%s' "$contract" | jq -r '.error // empty')
+  if [ -z "$explicit_override" ]; then
+    OBSIDIAN_VAULT_PATH=$(printf '%s' "$contract" | jq -r 'if (.config.vaultPath | type) == "string" then .config.vaultPath else empty end')
   fi
+  if [ -n "$config_error" ] && [ -z "$explicit_override" ] && [ -z "${OBSIDIAN_VAULT_PATH:-}" ]; then
+    echo "obsidian lifecycle: $config_error" >&2
+    exit 2
+  fi
+  [ -z "$config_error" ] || echo "obsidian lifecycle: $config_error; retaining explicit vault boundary" >&2
 fi
 
 feature_enabled() {
-  [ ! -f "$properties" ] || [ "$(jq -r --arg name "$1" 'if .features[$name] == null then true else .features[$name] end' "$properties")" = true ]
+  if [ -n "$config_error" ]; then
+    return 1
+  fi
+  [ "$(printf '%s' "$config_data" | jq -r --arg name "$1" 'if .features[$name] == null then true else .features[$name] end')" = true ]
 }
 
 vault=$(canonical_dir "${OBSIDIAN_VAULT_PATH:-}") || exit 0
@@ -56,6 +70,49 @@ guard_path() {
   python3 "$mw/guard.py" --if-wiki "$vault" "$target"
 }
 
+validate_publishable_pages() {
+  local mw rel validation_output
+  mw=$(middleware_dir)
+  [ -n "$mw" ] && [ -f "$mw/validate.py" ] || {
+    echo "obsidian lifecycle: wiki validation middleware is unavailable" >&2
+    return 1
+  }
+  while IFS= read -r -d '' rel; do
+    if validation_output=$(python3 "$mw/validate.py" "$rel" 2>&1); then
+      continue
+    fi
+    printf 'obsidian lifecycle: validation failed for %s; repair or remove it before navigation refresh\n' "$rel" >&2
+    [ -z "$validation_output" ] || printf '%s\n' "$validation_output" >&2
+    return 1
+  done < <(python3 -c '
+import os
+import sys
+
+root = sys.argv[1]
+skip = {"index.md", "log.md", "_plan.md", "instructions.md"}
+
+def walk(directory, relative):
+    try:
+        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith(".") or entry.is_symlink():
+            continue
+        path = os.path.join(directory, entry.name)
+        rel = os.path.join(relative, entry.name)
+        if entry.is_dir(follow_symlinks=False):
+            yield from walk(path, rel)
+        elif (entry.is_file(follow_symlinks=False)
+              and entry.name.lower().endswith(".md")
+              and entry.name.casefold() not in skip):
+            yield rel
+
+for page in walk(root, "wiki"):
+    sys.stdout.buffer.write(os.fsencode(page) + b"\0")
+' "$vault/wiki")
+}
+
 vault_git_root() {
   local root
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
@@ -83,16 +140,27 @@ acquire_lock() {
 
 case "$cmd" in
 guard)
+  if [ -n "$config_error" ]; then
+    echo "obsidian lifecycle: $config_error; repair the selected integration config with explicit approval before wiki writes" >&2
+    exit 1
+  fi
   guard_path "${1:-}"
   ;;
 
 prewrite)
-  feature_enabled guard || exit 0
+  if [ -z "$config_error" ]; then feature_enabled guard || exit 0; fi
   command -v jq >/dev/null 2>&1 || exit 2
   input=$(cat)
   tool=$(printf '%s' "$input" | jq -er '.tool_name // empty') || exit 2
   case "$tool" in Edit|MultiEdit|NotebookEdit|Write) ;; *) exit 0 ;; esac
   raw=$(printf '%s' "$input" | jq -er '.tool_input.file_path // .tool_input.notebook_path // empty') || exit 2
+  if [ -n "$config_error" ]; then
+    repair=$(python3 "$script_root/scripts/config_contract.py" "$properties" --repair-target "$raw" --cwd "$invocation_cwd" | jq -r '.repairTarget // false') || repair=false
+    if [ "$repair" = true ]; then exit 0; fi
+    jq -n --arg reason "Obsidian config is invalid; only the selected config file may be repaired before resuming writes" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
+    exit 0
+  fi
   if ! reason=$(guard_path "$raw" 2>&1); then
     jq -n --arg reason "$reason" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
@@ -100,6 +168,10 @@ prewrite)
   ;;
 
 start)
+  if [ -n "$config_error" ]; then
+    printf 'Obsidian integration configuration needs repair: %s\n' "$config_error"
+    printf 'Stop wiki writes. Propose the exact minimal change to the selected integration config, preserve unrelated fields, and obtain explicit approval for those changes. Edit only that config; revalidate it in this session before resuming. Do not reset settings or enable autoCommit.\n'
+  fi
   if feature_enabled toc; then
     [ -f wiki/index.md ] && cat wiki/index.md
   fi
@@ -107,17 +179,11 @@ start)
   true
   ;;
 
-autocommit)
-  if ! feature_enabled autoCommit; then
-    echo disabled
-    exit 0
+postwrite|autocommit)
+  if [ -n "$config_error" ]; then
+    echo "obsidian lifecycle: $config_error; refusing wiki synchronization until config repair and revalidation" >&2
+    exit 1
   fi
-  [ -d .git ] || exit 0
-  if [ -f .vault-meta/auto-commit.disabled ]; then
-    echo disabled
-    exit 0
-  fi
-
   requested=("$@")
   if [ ${#requested[@]} -eq 0 ] && command -v jq >/dev/null 2>&1; then
     input=$(cat)
@@ -176,6 +242,35 @@ PY
     exit 0
   fi
 
+  mw=$(middleware_dir)
+  [ -n "$mw" ] && [ -f "$mw/validate.py" ] && [ -f "$mw/sync.py" ] || {
+    echo "obsidian lifecycle: wiki middleware is unavailable" >&2
+    exit 1
+  }
+  validate_publishable_pages || exit 1
+  sync_output=$(python3 "$mw/sync.py" . --json)
+  sync_status=$?
+  if [ "$sync_status" -ne 0 ]; then
+    sync_errors=$(printf '%s\n' "$sync_output" | jq -r '.results[]? | select(.status == "ERROR") | "obsidian lifecycle: " + .path + ": " + .detail' 2>/dev/null) || sync_errors=
+    if [ -n "$sync_errors" ]; then
+      printf '%s\n' "$sync_errors" >&2
+    else
+      printf 'obsidian lifecycle: index synchronization failed; middleware output follows:\n%s\n' "$sync_output" >&2
+    fi
+    exit 1
+  fi
+  if [ "$cmd" = postwrite ]; then
+    echo synced
+    exit 0
+  fi
+
+  if ! feature_enabled autoCommit || [ -f .vault-meta/auto-commit.disabled ]; then
+    echo disabled
+    exit 0
+  fi
+  [ -d .git ] || { echo clean; exit 0; }
+  vault_git_root || { echo clean; exit 0; }
+
   changed=()
   for touched_path in "${touched[@]}"; do
     rel=${touched_path#"$vault"/}
@@ -204,11 +299,25 @@ PY
     fi
   fi
 
-  # A dirty, unrelated wiki path can alter generated indexes. Refuse rather
-  # than fold that pre-existing edit into this page's commit.
+  ownership_helper="$mw/ownership.py"
+  [ -f "$ownership_helper" ] || {
+    echo "obsidian lifecycle: generated-index ownership verifier is unavailable" >&2
+    exit 1
+  }
+  log_ownership=$(python3 "$ownership_helper" capture "$vault" wiki/log.md) || {
+    echo "obsidian lifecycle: wiki/log.md has unowned dirty bytes; preserve and review it" >&2
+    exit 1
+  }
+  log_before=$(printf '%s' "$log_ownership" | jq -r '.before // "null"')
+  log_clean=$(printf '%s' "$log_ownership" | jq -r '.clean')
+
+  # Refuse unrelated dirty pages, but leave generated indexes to the exact
+  # directories affected by this page lifecycle (and their ancestors).
   while IFS= read -r -d '' dirty; do
     dirty=${dirty:3}
     owned=0
+    case "${dirty##*/}" in [iI][nN][dD][eE][xX].[mM][dD]) owned=1 ;; esac
+    [ "$dirty" = wiki/log.md ] && owned=1
     for page in "${changed[@]}"; do
       [ "$dirty" = "$page" ] && owned=1
     done
@@ -218,41 +327,32 @@ PY
     fi
   done < <(git status --porcelain=v1 -z --untracked-files=all -- wiki)
 
-  mw=$(middleware_dir)
-  [ -n "$mw" ] && [ -f "$mw/validate.py" ] && [ -f "$mw/sync.py" ] || {
-    echo "obsidian lifecycle: wiki middleware is unavailable" >&2
-    exit 1
-  }
-  for touched_path in "${changed[@]}"; do
-    case "$touched_path" in
-      *.[mM][dD]) ;;
-      *) continue ;;
-    esac
-    if ! python3 "$mw/validate.py" "$touched_path" >/dev/null; then
-      echo "obsidian lifecycle: validation failed for $touched_path; repair it before commit" >&2
-      exit 1
-    fi
-  done
-  python3 "$mw/sync.py" . >/dev/null || {
-    echo "obsidian lifecycle: index synchronization failed" >&2
-    exit 1
-  }
-
   generated=()
-  while IFS= read -r -d '' index; do
-    duplicate=0
-    for existing in "${generated[@]+"${generated[@]}"}"; do
-      [ "$existing" = "$index" ] && duplicate=1
+  index_relevant() {
+    local index_dir page_dir page
+    index_dir=${1%/index.md}
+    [ -z "$index_dir" ] && index_dir=wiki
+    for page in "${changed[@]}"; do
+      page_dir=${page%/*}
+      while [ "$page_dir" != . ]; do
+        [ "$page_dir" = "$index_dir" ] && return 0
+        [ "$page_dir" = wiki ] && break
+        page_dir=${page_dir%/*}
+      done
+      [ "$index_dir" = wiki ] && return 0
     done
-    [ "$duplicate" = 1 ] || generated+=("$index")
-  done < <(git diff --name-only -z -- 'wiki/**/index.md' wiki/index.md)
-  while IFS= read -r -d '' index; do
-    duplicate=0
-    for existing in "${generated[@]+"${generated[@]}"}"; do
-      [ "$existing" = "$index" ] && duplicate=1
-    done
-    [ "$duplicate" = 1 ] || generated+=("$index")
-  done < <(git ls-files --others --exclude-standard -z -- 'wiki/**/index.md' wiki/index.md)
+    return 1
+  }
+  owned_indexes=$(python3 "$ownership_helper" list "$vault") || {
+    echo "obsidian lifecycle: generated-index ownership journal is invalid" >&2
+    exit 1
+  }
+  while IFS= read -r index; do
+    [ -n "$index" ] || continue
+    if index_relevant "$index"; then
+      generated+=("$index")
+    fi
+  done < <(printf '%s' "$owned_indexes" | jq -r '.[].path')
 
   # OKF v0.2 §9 log format: an H1 title, `## YYYY-MM-DD` date headings newest
   # first, and prose bullets whose leading bold word is the change kind. Each
@@ -309,6 +409,9 @@ if first and first.group(1).strip() == today:
     newline = rest.find("\n")
     head_line = rest if newline == -1 else rest[:newline]
     section_body = ("" if newline == -1 else rest[newline + 1:]).lstrip("\n")
+    repeated = set(bullets)
+    section_lines = [line for line in section_body.splitlines() if line not in repeated]
+    section_body = "\n".join(section_lines)
     rest = head_line + "\n" + new_bullets + ("\n" + section_body if section_body else "")
 else:
     section = f"## {today}\n{new_bullets}"
@@ -322,19 +425,16 @@ PY
     exit 1
   fi
   mv wiki/log.md.tmp wiki/log.md
+  python3 "$ownership_helper" record-file "$vault" wiki/log.md "$log_clean" "$log_before" wiki/log.md || {
+    echo "obsidian lifecycle: could not record wiki/log.md ownership; preserve pending bytes" >&2
+    exit 1
+  }
 
   commit_paths=("${changed[@]}" "${generated[@]+"${generated[@]}"}" wiki/log.md)
   cleanup_failed_commit() {
-    local hook_path cleanup_failed=0
-    git reset -q HEAD -- "${commit_paths[@]}" || cleanup_failed=1
-    for hook_path in "${generated[@]+"${generated[@]}"}" wiki/log.md; do
-      if git ls-files --error-unmatch -- "$hook_path" >/dev/null 2>&1; then
-        git restore --worktree --source=HEAD -- "$hook_path" || cleanup_failed=1
-      else
-        rm -f -- "$hook_path" || cleanup_failed=1
-      fi
-    done
-    [ "$cleanup_failed" = 0 ] && git diff --cached --quiet
+    # Only unstage this attempted commit. Keep the validated page, verified
+    # generated index bytes, and lifecycle log intact for a safe retry.
+    git reset -q HEAD -- "${commit_paths[@]}" && git diff --cached --quiet
   }
   if ! git add -- "${commit_paths[@]}"; then
     cleanup_failed_commit || echo "obsidian lifecycle: failed to clean hook-owned index state" >&2
@@ -350,11 +450,17 @@ PY
     echo "obsidian lifecycle: committed paths remain dirty" >&2
     exit 1
   fi
+  python3 "$ownership_helper" forget "$vault" "${generated[@]+"${generated[@]}"}" wiki/log.md >/dev/null ||
+    echo "obsidian lifecycle: committed, but ownership-journal cleanup needs review" >&2
   echo committed
   ;;
 
 stop)
   [ -d wiki ] || exit 0
+  if [ -n "$config_error" ]; then
+    echo "obsidian lifecycle: $config_error; refusing shutdown synchronization until config repair and revalidation" >&2
+    exit 1
+  fi
   has_vault_git=0
   if vault_git_root; then
     has_vault_git=1
@@ -366,11 +472,20 @@ stop)
   fi
   mw=$(middleware_dir)
   if [ -n "$mw" ] && [ -f "$mw/sync.py" ]; then
-    python3 "$mw/sync.py" . >/dev/null || {
-      echo "obsidian lifecycle: shutdown index synchronization failed" >&2
+    validate_publishable_pages || exit 1
+    shutdown_sync_output=$(python3 "$mw/sync.py" . --json)
+    shutdown_sync_status=$?
+    if [ "$shutdown_sync_status" -ne 0 ]; then
+      shutdown_sync_errors=$(printf '%s\n' "$shutdown_sync_output" | jq -r '.results[]? | select(.status == "ERROR") | "obsidian lifecycle: " + .path + ": " + .detail' 2>/dev/null) || shutdown_sync_errors=
+      if [ -n "$shutdown_sync_errors" ]; then
+        printf '%s\n' "$shutdown_sync_errors" >&2
+      else
+        printf 'obsidian lifecycle: shutdown index synchronization failed; middleware output follows:\n%s\n' "$shutdown_sync_output" >&2
+      fi
       exit 1
-    }
-    if [ "$has_vault_git" = 1 ] && [ -n "$(git status --porcelain -- 'wiki/**/index.md' wiki/index.md)" ]; then
+    fi
+    if [ "$has_vault_git" = 1 ] && feature_enabled autoCommit && [ ! -f .vault-meta/auto-commit.disabled ] &&
+      [ -n "$(git status --porcelain -- 'wiki/**/index.md' wiki/index.md)" ]; then
       echo "obsidian lifecycle: generated indexes drifted at shutdown; repair and commit with the page change" >&2
       exit 1
     fi
@@ -400,7 +515,7 @@ if counts:
   ;;
 
 *)
-  echo "usage: obsidian-session.sh {start|autocommit|stop} [touched-page ...]" >&2
+  echo "usage: obsidian-session.sh {start|postwrite|autocommit|stop} [touched-page ...]" >&2
   exit 2
   ;;
 esac

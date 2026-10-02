@@ -1,8 +1,9 @@
 # Obsidian CLI Transport
 
-`obsidian-cli` ships inside Obsidian 1.12+ and is linked onto PATH as both
-`obsidian-cli` and `obsidian` (see `modules/claude-obsidian.nix`). It talks to
-the **running Obsidian app**, so it can answer questions the filesystem cannot:
+`obsidian-cli` is an optional command-line client available with supported
+Obsidian releases. Installation and command names vary by platform; consult the
+official Obsidian documentation and probe the command available on this
+machine. It talks to the **running Obsidian app**, so it can answer questions the filesystem cannot:
 resolved link graphs, alias-aware lookups, and Bases views.
 
 Use it for **reads and graph queries only**. Keep **writes on the filesystem
@@ -26,10 +27,18 @@ message as "CLI unavailable" and fall back to the filesystem equivalent listed
 with each recipe. Never block work on the CLI; it is an accelerator, not a
 dependency.
 
-Probe once per session before relying on it:
+Probe once per session before relying on it. Try the documented command name
+for the installed version (`obsidian` or `obsidian-cli`); otherwise use the
+filesystem. For example:
 
 ```bash
-obsidian-cli files total >/dev/null 2>&1 || echo "CLI unavailable; use filesystem"
+if command -v obsidian >/dev/null 2>&1; then
+  obsidian files total >/dev/null 2>&1 || echo "CLI unavailable; use filesystem"
+elif command -v obsidian-cli >/dev/null 2>&1; then
+  obsidian-cli files total >/dev/null 2>&1 || echo "CLI unavailable; use filesystem"
+else
+  echo "CLI unavailable; use filesystem"
+fi
 ```
 
 ---
