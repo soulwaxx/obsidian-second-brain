@@ -27,6 +27,11 @@ WIKI_MIDDLEWARE_DIR=$middleware python3 "$middleware/sync.py" . >/dev/null
 git add wiki
 git commit -qm baseline
 
+# Exercise the platform Bash too; macOS ships Bash 3.2 even when PATH uses a newer shell.
+output=$(OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware \
+  /bin/bash "$hook" postwrite "$vault/wiki/quickstart.md")
+[ "$output" = synced ]
+
 # Claude file tools must be denied before they write protected wiki paths.
 for blocked in wiki/index.md wiki/log.md wiki/.raw/secret.env; do
   result=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$blocked" |

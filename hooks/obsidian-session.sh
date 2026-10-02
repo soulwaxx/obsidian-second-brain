@@ -84,7 +84,7 @@ validate_publishable_pages() {
     printf 'obsidian lifecycle: validation failed for %s; repair or remove it before navigation refresh\n' "$rel" >&2
     [ -z "$validation_output" ] || printf '%s\n' "$validation_output" >&2
     return 1
-  done < <(python3 - "$vault/wiki" <<'PY'
+  done < <(python3 -c '
 import os
 import sys
 
@@ -110,8 +110,7 @@ def walk(directory, relative):
 
 for page in walk(root, "wiki"):
     sys.stdout.buffer.write(os.fsencode(page) + b"\0")
-PY
-)
+' "$vault/wiki")
 }
 
 vault_git_root() {
