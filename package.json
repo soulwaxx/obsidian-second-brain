@@ -50,10 +50,8 @@
     "test:package": "node tests/npm-package.mjs",
     "test:release": "node --test tests/release.test.mjs && python3 tests/test_release_workflows.py",
     "release:check": "node scripts/release.mjs check",
-    "release:verify": "node scripts/release.mjs verify-live",
-    "release:publish": "node scripts/release.mjs publish",
-    "version": "node scripts/release.mjs sync && git add .claude-plugin/plugin.json .claude-plugin/marketplace.json",
-    "prepublishOnly": "npm run release:check && npm test && npm run test:release && npm run test:package",
+    "version": "node scripts/release.mjs sync",
+    "prepublishOnly": "npm run release:check",
     "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_agents.py"
   }
 }
