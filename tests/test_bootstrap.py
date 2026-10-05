@@ -417,6 +417,14 @@ with tempfile.TemporaryDirectory() as temp:
     convention_sync = subprocess.run([sys.executable, str(SCRIPT.parents[0] / ".." / "skills/wiki/scripts/okf_mw/sync.py"), str(convention_vault)],
                                      text=True, capture_output=True)
     assert convention_sync.returncode == 0, convention_sync.stdout + convention_sync.stderr
+    # Settings-only migration must also preserve legacy/user-owned reserved
+    # files that would be refused by the independent scaffold operation.
+    historical_log = convention_wiki / "log.md"
+    historical_log.write_text("# Historical changelog\n\n- Existing fixture history.\n")
+    nested_history = convention_wiki / "meta"
+    nested_history.mkdir()
+    (nested_history / "Log.MD").write_text("Nested historical fixture log.\n")
+    (nested_history / "Index.MD").write_text("Handwritten fixture navigation.\n")
     convention_before = {path.relative_to(convention_vault): path.read_bytes()
                          for path in convention_wiki.rglob("*") if path.is_file()}
     convention_plugin = convention_vault / ".obsidian/plugins/obsidian-git"
@@ -433,12 +441,24 @@ with tempfile.TemporaryDirectory() as temp:
     assert wiki_writes == []
     assert not any(Path(entry["path"]) == convention_wiki / "quickstart.md" for entry in convention_plan["writes"])
     assert Path("wiki/index.md") in convention_before
+    assert convention_before == {path.relative_to(convention_vault): path.read_bytes()
+                                 for path in convention_wiki.rglob("*") if path.is_file()}
+    original_config = convention_config.read_bytes()
+    historical_log.write_text(historical_log.read_text() + "- Later fixture history.\n")
+    stale_configuration = invoke(convention_vault, convention_config, "--configure", "--apply",
+                                 "--confirm", convention_plan["planHash"], ok=False)
+    assert "stale or unconfirmed" in stale_configuration.stderr
+    assert convention_config.read_bytes() == original_config
+    historical_log.write_bytes(convention_before[Path("wiki/log.md")])
     invoke(convention_vault, convention_config, "--configure", "--apply", "--confirm", convention_plan["planHash"])
     convention_after = {path.relative_to(convention_vault): path.read_bytes()
                         for path in convention_wiki.rglob("*") if path.is_file()}
     assert convention_after == convention_before
     assert not (convention_wiki / "quickstart.md").exists()
     assert json.loads(convention_config.read_text())["features"]["autoCommit"] is False
+    repeated_configuration = json.loads(invoke(convention_vault, convention_config, "--configure").stdout)
+    assert repeated_configuration["writes"] == []
+    invoke(convention_vault, convention_config, ok=False)  # scaffold collisions still refused
 
     # A nonexistent fresh vault is previewed with its root directory planned, then created on apply.
     fresh = root / "brand-new" / "vault"
