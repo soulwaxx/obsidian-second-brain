@@ -130,8 +130,10 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     assert (vault / "wiki/log.md").read_text().count("(/base.md)") == 1
 
     # A failure after atomic log publication keeps the batch retryable and preserves history.
-    retry_page = vault / "wiki/log-retry.md"
-    capture(vault, caller, retry_page); retry_page.write_text(page("Retry Log Failure")); record(vault, caller, retry_page)
+    # Isolate the log so earlier batches using the real clock cannot affect date ordering.
+    retry_vault, retry_caller = setup(root / "log-retry-fixture")
+    retry_page = retry_vault / "wiki/log-retry.md"
+    capture(retry_vault, retry_caller, retry_page); retry_page.write_text(page("Retry Log Failure")); record(retry_vault, retry_caller, retry_page)
     wrapper = root / "failing-middleware"
     wrapper.mkdir()
     (wrapper / "validate.py").symlink_to(MIDDLEWARE / "validate.py")
@@ -155,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
         def now(_tz):
             return RealDateTime(2026, 10, 4, tzinfo=_tz)
 
-    finalize_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    finalize_args = type("FinalizeArgs", (), {"vault": str(retry_vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
     with patch.object(wiki_lifecycle, "datetime", DayOne):
         try:
             wiki_lifecycle.finalize(finalize_args)
@@ -163,18 +165,21 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
             pass
         else:
             raise AssertionError("injected second-sync failure did not fail finalization")
-    assert "(/log-retry.md)" in (vault / "wiki/log.md").read_text()
-    assert "Historical entry." in (vault / "wiki/log.md").read_text()
-    pending_after_log = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+    assert "(/log-retry.md)" in (retry_vault / "wiki/log.md").read_text()
+    assert "Historical entry." in (retry_vault / "wiki/log.md").read_text()
+    pending_after_log = json.loads((retry_vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
     assert pending_after_log and next(iter(pending_after_log.values()))["log_date"] == "2026-10-03"
     # A legitimate later batch moves the persisted retry date out of first
     # position; the retry must find/deduplicate the original date section.
-    wiki_lifecycle.safe_log_update(vault.resolve() / "wiki/log.md", [("Creation", "later-batch.md")], "2026-10-05")
+    wiki_lifecycle.safe_log_update(retry_vault.resolve() / "wiki/log.md", [("Creation", "later-batch.md")], "2026-10-05")
+    log_before_retry = (retry_vault / "wiki/log.md").read_bytes()
     with patch.object(wiki_lifecycle, "datetime", DayTwo):
         wiki_lifecycle.finalize(finalize_args)
-    retry_log = (vault / "wiki/log.md").read_text()
+    retry_log = (retry_vault / "wiki/log.md").read_text()
     assert retry_log.count("(/log-retry.md)") == 1
-    assert retry_log.count("## 2026-10-03") == 1 and retry_log.count("## 2026-10-04") == 1 and retry_log.count("## 2026-10-05") == 1
+    assert retry_log.count("## 2026-10-03") == 1 and retry_log.count("## 2026-10-05") == 1
+    assert "## 2026-10-04" not in retry_log
+    assert (retry_vault / "wiki/log.md").read_bytes() == log_before_retry
     assert retry_log.index("## 2026-10-05") < retry_log.index("## 2026-10-03"), retry_log
 
     # A crash/missing tool_result is reconciled from the captured prewrite snapshot.
