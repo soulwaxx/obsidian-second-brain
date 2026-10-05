@@ -55,7 +55,9 @@ try {
   const plugin = JSON.parse(fs.readFileSync(path.join(installed, ".claude-plugin/plugin.json"), "utf8"));
   const marketplace = JSON.parse(fs.readFileSync(path.join(installed, ".claude-plugin/marketplace.json"), "utf8"));
   assert.equal(plugin.version, manifest.version);
-  assert.equal(marketplace.plugins.find((entry) => entry.name === plugin.name).version, manifest.version);
+  const entry = marketplace.plugins.find((item) => item.name === plugin.name);
+  assert.ok(!Object.hasOwn(entry, "version"));
+  assert.deepEqual(entry.source, { source: "npm", package: manifest.name });
   assert.equal(manifest.publishConfig.access, "public");
   assert.ok(manifest.keywords.includes("pi-package"));
   assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");

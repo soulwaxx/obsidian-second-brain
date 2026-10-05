@@ -14,11 +14,12 @@
     ],
     ["@semantic-release/release-notes-generator", { "preset": "conventionalcommits" }],
     "@semantic-release/npm",
+    "./scripts/release-artifact.mjs",
     [
       "@semantic-release/github",
       {
-        "successComment": false,
-        "failComment": false,
+        "successCommentCondition": false,
+        "failCommentCondition": false,
         "releasedLabels": false
       }
     ]

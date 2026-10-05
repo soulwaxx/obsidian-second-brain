@@ -38,9 +38,9 @@ test("version checks need neither tags nor manual release documents", (t) => {
   assert.equal(run("check").status, 0);
 });
 
-test("plugin or marketplace version drift fails", (t) => {
+test("plugin version drift fails", (t) => {
   const { work, run } = fixture(t);
-  for (const file of [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"]) {
+  for (const file of [".claude-plugin/plugin.json"]) {
     const target = path.join(work, file);
     const original = fs.readFileSync(target, "utf8");
     fs.writeFileSync(target, original.replace(/"version": "[^"]+"/, '"version": "99.0.0"'));
@@ -49,14 +49,15 @@ test("plugin or marketplace version drift fails", (t) => {
   }
 });
 
-test("semantic-release npm preparation synchronizes all published manifests without a version commit", (t) => {
+test("npm preparation versions the artifact without pinning the Git catalog", (t) => {
   const { work, env, git, run } = fixture(t);
   const sha = git("rev-parse", "HEAD");
   execFileSync("npm", ["version", "1.2.3", "--no-git-tag-version", "--allow-same-version"],
     { cwd: work, env, stdio: ["ignore", "pipe", "pipe"] });
   for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(work, file), "utf8"));
-    assert.equal(file.endsWith("marketplace.json") ? manifest.plugins[0].version : manifest.version, "1.2.3");
+    if (file.endsWith("marketplace.json")) assert.ok(!Object.hasOwn(manifest.plugins[0], "version"));
+    else assert.equal(manifest.version, "1.2.3");
   }
   assert.equal(git("rev-parse", "HEAD"), sha);
   assert.equal(git("tag"), "");
@@ -67,7 +68,25 @@ test("semantic-release npm preparation synchronizes all published manifests with
   execFileSync("tar", ["-xzf", path.join(work, archive.filename), "-C", packed]);
   for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(packed, "package", file), "utf8"));
-    assert.equal(file.endsWith("marketplace.json") ? manifest.plugins[0].version : manifest.version, "1.2.3");
+    if (file.endsWith("marketplace.json")) assert.ok(!Object.hasOwn(manifest.plugins[0], "version"));
+    else assert.equal(manifest.version, "1.2.3");
+  }
+});
+
+test("catalog refuses stale version pins and non-npm sources", (t) => {
+  const { work, run } = fixture(t);
+  const target = path.join(work, ".claude-plugin/marketplace.json");
+  const original = JSON.parse(fs.readFileSync(target, "utf8"));
+  for (const change of [
+    (entry) => { entry.version = "0.1.0"; },
+    (entry) => { entry.source = "./"; },
+    (entry) => { entry.source.version = "0.1.0"; },
+    (entry) => { entry.source.package = "another-package"; },
+  ]) {
+    const data = structuredClone(original);
+    change(data.plugins[0]);
+    fs.writeFileSync(target, JSON.stringify(data));
+    assert.notEqual(run("check").status, 0);
   }
 });
 

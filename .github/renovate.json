@@ -36,6 +36,12 @@
       "groupName": "CI tools"
     },
     {
+      "matchManagers": ["npm"],
+      "matchFileNames": [".github/release-tools/**"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "Release tools"
+    },
+    {
       "matchUpdateTypes": ["major"],
       "automerge": false
     },

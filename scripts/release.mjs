@@ -17,21 +17,17 @@ function checkVersions() {
   const entry = marketplace.data.plugins.find((item) => item.name === plugin.data.name);
   assert.ok(entry, "Claude marketplace must contain the plugin");
   assert.equal(plugin.data.version, npm.data.version, "Claude plugin and npm versions differ");
-  assert.equal(entry.version, npm.data.version, "Claude marketplace and npm versions differ");
+  assert.ok(!Object.hasOwn(entry, "version"), "Claude catalog must not pin a stale plugin version");
+  assert.deepEqual(entry.source, { source: "npm", package: npm.data.name }, "Claude must use the published npm artifact");
   return npm.data.version;
 }
 
 function syncVersions() {
-  const [npm, plugin, marketplace] = manifests();
+  const [npm, plugin] = manifests();
   assert.match(npm.data.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "releases require a stable X.Y.Z version");
-  for (const manifest of [plugin, marketplace]) {
-    const text = fs.readFileSync(manifest.file, "utf8");
-    assert.equal([...text.matchAll(/"version"\s*:\s*"[^"]*"/g)].length, 1, `expected one version field in ${manifest.file}`);
-  }
-  for (const manifest of [plugin, marketplace]) {
-    const text = fs.readFileSync(manifest.file, "utf8");
-    fs.writeFileSync(manifest.file, text.replace(/("version"\s*:\s*")[^"]*(")/, (_match, prefix, suffix) => prefix + npm.data.version + suffix));
-  }
+  const text = fs.readFileSync(plugin.file, "utf8");
+  assert.equal([...text.matchAll(/"version"\s*:\s*"[^"]*"/g)].length, 1, `expected one version field in ${plugin.file}`);
+  fs.writeFileSync(plugin.file, text.replace(/("version"\s*:\s*")[^"]*(")/, (_match, prefix, suffix) => prefix + npm.data.version + suffix));
 }
 
 switch (command) {

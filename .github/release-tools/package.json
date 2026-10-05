@@ -1,0 +1,9 @@
+{
+  "name": "obsidian-second-brain-release-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "semantic-release": "25.0.9",
+    "conventional-changelog-conventionalcommits": "9.3.1"
+  }
+}

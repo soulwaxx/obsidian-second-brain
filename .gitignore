@@ -1,5 +1,6 @@
 # Track repository instructions even when a developer ignores AGENTS.md globally.
 !/AGENTS.md
 /node_modules/
+/.github/release-tools/node_modules/
 /package-lock.json
 /*.tgz

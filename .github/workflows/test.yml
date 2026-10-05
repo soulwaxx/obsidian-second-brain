@@ -1,10 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
 
@@ -23,22 +21,6 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
 jobs:
-  pr-title:
-    name: Validate PR title
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require a conventional PR title
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+'
-          if ! printf '%s\n' "$PR_TITLE" | grep -Eq "$pattern"; then
-            echo '::error::Use a Conventional Commit title, for example: fix: correct vault navigation.'
-            exit 1
-          fi
-
   test:
     strategy:
       fail-fast: false
@@ -91,12 +73,18 @@ jobs:
         run: |
           bash -n hooks/obsidian-session.sh tests/install-smoke.sh
           shellcheck tests/install-smoke.sh
-      - name: Source, release, and package checks
+      - name: Verify locked publishing tools
+        if: runner.os == 'Linux'
         run: |
-          npm run release:check
-          npm test
-          npm run test:release
-          npm run test:package
+          npm ci --prefix .github/release-tools --ignore-scripts --no-fund
+          node .github/release-tools/check.mjs
+          npm audit --prefix .github/release-tools --audit-level=critical
+      - name: Release configuration checks
+        run: npm run release:check && npm run test:release
+      - name: Source tests
+        run: npm test
+      - name: Packed runtime tests
+        run: npm run test:package
       - name: Install agent CLIs
         env:
           # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
@@ -112,19 +100,30 @@ jobs:
   ci:
     name: CI passed
     if: always()
-    needs: [pr-title, test]
+    needs: [test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require all checks to pass
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          TITLE_RESULT: ${{ needs.pr-title.result }}
           TEST_RESULT: ${{ needs.test.result }}
-        run: |
-          test "$TEST_RESULT" = success
-          if [ "$EVENT_NAME" = pull_request ]; then
-            test "$TITLE_RESULT" = success
-          else
-            test "$TITLE_RESULT" = skipped
-          fi
+        run: test "$TEST_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record tested source identity
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/release-source.mjs record "$RUNNER_TEMP/evidence/source.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          name: verified-source-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/source.json
+          if-no-files-found: error
+          retention-days: 30

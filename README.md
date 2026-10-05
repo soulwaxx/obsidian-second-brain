@@ -38,17 +38,14 @@ the environment active when running Python commands.
 
 ## Install the agent package
 
-For Pi, install from GitHub:
-
-```sh
-pi install git:github.com/soulwaxx/obsidian-second-brain
-```
-
-Once the npm package is published, the equivalent command is:
+For Pi, install the published npm release:
 
 ```sh
 pi install npm:@soulwaxx/obsidian-second-brain
 ```
+
+To track unreleased source instead, use
+`pi install git:github.com/soulwaxx/obsidian-second-brain`.
 
 For Claude Code:
 
@@ -56,6 +53,21 @@ For Claude Code:
 claude plugin marketplace add soulwaxx/obsidian-second-brain
 claude plugin install obsidian-second-brain@obsidian-second-brain --scope user
 ```
+
+The GitHub marketplace is a catalog; Claude fetches the plugin from the same
+versioned npm artifact as Pi. The catalog deliberately does not pin a plugin
+version. Claude Code and npm must support npm plugin sources.
+Existing Git-backed installations retain the same plugin identity. Refresh the
+catalog and update the plugin once to migrate:
+
+```sh
+claude plugin marketplace update obsidian-second-brain
+claude plugin update obsidian-second-brain@obsidian-second-brain --scope user
+```
+
+Restart Claude Code after updating. For unpublished local development, load the
+checkout with `claude --plugin-dir /absolute/path/to/obsidian-second-brain`;
+adding its marketplace still selects the published npm plugin.
 
 Use an existing checkout or create one for the following setup examples:
 
@@ -199,7 +211,13 @@ shellcheck tests/install-smoke.sh
 Installation tests use temporary agent settings and a disposable vault, not the
 real profile, and do not send a model prompt. CI checks macOS/Linux with Node 24
 and Python 3.14. Use Conventional Commit PR titles: `feat:` releases a minor
-version, a breaking change a major version, and other types a patch. After a
-squash merge and successful main CI, semantic-release creates the tag, publishes
-to npm using `NPM_TOKEN`, and creates the GitHub Release. No manual tag or
-client-verification record is required.
+version, a breaking change a major version, and other types a patch. Full code
+checks run before merge; title/body edits run only metadata validation. After a
+squash merge, publishing verifies that the merged tree passed PR CI, smoke-tests
+the prepared release, and uses npm OIDC to publish with provenance. There is no
+repeated main test matrix or manual client-verification gate.
+
+Require **CI passed** and **PR title passed** in the main ruleset. Publishing
+refuses direct pushes and mismatched or expired verification evidence. See
+[CI/CD maintenance](docs/ci-cd.md) for rollout, locked release tools, the temporary
+critical-blocking audit policy, and recovery of partially published tags.

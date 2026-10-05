@@ -32,24 +32,13 @@ for resource in ("extensions/obsidian.ts", "skills/wiki/SKILL.md", "hooks/obsidi
 print(f"Pi local package and resources verified: {package}")
 PY
 
-claude plugin marketplace add "$repo"
-claude plugin install obsidian-second-brain@obsidian-second-brain --scope user --yes --json
-python3 - "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" "$repo" <<'PY'
-import json, pathlib, sys
-registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
-entry = registry["plugins"]["obsidian-second-brain@obsidian-second-brain"][0]
-installed = pathlib.Path(entry["installPath"]).resolve()
-repo = pathlib.Path(sys.argv[2]).resolve()
-assert installed.is_dir(), f"Claude installed resource directory is missing: {installed}"
-for resource in ("hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "skills/wiki/SKILL.md", "agents/claude/wiki-vault.md", ".claude-plugin/plugin.json"):
-    assert (installed / resource).is_file(), f"missing Claude installed resource: {resource}"
-print(f"Claude plugin install and resources verified: {installed}")
-PY
+node "$repo/tests/npm-plugin.mjs" "$work"
+IFS= read -r installed < "$work/claude-installed-path"
 
 # Startup from another cwd supplies a locator without touching the temporary vault.
 config="$work/agent-config.json"
 printf '{"vaultPath":"%s"}\n' "$work/vault" >"$config"
-for hook in "$repo/hooks/obsidian-session.sh" "$work"/claude/plugins/cache/obsidian-second-brain/obsidian-second-brain/*/hooks/obsidian-session.sh; do
+for hook in "$repo/hooks/obsidian-session.sh" "$installed/hooks/obsidian-session.sh"; do
   test -f "$hook"
   before=$(find "$work/vault" -mindepth 1 -print | sort)
   locator=$(cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$config" bash "$hook" start)

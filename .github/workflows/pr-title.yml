@@ -1,0 +1,28 @@
+name: PR metadata
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: PR title passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require a conventional PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+'
+          if ! printf '%s\n' "$PR_TITLE" | grep -Eq "$pattern"; then
+            echo '::error::Use a Conventional Commit title, for example: fix: correct vault navigation.'
+            exit 1
+          fi

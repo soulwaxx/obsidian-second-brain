@@ -48,7 +48,7 @@
   },
   "scripts": {
     "test:package": "node tests/npm-package.mjs",
-    "test:release": "node --test tests/release.test.mjs && python3 tests/test_release_workflows.py",
+    "test:release": "node --test tests/release*.test.mjs && python3 tests/test_release_workflows.py",
     "release:check": "node scripts/release.mjs check",
     "version": "node scripts/release.mjs sync",
     "prepublishOnly": "npm run release:check",

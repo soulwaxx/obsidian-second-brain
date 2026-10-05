@@ -5,8 +5,10 @@
   "plugins": [
     {
       "name": "obsidian-second-brain",
-      "version": "0.1.0",
-      "source": "./",
+      "source": {
+        "source": "npm",
+        "package": "@soulwaxx/obsidian-second-brain"
+      },
       "description": "Obsidian wiki lifecycle and OKF skill for Claude Code"
     }
   ]
