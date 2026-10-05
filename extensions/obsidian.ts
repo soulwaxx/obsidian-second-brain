@@ -153,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 	let toc = "";
 	let injected = false;
 	const touchedByVault = new Map<string, Set<string>>();
-	const pendingWikiWrites = new Map<string, { owner: string; toolId: string; vault: string; path: string; done: Promise<boolean>; release: (synced: boolean) => void }>();
+	const pendingWikiWrites = new Map<string, { owner: string; toolId: string; vault: string; path: string }>();
 	const ownedVaultsBySession = new Map<string, Set<string>>();
 	const pendingKey = (owner: string, toolId: string) => JSON.stringify([owner, toolId]);
 	const sessionQueuePrefix = (owner: string) => JSON.stringify([owner]).slice(0, -1) + ",";
@@ -208,15 +208,13 @@ export default function (pi: ExtensionAPI) {
 		const isNavigationRead = Boolean(isRead && readPath && eventVault
 			&& readPath.startsWith(path.join(eventVault, "wiki") + path.sep)
 			&& path.basename(readPath).toLowerCase() === "index.md");
-		let pendingBefore = [...pendingWikiWrites.values()].filter((entry) => entry.vault === eventVault).map((entry) => entry.done);
 		let pendingId: string | undefined;
 		let candidate: string | null = null;
 		if (isNavigationRead && eventVault) {
 			if (!owner) return { block: true, reason: "Obsidian reader session identity is unavailable; refusing to reconcile writer captures" };
-			// Let sibling tool_call hooks in this parallel batch register pending writes.
+			// Let concurrently dispatched nested tool hooks register pending writes.
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
-			pendingBefore = [...pendingWikiWrites.values()].filter((entry) => entry.vault === eventVault).map((entry) => entry.done);
-			if (pendingBefore.length > 0) {
+			if ([...pendingWikiWrites.values()].some((entry) => entry.vault === eventVault)) {
 				return { block: true, reason: "wiki tool write is still in flight; retry navigation after its writer settles" };
 			}
 			const syncFailure = pendingSyncFailures.get(eventVault);
@@ -238,31 +236,29 @@ export default function (pi: ExtensionAPI) {
 				if (!owner || typeof event.toolCallId !== "string" || !event.toolCallId) {
 					return { block: true, reason: "Obsidian writer session/tool identity is unavailable; refusing an untracked wiki write" };
 				}
-				let release!: (synced: boolean) => void;
-				const done = new Promise<boolean>((resolve) => { release = resolve; });
 				pendingId = pendingKey(owner, event.toolCallId);
-				pendingWikiWrites.set(pendingId, { owner, toolId: event.toolCallId, vault: eventVault, path: candidate, done, release });
-				await Promise.all(pendingBefore);
+				pendingWikiWrites.set(pendingId, { owner, toolId: event.toolCallId, vault: eventVault, path: candidate });
+				// Pi prepares all calls before executing a parallel batch. Never wait
+				// here for another call's result; lifecycle hooks lock their own state.
 			}
 		}
 		await refreshConfig();
 		if (configError && isWrite && eventVault && await selectedConfigRepairTarget(event.input.path, ctx.cwd)) return;
 		if (pendingId && eventVault !== knownVault) {
-			pendingWikiWrites.get(pendingId)?.release(false);
 			pendingWikiWrites.delete(pendingId);
 			return { block: true, reason: "Obsidian vault boundary changed during write; retry after revalidation" };
 		}
 		if (!isWrite || !knownVault) return;
 		const rawPath = event.input.path;
 		if (typeof rawPath !== "string" || !rawPath) {
-			if (pendingId) { pendingWikiWrites.get(pendingId)?.release(true); pendingWikiWrites.delete(pendingId); }
+			if (pendingId) pendingWikiWrites.delete(pendingId);
 			return { block: true, reason: "obsidian write path is missing" };
 		}
 		if (configError) {
 			const target = canonicalPotentialPath(path.resolve(ctx.cwd, rawPath));
 			if (target.startsWith(path.join(knownVault, "wiki") + path.sep)
 				&& !(await selectedConfigRepairTarget(rawPath, ctx.cwd))) {
-				if (pendingId) { pendingWikiWrites.get(pendingId)?.release(true); pendingWikiWrites.delete(pendingId); }
+				if (pendingId) pendingWikiWrites.delete(pendingId);
 				return { block: true, reason: `Obsidian configuration needs repair: ${configError}` };
 			}
 		}
@@ -270,7 +266,6 @@ export default function (pi: ExtensionAPI) {
 			if (candidate) {
 				const captured = await runHook("prewrite-capture", ctx.cwd, [rawPath, "--owner", owner, "--tool", event.toolCallId], eventVault);
 				if (captured.error) {
-					pendingWikiWrites.get(pendingId!)?.release(false);
 					pendingWikiWrites.delete(pendingId!);
 					return { block: true, reason: captured.error };
 				}
@@ -279,13 +274,13 @@ export default function (pi: ExtensionAPI) {
 		}
 		const result = await runHook("guard", ctx.cwd, [rawPath]);
 		if (result.error) {
-			if (pendingId) { pendingWikiWrites.get(pendingId)?.release(true); pendingWikiWrites.delete(pendingId); }
+			if (pendingId) pendingWikiWrites.delete(pendingId);
 			return { block: true, reason: result.error };
 		}
 		if (candidate) {
 			const captured = await runHook("prewrite-capture", ctx.cwd, [rawPath, "--owner", owner, "--tool", event.toolCallId], eventVault);
 			if (captured.error) {
-				if (pendingId) { pendingWikiWrites.get(pendingId)?.release(false); pendingWikiWrites.delete(pendingId); }
+				if (pendingId) pendingWikiWrites.delete(pendingId);
 				return { block: true, reason: captured.error };
 			}
 		}
@@ -297,13 +292,16 @@ export default function (pi: ExtensionAPI) {
 		const pendingId = captured.length === 1 ? captured[0][0] : pendingKey(currentOwner, event.toolCallId);
 		const pending = pendingWikiWrites.get(pendingId);
 		const eventVault = pending?.vault ?? knownVault;
+		// A failed tool may have written partial bytes. Retain its capture until
+		// agent_end can safely recover and validate it after all tools settle.
+		if (event.isError && pending) return;
 		if (event.isError || (event.toolName !== "write" && event.toolName !== "edit") || !eventVault) {
-			if (pending) { pending.release(true); pendingWikiWrites.delete(pendingId); }
+			if (pending) pendingWikiWrites.delete(pendingId);
 			return;
 		}
 		const touchedPath = pending?.path ?? touchedWikiPath(event.input.path, ctx.cwd) ?? null;
 		if (!touchedPath) {
-			if (pending) { pending.release(true); pendingWikiWrites.delete(pendingId); }
+			if (pending) pendingWikiWrites.delete(pendingId);
 			return;
 		}
 		const touched = touchedByVault.get(eventVault) ?? new Set<string>();
@@ -314,7 +312,6 @@ export default function (pi: ExtensionAPI) {
 			const reason = configError ?? "vault boundary changed";
 			pendingSyncFailures.set(eventVault, reason);
 			ctx.ui.notify(`obsidian post-write sync failed; path retained for retry: ${reason}`, "warning");
-			if (pending) { pending.release(false); pendingWikiWrites.delete(pendingId); }
 			return;
 		}
 		try {
@@ -335,10 +332,7 @@ export default function (pi: ExtensionAPI) {
 				pendingSyncFailures.delete(eventVault);
 			}
 		} finally {
-			if (pending) {
-				pending.release(!pendingSyncFailures.has(eventVault));
-				pendingWikiWrites.delete(pendingId);
-			}
+			if (pending) pendingWikiWrites.delete(pendingId);
 		}
 	});
 
@@ -354,7 +348,7 @@ export default function (pi: ExtensionAPI) {
 		await refreshConfig();
 		if (configError || !knownVault) return;
 		if ([...pendingWikiWrites.values()].some((entry) => entry.owner === owner && entry.vault === knownVault)) {
-			ctx.ui.notify("obsidian turn ended with a live wiki tool capture; dependent navigation remains blocked until the writer settles", "warning");
+			ctx.ui.notify("obsidian turn ended with an unsettled wiki tool capture; dependent navigation remains blocked until agent-end recovery", "warning");
 			return;
 		}
 		const touched = touchedByVault.get(knownVault);
@@ -374,6 +368,34 @@ export default function (pi: ExtensionAPI) {
 		if (touched.size === 0) touchedByVault.delete(knownVault);
 	});
 
+	pi.on("agent_end", async (_event, ctx) => {
+		const owner = sessionIdentity(ctx);
+		if (!owner) return;
+		// Unlike tool_call or an abort signal, agent_end runs after all tool
+		// executions/results have settled, so missing callbacks are recoverable.
+		await Promise.all([...postwriteQueues.entries()]
+			.filter(([key]) => key.startsWith(sessionQueuePrefix(owner)))
+			.map(([, queue]) => queue));
+		const vaults = new Set<string>();
+		for (const [key, entry] of pendingWikiWrites) {
+			if (entry.owner === owner) {
+				vaults.add(entry.vault);
+				pendingWikiWrites.delete(key);
+			}
+		}
+		for (const vault of vaults) {
+			const result = await runHook("finalize", ctx.cwd, ["--recover-owner", owner], vault);
+			if (result.error || (result.output !== "synced" && result.output !== "clean")) {
+				const reason = result.error ?? `Unexpected recovery result: ${result.output}`;
+				pendingSyncFailures.set(vault, reason);
+				ctx.ui.notify(`obsidian agent-end recovery failed; changes retained: ${reason}`, "warning");
+			} else {
+				pendingSyncFailures.delete(vault);
+				touchedByVault.delete(vault);
+			}
+		}
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const owner = sessionIdentity(ctx);
 		if (!owner) {
@@ -387,7 +409,6 @@ export default function (pi: ExtensionAPI) {
 			.map(([, queue]) => queue));
 		for (const [key, entry] of pendingWikiWrites) {
 			if (entry.owner === owner) {
-				entry.release(false);
 				pendingWikiWrites.delete(key);
 			}
 		}
