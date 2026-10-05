@@ -1,87 +1,79 @@
 # Git Setup
 
-Git is optional; bootstrap does not initialize it. From the vault root, check
-whether this vault is already in a Git worktree before taking action:
+Obsidian Git is the required version-control integration for the configured
+wiki workflow. The vault owner installs/enables it and sets up the repository
+and authentication. Bootstrap never initializes Git or configures a remote;
+agent lifecycle code never stages, commits, pulls, or pushes.
 
-```bash
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "Git repository already exists; do not run git init"
-else
-  echo "No Git repository here"
-fi
+Markdown, local retrieval, and middleware remain usable while Obsidian is
+closed. Automatic backups and sync resume only while the app and plugin are
+running; installed settings alone do not prove authentication or remote sync.
+
+## Existing Repository
+
+Keep the existing repository, remote, identity, ignore rules, and history.
+Read-only inspection can run from any folder:
+
+```sh
+git -C "$VAULT" rev-parse --show-toplevel
+git -C "$VAULT" status --short
 ```
 
-## New Git Repository
+Do not automatically initialize a nested repository when the vault is already
+inside another worktree. Review that layout with the owner before changing it.
+Never stage unrelated notes or secrets to make lifecycle checks pass.
 
-Only initialize a repository if you deliberately want this vault to be its own
-repository and it is not already inside any Git worktree. The shell guard below
-checks the current directory and parent directories (so it also stops inside a
-parent repository); do not use a nested repository as an automatic setup.
-It also stops if `.gitignore` already exists rather than replacing it. Create
-ignore rules before staging notes:
+## New Repository
 
-```bash
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "Already inside a Git worktree; do not initialize a nested repository" >&2
-  exit 1
-fi
-test ! -e .gitignore || { echo "Review existing .gitignore; do not overwrite it" >&2; exit 1; }
-git init
-cat > .gitignore <<'EOF'
+Create a minimal scaffold using the reviewed procedure in
+[setup](../../../docs/setup.md). Open it in Obsidian and deliberately initialize
+or clone its repository through the owner-controlled Git workflow. Review
+ignore rules before the first backup. Authentication, Git identity, remotes,
+and any first commit are separate owner actions, not setup side effects.
+
+The setup profile proposes these exclusions without replacing unrelated rules:
+
+```gitignore
 .obsidian/workspace.json
 .obsidian/workspace-mobile.json
-.smart-connections/
-.obsidian-git-data
-.trash/
-.DS_Store
 .vault-meta/retrieval/
-EOF
-git add .gitignore
-git status --short
-# Stage only files you have reviewed and intend to track.
-git add wiki/quickstart.md wiki/index.md
-git diff --cached --stat
-git commit -m "Initial vault scaffold"
+.vault-meta/lifecycle/
+.vault-meta/okf-index-ownership.json
+.vault-meta/okf-index-ownership.lock
 ```
 
-## Existing Git Repository
+The exact ownership entries preserve local journals created before a vault
+acquires Git. A later negation can undo an exclusion; effective ignore checks
+matter more than the presence of a literal line. Already-tracked derived state
+needs a deliberate untracking decision. Setup and the agent never silently
+remove it from Git.
 
-Do **not** run `git init` again. Inspect the existing ignore rules and preserve
-them. If `.gitignore` exists, add any missing exclusions only after reviewing
-them; do not replace the file. If it does not exist, create it with rules
-appropriate to this vault. Ensure `.gitignore` is in place before staging notes.
-Then inspect `git status` and the staged diff, and stage only explicit paths you
-intend to track. Check for pre-existing staged changes before committing, since
-a commit includes all staged paths.
+## Configure Obsidian Git
 
-Never use `git add -A` as a first staging step in an established or populated
-vault: unrelated notes, secrets, or generated state could be swept in.
-`.obsidian/` settings may contain machine-specific state; review them before
-tracking. Keep a vault containing personal notes private if you add a remote.
+Install and enable Obsidian Git in Settings > Community Plugins. Then use the
+reviewed `--configure` setup step to select the vault and merge the supported
+profile. It preserves unrelated settings, existing schedules, and an existing
+choice to disable pushing. The proposed change to disable commit squashing is
+shown explicitly; review it before applying.
 
-New bootstrap config files set `features.autoCommit: false`. Existing configs
-are left byte-for-byte unchanged, including configs where `autoCommit` is
-omitted (the integration's omitted default remains enabled). Review your
-config's behavior before opting into agent auto-commits. If the existing
-`vaultPath` is null or absent, decide which vault it should select; do not
-guess or reset the config. If the active integration reports a config
-diagnostic, stop wiki writes and use the exact, explicitly approved repair
-workflow in `SKILL.md`. An omitted `autoCommit` remains enabled unless changed
-with explicit direction.
+The default profile uses a five-minute debounce after file edits stop, combined
+commit-and-sync, and pull every eight minutes/on startup. A zero *separate*
+push interval does not disable pushing in combined mode. Continuous edits can
+postpone a debounced backup. Obsidian Git may pull while an agent is working;
+keep one wiki writer and review conflicts instead of discarding changes.
 
-## Obsidian Git Plugin (Optional)
+The agent integration's `autoCommit` field is deprecated. `--configure` sets it
+to `false`; even a legacy `true` value never authorizes agent Git operations.
+Configuration repair remains explicit and narrow as described in `SKILL.md`.
 
-After installing this community plugin yourself (see [plugins.md](plugins.md)),
-configure its backup interval and push behavior under Settings > Obsidian Git.
-Plugin auto-backup is separate from this package's Git initialization and
-agent `autoCommit` setting; enable it only if that behavior is wanted.
+## Remote and Privacy
 
-## Remote (Optional)
+Choose the remote and authentication yourself. Keep personal vaults private,
+review `.obsidian/` files before tracking them, and inspect what backups will
+include. The package does not ship or record remote URLs, credentials, identity,
+or machine-specific Git executables. No setup or verification command pushes
+notes as an incidental test.
 
-After reviewing your commit and ensuring no unrelated staged changes are
-included, a remote can be added separately:
-
-```bash
-git remote add origin https://github.com/yourname/your-vault
-git push -u origin main
-```
+Git provides recovery, not write authorization or an atomic multi-page wiki
+snapshot. Keep destination guards and generated-file collision checks enabled;
+review the plugin's diff/history view when a batch needs rollback.

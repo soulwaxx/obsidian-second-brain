@@ -31,4 +31,10 @@ assert pi['skills'] == 'wiki'
 assert (root / 'agents/pi' / pi['skillPath'] / 'wiki/SKILL.md').is_file()
 assert (root / 'agents/pi' / pi['subagentOnlyExtensions']).resolve() == (root / 'extensions/obsidian.ts').resolve()
 assert '${CLAUDE_PLUGIN_ROOT}/skills/wiki/SKILL.md' in (root / 'agents/claude/wiki-vault.md').read_text()
+for path in (root / 'agents/claude/wiki-vault.md', root / 'agents/pi/wiki-vault.md'):
+    body = path.read_text()
+    assert 'Resolve the configured vault independently' in body
+    assert 'ask the caller to start there' not in body
+    assert 'Obsidian Git owns commits, pulls, and pushes' in body
+    assert 'Keep one wiki writer at a time' in body
 print('Claude and Pi vault agent packaging PASS')

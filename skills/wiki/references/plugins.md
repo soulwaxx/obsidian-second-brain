@@ -1,8 +1,9 @@
 # Obsidian Setup
 
-Obsidian and its plugins are optional and are installed/configured by the vault
-owner. This package does not ship community plugins, templates, dashboard
-files, or CSS snippets. Windows instructions are outside verified support for
+Obsidian and Obsidian Git are prerequisites for the configured version-control
+workflow and are installed/enabled by the vault owner. Other plugins are
+optional. This package does not ship community plugin binaries, templates,
+dashboard files, or CSS snippets. Windows instructions are outside verified support for
 this workflow.
 
 ---
@@ -24,15 +25,16 @@ repository. Enable them as needed in Settings > Core Plugins:
 | Backlinks | Incoming and outgoing links pane. |
 | Outline | Heading navigation. |
 
-## Optional Community Plugins
+## Community Plugins
 
-Install desired plugins through Settings > Community Plugins > Browse. They
-are not preinstalled by this repository.
+Install and enable Obsidian Git through Settings > Community Plugins > Browse
+before the reviewed configuration step. Other plugins below are optional; none
+are preinstalled by this repository.
 
-| Plugin | Optional use |
+| Plugin | Use |
 |--------|--------------|
 | Templater | Templates you create and configure; this repository does not supply `_templates/`. |
-| Obsidian Git | Optional UI-based Git backups; separate from bootstrap and agent auto-commit. See [git-setup.md](git-setup.md). |
+| Obsidian Git | Required owner of commit, pull, and push. Setup merges a reviewed profile; agents never commit. See [git-setup.md](git-setup.md). |
 | Calendar | Calendar view; install separately if wanted. |
 | Thino | Quick memo capture; install separately if wanted. |
 | Iconize | Folder icons. |
@@ -49,9 +51,11 @@ from Obsidian's website and choose a destination folder that exists in your
 vault; `.raw/` is a common optional convention, not a folder created by this
 package.
 
-## After Installing (Optional)
+## After Installing
 
-Configure each installed plugin in its own settings. For example, set
-Templater's template folder only if you create one; configure Obsidian Git only
-if you want its backups; and enable Bases only if you have `.base` files to
-view. No plugin is required for the wiki scaffold or local BM25 retrieval.
+Review the Obsidian Git configuration preview before applying it; plugin
+installation does not prove that backups are enabled or remote sync works.
+Configure other plugins only as needed: set Templater's folder if you create
+one and enable Bases if you have `.base` files. The initial scaffold and local
+BM25 retrieval can run before the app is open; automatic sync requires the
+running app and Obsidian Git.

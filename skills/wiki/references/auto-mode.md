@@ -6,31 +6,33 @@ dive or research pass. Follows the Karpathy-style iterative research pattern.
 **Startup:**
 
 1. Clarify the topic if not already specified. Identify 3-5 search angles.
-2. Create `wiki/_plan.md` with the research plan, sources to find, and
-   expected concept graph (see Planning Discipline in
-   [authoring-standards.md](authoring-standards.md)).
+2. Plan the research, sources to find, and expected concept graph. Use a
+   temporary `wiki/_plan.md` when the scope benefits from it (see Planning
+   Discipline in [authoring-standards.md](authoring-standards.md)).
 
-**Research loop (max 3 rounds):**
+**Research loop (usually 1-3 rounds):**
+
+Stop when the scoped question has a grounded answer, or when the agreed budget
+is exhausted. The rounds below are guidance rather than a fixed ceiling.
 
 - Round 1: broad web search across angles. Fetch top results.
 - Round 2: gap fill — identify missing or contradictory findings, search
   specifically for those.
 - Round 3: synthesis check — one more targeted pass if major gaps remain.
 
-**Filing.** File the research dossier first; propose edits to pre-existing
-canonical pages as a separate, separately-approved step. A new research
-artifact is cheap to discard; an edit that rewrites an established page is not,
-and a research pass is exactly where the two get conflated.
+**Filing.** An approved research pass authorizes relevant, evidence-backed
+updates to existing canonical pages as well as new source and synthesis pages.
+Preserve useful content and contradictory evidence. Ask separately before bulk
+deletion, destructive restructuring, or expanding the approved topic.
 
-- Create source pages under `wiki/sources/` for each major reference.
-- Create concept/entity pages under `wiki/concepts/` and `wiki/entities/`
-  for substantive extracted knowledge.
-- Create a synthesis page under `wiki/questions/` titled
-  `Research: <Topic>.md`.
-- Link everything. Every new page connects to at least 2 other pages. Page
-  quality follows [authoring-standards.md](authoring-standards.md). Evidence
-  gathering follows Investigation Discipline in
-  [research-discipline.md](research-discipline.md).
+- Follow the vault contract and existing layout. `sources/`, `concepts/`,
+  `entities/`, and `questions/` are suggestions, not mandatory directories.
+- Create source pages for major references and substantive concept/entity
+  pages only when they add a useful canonical home.
+- File the synthesis and open questions in a page appropriate to the vault.
+- Add meaningful links without a numeric quota. Page quality follows
+  [authoring-standards.md](authoring-standards.md). Evidence gathering follows
+  Investigation Discipline in [research-discipline.md](research-discipline.md).
 
 **Web content hygiene.** This is the only mode that fetches from the web, so
 these rules live here as their single source of truth. When fetching web content
@@ -48,9 +50,9 @@ for research:
 
 **Cleanup:**
 
-- Delete `_plan.md`.
-- The lifecycle validates changed Markdown and synchronizes generated indexes
-  after each successful page write, independently of optional auto-commit. Run
-  sync.py yourself when outside the vault workflow; commit remains separate.
-  `wiki/log.md` is written by the lifecycle hook, not by you (see Changelog &
-  Logging in `SKILL.md`); put the run narrative in the commit message.
+- Delete any temporary `_plan.md`.
+- Let the lifecycle finalize validated changes, generated navigation, and the
+  update log; Obsidian Git owns commits and synchronization. Follow the manual
+  middleware workflow in `SKILL.md` when the integration is unavailable.
+  Never write `wiki/log.md` yourself. Put research narrative and unresolved
+  questions in the synthesis page, not in an agent-generated commit.

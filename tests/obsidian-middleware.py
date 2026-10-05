@@ -44,11 +44,36 @@ with tempfile.TemporaryDirectory() as temp:
     run(guard, root, "wiki/topic/page.md")
     run(guard, root, "wiki/_plan.md")
     run(guard, "--if-wiki", root, "outside/other.md")
-    for blocked in ("wiki/index.md", "wiki/topic/index.md", "wiki/log.md",
-                    "wiki/topic/log.md", "wiki/.raw/secret.env",
+    for blocked in (".raw/secret.env", ".obsidian/app.json", ".vault-meta/cache", ".git/config",
+                    "wiki/index.md", "wiki/topic/index.md", "wiki/topic/INDEX.MD", "wiki/log.md",
+                    "wiki/topic/log.md", "wiki/topic/Log.MD", "wiki/.raw/secret.env",
                     "wiki/alias/new.md", "wiki/foreign.md", "wiki/../outside/foreign.md"):
         run(guard, root, blocked, ok=False)
-    # An absolute path that uses macOS's /var alias must still be recognized.
+    # Destination-based protections apply even when the caller is in another workspace.
+    caller = Path(temp) / "caller"
+    caller.mkdir()
+    run(guard, "--if-wiki", root, str(root / ".obsidian" / "app.json"), ok=False)
+    run(guard, "--if-wiki", root, str(root / "wiki" / "topic" / "page.md"))
+    # Protected selected-vault roots remain blocked when symlinked outside or
+    # into an otherwise writable area of the selected vault.
+    unprotected = root / "unprotected"
+    unprotected.mkdir()
+    for protected_name in (".raw", ".obsidian", ".vault-meta", ".git"):
+        link = root / protected_name
+        for destination in (outside, unprotected):
+            sentinel = destination / f"{protected_name[1:]}-sentinel.json"
+            sentinel.write_text("must remain protected\\n")
+            link.symlink_to(destination, target_is_directory=True)
+            run(guard, "--if-wiki", root, str(link / sentinel.name), ok=False)
+            assert sentinel.read_text() == "must remain protected\\n"
+            link.unlink()
+    # The supported macOS /var prefix alias remains recognized for normal and protected paths.
+    alias_root = str(root.resolve())
+    if sys.platform == "darwin" and alias_root.startswith("/private/var/"):
+        alias_root = alias_root.replace("/private/var/", "/var/", 1)
+        assert Path(alias_root).resolve() == root.resolve()
+        run(guard, "--if-wiki", alias_root, str(Path(alias_root) / ".obsidian" / "app.json"), ok=False)
+        run(guard, "--if-wiki", alias_root, str(Path(alias_root) / "wiki/topic/page.md"))
     run(guard, "--if-wiki", root, page)
 
     validator = middleware / "validate.py"

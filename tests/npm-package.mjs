@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-npm-package-"));
 // Publish dry runs must still create and install a real temporary test archive.
-const env = { ...process.env, npm_config_dry_run: "false", npm_config_cache: path.join(work, "cache"), npm_config_update_notifier: "false" };
+const env = { ...process.env, npm_config_dry_run: "false", npm_config_cache: path.join(work, "cache"), npm_config_update_notifier: "false", OBSIDIAN_AGENT_CONFIG: path.join(work, "inactive-config.json"), OBSIDIAN_VAULT_PATH: "", WIKI_MIDDLEWARE_DIR: "" };
 const run = (command, args, options = {}) => execFileSync(command, args, { cwd: root, env, ...options });
 
 try {
@@ -19,7 +19,7 @@ try {
     ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
     "extensions/obsidian.ts", "hooks/obsidian-session.sh", "hooks/hooks.json",
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
-    "scripts/config_contract.py", "scripts/bootstrap-vault.py", "scripts/provision-retrieval.py",
+    "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py", "scripts/provision-retrieval.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py",
     "skills/wiki/SKILL.md", "skills/wiki/scripts/okf_mw/LICENSE-claude-obsidian",
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
