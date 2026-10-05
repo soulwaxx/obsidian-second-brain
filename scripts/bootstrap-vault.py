@@ -95,7 +95,8 @@ def plan_for(vault: Path, config: Path, configure: bool = False) -> dict:
     for component in (config, *config.parents):
         if component.is_symlink() and not _system_path_alias(component):
             raise ValueError(f"refusing symlinked agent config path: {component}")
-    if wiki.exists():
+    # Configuration only changes settings; existing logs remain untouched.
+    if wiki.exists() and not configure:
         for path in wiki.rglob("*"):
             if path.name.casefold() == "log.md":
                 if not path.is_file() or path.parent != wiki or not hook_owned_log(path):
