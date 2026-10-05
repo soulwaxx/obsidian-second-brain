@@ -438,6 +438,128 @@ try {
   assert.equal(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending[replacementKey], undefined);
   assert.match(fs.readFileSync(sharedLog, "utf8"), /replaced-context\.md/);
 
+  const bounded = async (work, label) => {
+    let timer;
+    try {
+      return await Promise.race([
+        work,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), 20000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const prepare = (event) => bounded(featureHandlers.get("tool_call")(event, ctx), `prepare ${event.toolCallId}`);
+  const pageContent = (title) => `---\ntype: note\ntitle: ${title}\n---\n# ${title}\n`;
+  const featureConfig = fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8");
+
+  // Pi prepares parallel batches sequentially, before any execution/result.
+  // Exercise both guarded writes and the guard-disabled capture path.
+  for (const guard of [true, false]) {
+    fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard, retrievalRefresh: false } }));
+    const batch = ["edit", "write"].map((toolName, i) => ({
+      toolCallId: `parallel-${guard}-${i}`, toolName,
+      input: { path: path.join(vault, `wiki/topic/parallel-${guard}-${i}.md`) },
+    }));
+    for (const event of batch) fs.writeFileSync(event.input.path, pageContent("Before Parallel"));
+    for (const event of batch) assert.equal(await prepare(event), undefined);
+    const prepared = JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8"));
+    for (const event of batch) {
+      const entry = prepared.pending[fs.realpathSync(event.input.path)];
+      assert.equal(entry.existed, true);
+      assert.equal(entry.captures["pi:pi-writer-session"][event.toolCallId], "active");
+      assert.equal(fs.readFileSync(event.input.path, "utf8"), pageContent("Before Parallel"));
+    }
+    assert.equal((await prepare({ toolCallId: "parallel-nav", toolName: "read", input: { path: sharedIndex } }))?.block, true);
+    const indexBeforeResults = fs.readFileSync(sharedIndex, "utf8");
+    for (const event of batch) fs.writeFileSync(event.input.path, pageContent(event.toolCallId));
+    await bounded(Promise.all(batch.map((event) => featureHandlers.get("tool_result")({ ...event, isError: false }, ctx))), "parallel results");
+    const recorded = JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8"));
+    for (const event of batch) {
+      assert.equal(recorded.pending[fs.realpathSync(event.input.path)].captures["pi:pi-writer-session"][event.toolCallId], "settled");
+    }
+    assert.equal(fs.readFileSync(sharedIndex, "utf8"), indexBeforeResults, "results do not publish before finalization");
+    await featureHandlers.get("turn_end")({}, ctx);
+    assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending, {});
+    for (const event of batch) {
+      assert.ok(fs.readFileSync(sharedIndex, "utf8").includes(path.basename(event.input.path)));
+      assert.ok(fs.readFileSync(sharedLog, "utf8").includes(path.basename(event.input.path)));
+    }
+    assert.equal(await prepare({ toolCallId: "parallel-nav-settled", toolName: "read", input: { path: sharedIndex } }), undefined);
+  }
+
+  // Aborts may omit tool_result (and an exceptional exit may omit turn_end).
+  // Recover only after agent_end, including the original vault after retargeting.
+  for (const emitTurnEnd of [true, false]) {
+    const earlier = { toolCallId: "completed-before-abort", toolName: "write", input: { path: path.join(vault, "wiki/topic/completed-before-abort.md") } };
+    if (!emitTurnEnd) {
+      assert.equal(await prepare(earlier), undefined);
+      fs.writeFileSync(earlier.input.path, pageContent("Completed Before Abort"));
+      await featureHandlers.get("tool_result")({ ...earlier, isError: false }, ctx);
+      assert.ok(!fs.readFileSync(sharedIndex, "utf8").includes(path.basename(earlier.input.path)));
+    }
+    const aborted = [0, 1].map((i) => ({
+      toolCallId: `aborted-${emitTurnEnd}-${i}`, toolName: "edit",
+      input: { path: path.join(vault, `wiki/topic/aborted-${emitTurnEnd}-${i}.md`) },
+    }));
+    for (const event of aborted) {
+      fs.writeFileSync(event.input.path, pageContent("Before Abort"));
+      assert.equal(await prepare(event), undefined);
+    }
+    const pausedState = JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8"));
+    await featureHandlers.get("agent_end")({}, readerCtx);
+    assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")), pausedState,
+      "another session's agent_end must not recover live writer captures");
+    if (!emitTurnEnd) fs.writeFileSync(aborted[1].input.path, pageContent("Written Without Callback"));
+    const indexBeforeAbort = fs.readFileSync(sharedIndex, "utf8");
+    if (emitTurnEnd) {
+      await featureHandlers.get("turn_end")({}, ctx);
+      assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")), pausedState,
+        "turn_end must not recover captures before the agent settles");
+    }
+    process.env.OBSIDIAN_VAULT_PATH = retargetVault;
+    await featureHandlers.get("agent_end")({}, ctx);
+    process.env.OBSIDIAN_VAULT_PATH = vault;
+    assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending, {});
+    if (emitTurnEnd) {
+      assert.equal(fs.readFileSync(sharedIndex, "utf8"), indexBeforeAbort, "unchanged aborted writes do not publish navigation");
+      for (const event of aborted) assert.ok(!fs.readFileSync(sharedLog, "utf8").includes(path.basename(event.input.path)));
+    } else {
+      assert.ok(fs.readFileSync(sharedIndex, "utf8").includes(path.basename(earlier.input.path)),
+        "abort recovery also finalizes earlier completed writes in this session");
+      assert.ok(fs.readFileSync(sharedIndex, "utf8").includes(path.basename(aborted[1].input.path)));
+      assert.match(fs.readFileSync(sharedLog, "utf8"), /\*\*Update\*\*.*aborted-false-1\.md/s);
+    }
+    const retry = { toolCallId: `retry-${emitTurnEnd}`, toolName: "write", input: { path: aborted[0].input.path } };
+    assert.equal(await prepare(retry), undefined, "the same session can write again after abort recovery");
+    fs.writeFileSync(retry.input.path, pageContent(retry.toolCallId));
+    await featureHandlers.get("tool_result")({ ...retry, isError: false }, ctx);
+    await featureHandlers.get("turn_end")({}, ctx);
+    assert.equal(await prepare({ toolCallId: "retry-nav", toolName: "read", input: { path: sharedIndex } }), undefined);
+    assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending, {});
+  }
+
+  // Error results can leave partial bytes; recovery must validate, not publish
+  // an invalid page or leave its active capture poisoning later repair writes.
+  const failed = { toolCallId: "failed-partial", toolName: "write", input: { path: path.join(vault, "wiki/topic/failed-partial.md") } };
+  assert.equal(await prepare(failed), undefined);
+  fs.writeFileSync(failed.input.path, "---\ntype: note\ntitle: Partial\n");
+  await featureHandlers.get("tool_result")({ ...failed, isError: true }, ctx);
+  const indexBeforeFailure = fs.readFileSync(sharedIndex, "utf8");
+  await featureHandlers.get("agent_end")({}, ctx);
+  assert.equal(fs.readFileSync(sharedIndex, "utf8"), indexBeforeFailure);
+  assert.equal((await prepare({ toolCallId: "failed-nav", toolName: "read", input: { path: sharedIndex } }))?.block, true);
+  const failedEntry = JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending[fs.realpathSync(failed.input.path)];
+  assert.equal(failedEntry.captures["pi:pi-writer-session"][failed.toolCallId], "settled");
+  const repaired = { ...failed, toolCallId: "failed-partial-repair" };
+  assert.equal(await prepare(repaired), undefined);
+  fs.writeFileSync(repaired.input.path, pageContent("Partial Repaired"));
+  await featureHandlers.get("tool_result")({ ...repaired, isError: false }, ctx);
+  await featureHandlers.get("turn_end")({}, ctx);
+  assert.equal(await prepare({ toolCallId: "repaired-nav", toolName: "read", input: { path: sharedIndex } }), undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending, {});
+  fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, featureConfig);
+
   const binary = path.join(vault, "wiki/topic/attachment.bin");
   await featureHandlers.get("tool_call")({ toolCallId: "binary-write", toolName: "write", input: { path: binary } }, ctx);
   fs.writeFileSync(binary, "fixture attachment");

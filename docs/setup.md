@@ -127,7 +127,11 @@ The lifecycle validates changed pages and finalizes a writing batch with
 navigation, logging, and optional retrieval refresh. An invalid changed page
 keeps its batch pending for repair; unrelated historical defects are reported
 without preventing normal repairs. Startup and unrelated read-only shutdown
-perform no vault writes. Keep one wiki writer at a time.
+perform no vault writes. Keep one wiki writer session at a time; Pi supports
+multiple wiki writes in one parallel tool batch. Navigation reads are blocked
+while captured writes are in flight. After an aborted run, Pi recovers missing
+tool callbacks at agent end without requiring a session restart; changed bytes
+still pass validation before navigation or log publication.
 
 Obsidian Git runs independently. Its enabled settings do not prove that it is
 currently loaded, unpaused, authenticated, or successfully pushing. Local wiki
