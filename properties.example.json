@@ -3,7 +3,7 @@
   "features": {
     "guard": true,
     "toc": true,
-    "autoCommit": true,
+    "autoCommit": false,
     "retrievalRefresh": true
   }
 }

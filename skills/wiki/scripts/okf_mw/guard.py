@@ -116,21 +116,51 @@ def check_write(wiki_root: str, target_path: str) -> tuple[bool, str]:
 
 
 def check_agent_write(wiki_root: str, target_path: str) -> tuple[bool, str]:
-    """Leave non-wiki writes alone; apply the strict guard to wiki writes."""
+    """Protect selected-vault system data, while leaving unrelated writes alone."""
     root = Path(wiki_root).resolve()
     raw = Path(target_path)
     lexical = raw if raw.is_absolute() else root / raw
     wiki = root / "wiki"
+    for ancestor in (lexical, *lexical.parents):
+        if ancestor.name == "wiki" and ancestor.parent.resolve() == root:
+            return check_write(wiki_root, str(wiki / lexical.relative_to(ancestor)))
+    if ".." in raw.parts:
+        try:
+            if lexical.resolve().is_relative_to(root):
+                return False, f"BLOCKED: {target_path} — path contains '..' traversal"
+        except (OSError, RuntimeError):
+            return False, f"BLOCKED: {target_path} — unsafe path resolution"
+    # Protect selected-vault roots by their lexical destination before allowing
+    # paths whose resolved destination escapes the vault through a symlink.
+    protected = {".raw", ".obsidian", ".vault-meta", ".git"}
+    for ancestor in (lexical, *lexical.parents):
+        if in_set(ancestor.name, protected):
+            try:
+                if ancestor.parent.resolve() == root:
+                    return False, f"BLOCKED: {target_path} — path points to protected vault data '{ancestor.name}'"
+            except (OSError, RuntimeError):
+                return False, f"BLOCKED: {target_path} — unsafe protected path resolution"
     if lexical.is_relative_to(wiki):
         return check_write(wiki_root, target_path)
-    if lexical.resolve().is_relative_to(wiki):
+    try:
+        resolved = lexical.resolve()
+    except (OSError, RuntimeError):
+        return False, f"BLOCKED: {target_path} — unsafe path resolution"
+    if resolved.is_relative_to(wiki):
         # An OS-level prefix alias (macOS /var -> /private/var) is safe;
-        # preserve the path *below* wiki/ so check_write still sees symlinks.
+        # preserve the path below wiki/ so check_write still sees symlinks.
         for ancestor in (lexical, *lexical.parents):
             if ancestor.name == "wiki" and ancestor.parent.resolve() == root:
                 return check_write(wiki_root, str(wiki / lexical.relative_to(ancestor)))
         return False, f"BLOCKED: {target_path} — symlink alias into wiki/"
-    return True, f"ALLOWED: {target_path} — outside wiki/"
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError:
+        return True, f"ALLOWED: {target_path} — outside vault"
+    protected = {".raw", ".obsidian", ".vault-meta", ".git"}
+    if any(in_set(part, protected) for part in relative.parts):
+        return False, f"BLOCKED: {target_path} — protected vault data"
+    return True, f"ALLOWED: {target_path} — outside protected vault data"
 
 
 def main() -> int:

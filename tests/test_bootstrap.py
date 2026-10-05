@@ -70,10 +70,11 @@ with tempfile.TemporaryDirectory() as temp:
               for item in plan["writes"] if Path(item["path"]).is_relative_to(vault.resolve())}
     assert "wiki/quickstart.md" in writes
     assert "wiki/index.md" in writes
-    assert "autoCommit\": false" in next(item["content"] for item in plan["writes"]
-                                         if Path(item["path"]) == config)
+    assert plan["pluginReady"] is False
+    assert "wiki/quickstart.md" in writes
+    assert not any(Path(item["path"]) == config for item in plan["writes"])
     assert not (vault / "wiki").exists() and not config.exists()  # preview is read-only
-    assert plan["configStatus"] == {"configuredForVault": True, "autoCommit": False}
+    assert plan["configStatus"]["configuredForVault"] is False
     assert invoke(vault, config, "--apply", "--confirm", "wrong", ok=False)
     assert not (vault / "wiki").exists()
     invoke(vault, config, "--apply", "--confirm", token)
@@ -216,16 +217,228 @@ with tempfile.TemporaryDirectory() as temp:
     invoke(owned_log, root / "owned-log-config.json", "--apply", "--confirm", owned_hash)
     assert (owned_log / "wiki/log.md").read_text() == log_text
 
-    # Existing configs without a vault target are preserved and require explicit opt-in setup.
-    for config_value in ('{"vaultPath": null, "custom": 1}', '{"custom": 1}'):
-        disabled_cfg = root / ("disabled-" + str(len(config_value)) + ".json")
-        disabled_cfg.write_text(config_value)
-        disabled_vault = root / ("disabled-vault-" + str(len(config_value)))
-        disabled_vault.mkdir()
-        failed = invoke(disabled_vault, disabled_cfg, ok=False)
-        assert "explicit features.autoCommit:false" in failed.stderr
-        assert disabled_cfg.read_text() == config_value
-        assert not (disabled_vault / "wiki").exists()
+    # Existing config is unchanged by default; explicit configure requires the
+    # installed/enabled plugin and is bound to its inspected preimages.
+    disabled_cfg = root / "existing-migration.json"
+    disabled_cfg.write_text('{"vaultPath": null, "custom": 1, "features": {"mystery": 7}}')
+    disabled_vault = root / "existing-migration-vault"
+    disabled_vault.mkdir()
+    original_config = disabled_cfg.read_text()
+    default_plan, default_hash = preview(disabled_vault, disabled_cfg)
+    invoke(disabled_vault, disabled_cfg, "--apply", "--confirm", default_hash)
+    assert disabled_cfg.read_text() == original_config
+    assert default_plan["pluginDiagnostics"]
+    missing = invoke(disabled_vault, disabled_cfg, "--configure", ok=True)
+    missing_plan = json.loads(missing.stdout)
+    assert "missing" in " ".join(missing_plan["pluginDiagnostics"])
+    failed_apply = invoke(disabled_vault, disabled_cfg, "--configure", "--apply", "--confirm", missing_plan["planHash"], ok=False)
+    assert "requires Obsidian Git" in failed_apply.stderr
+    assert disabled_cfg.read_text() == original_config
+    plugin_dir = disabled_vault / ".obsidian/plugins/obsidian-git"
+    plugin_dir.mkdir(parents=True)
+    for manifest_value in ([], None, {"id": "obsidian-git", "version": "2.39.0-beta"},
+                           {"id": "obsidian-git", "version": "v2.39.0"}):
+        (plugin_dir / "manifest.json").write_text(json.dumps(manifest_value))
+        incompatible = json.loads(invoke(disabled_vault, disabled_cfg, "--configure").stdout)
+        assert incompatible["pluginDiagnostics"]
+        assert "incompatible" in " ".join(incompatible["pluginDiagnostics"]) or "invalid" in " ".join(incompatible["pluginDiagnostics"])
+    (plugin_dir / "manifest.json").write_text(json.dumps({"id": "wrong-id", "version": "1.0.0"}))
+    incompatible = json.loads(invoke(disabled_vault, disabled_cfg, "--configure").stdout)
+    assert "incompatible" in " ".join(incompatible["pluginDiagnostics"])
+    (plugin_dir / "manifest.json").write_text(json.dumps({"id": "obsidian-git", "version": "2.39.0"}))
+    (plugin_dir / "data.json").write_text(json.dumps({"unknown": "kept", "autoSaveInterval": 12, "autoPullInterval": 3, "disablePush": True, "squashCommitsBeforePush": True}))
+    (disabled_vault / ".obsidian/community-plugins.json").write_text('["other-plugin"]')
+    disabled_plugin = json.loads(invoke(disabled_vault, disabled_cfg, "--configure").stdout)
+    assert "not enabled" in " ".join(disabled_plugin["pluginDiagnostics"])
+    (disabled_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git", "other-plugin"]')
+    config_plan_result = invoke(disabled_vault, disabled_cfg, "--configure")
+    config_plan = json.loads(config_plan_result.stdout)
+    assert config_plan["pluginReady"]
+    assert config_plan["configDifferences"]["vaultPath"] == {"from": None, "to": str(disabled_vault.resolve())}
+    assert config_plan["configDifferences"]["features.autoCommit"] == {"from": "<missing>", "to": False}
+    assert config_plan["profileDiffs"]["squashCommitsBeforePush"] == {"from": True, "to": False}
+    assert "autoSaveInterval" not in config_plan["profileDiffs"] and "autoPullInterval" not in config_plan["profileDiffs"]
+    assert "privateContentBoundToPlanHash" in next(item for item in config_plan["writes"] if item["path"].endswith("data.json"))
+    assert "unknown" not in config_plan_result.stdout and "kept" not in config_plan_result.stdout
+    assert "mystery" not in config_plan_result.stdout and '"custom"' not in config_plan_result.stdout
+    invoke(disabled_vault, disabled_cfg, "--configure", "--apply", "--confirm", "wrong", ok=False)
+    assert disabled_cfg.read_text() == original_config
+    invoke(disabled_vault, disabled_cfg, "--configure", "--apply", "--confirm", config_plan["planHash"])
+    migrated = json.loads(disabled_cfg.read_text())
+    assert migrated["features"]["autoCommit"] is False and migrated["features"]["mystery"] == 7
+    profile = json.loads((plugin_dir / "data.json").read_text())
+    assert profile["unknown"] == "kept" and profile["autoSaveInterval"] == 12
+    assert profile["autoPullInterval"] == 3 and profile["disablePush"] is True
+    assert profile["squashCommitsBeforePush"] is False
+    assert json.loads((disabled_vault / ".obsidian/community-plugins.json").read_text()) == ["obsidian-git", "other-plugin"]
+    assert ".vault-meta/retrieval/" in (disabled_vault / ".gitignore").read_text()
+    assert ".vault-meta/lifecycle/" in (disabled_vault / ".gitignore").read_text()
+    assert not (disabled_vault / ".vault-meta/retrieval").exists()
+    repeat_profile_result = invoke(disabled_vault, disabled_cfg, "--configure")
+    repeat_profile = json.loads(repeat_profile_result.stdout)
+    assert repeat_profile["writes"] == []
+    assert repeat_profile["profileDiffs"] == {} and repeat_profile["configDifferences"] == {}
+    assert repeat_profile["ignoreDiffs"] == []
+    invoke(disabled_vault, disabled_cfg, "--configure", "--apply", "--confirm", repeat_profile["planHash"])
+
+    # Missing plugin settings means first-time defaults; malformed existing
+    # settings still fail closed.
+    no_data_vault = root / "no-data-vault"
+    plugin = no_data_vault / ".obsidian/plugins/obsidian-git"
+    plugin.mkdir(parents=True)
+    (plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+    (no_data_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    no_data_config = root / "no-data-config.json"
+    no_data_config.write_text(json.dumps({"vaultPath": str(no_data_vault), "features": {"autoCommit": False}}))
+    no_data_plan = json.loads(invoke(no_data_vault, no_data_config, "--configure").stdout)
+    assert no_data_plan["pluginReady"]
+    invoke(no_data_vault, no_data_config, "--configure", "--apply", "--confirm", no_data_plan["planHash"])
+    default_profile = json.loads((plugin / "data.json").read_text())
+    assert default_profile["autoSaveInterval"] == 5 and default_profile["squashCommitsBeforePush"] is False
+    (plugin / "data.json").write_text("[]")
+    malformed_settings = invoke(no_data_vault, no_data_config, "--configure", ok=False)
+    assert "settings must be a JSON object" in malformed_settings.stderr
+
+    # Ignore rules must be effective in Git despite later negations; preexisting
+    # tracked state is diagnosed and never staged or removed.
+    ignore_vault = root / "ignore-git-vault"
+    ignore_vault.mkdir()
+    subprocess.run(["git", "init", "-q", str(ignore_vault)], check=True)
+    (ignore_vault / ".gitignore").write_text(
+        "/.vault-meta/retrieval/\n!/.vault-meta/retrieval/\n/.vault-meta/retrieval/*\n!/.vault-meta/retrieval/bm25.json\n"
+        "/.vault-meta/lifecycle/\n!/.vault-meta/lifecycle/\n/.vault-meta/lifecycle/*\n!/.vault-meta/lifecycle/finalize.lock\n!/.vault-meta/lifecycle/.state-*\n")
+    for directory_probe, actual_temp in ((".vault-meta/lifecycle/", ".vault-meta/lifecycle/.state-123-abcd"),
+                                         (".vault-meta/retrieval/", ".vault-meta/retrieval/bm25.json")):
+        winning = subprocess.run(["git", "-C", str(ignore_vault), "check-ignore", "--no-index", "--verbose",
+                                  "--non-matching", "--", directory_probe], check=True,
+                                 text=True, capture_output=True).stdout
+        assert "/.vault-meta/" in winning and "*" in winning
+        assert subprocess.run(["git", "-C", str(ignore_vault), "check-ignore", "--no-index", "-q", "--", actual_temp]).returncode != 0
+    (ignore_vault / ".vault-meta/lifecycle").mkdir(parents=True)
+    tracked_state = ignore_vault / ".vault-meta/lifecycle/tracked.json"
+    tracked_state.write_text("fixture tracked state\n")
+    subprocess.run(["git", "-C", str(ignore_vault), "add", "-f", ".vault-meta/lifecycle/tracked.json"], check=True)
+    staged_fixture_before = subprocess.run(["git", "-C", str(ignore_vault), "diff", "--cached", "--binary"],
+                                          check=True, capture_output=True).stdout
+    ignore_plugin = ignore_vault / ".obsidian/plugins/obsidian-git"
+    ignore_plugin.mkdir(parents=True)
+    (ignore_plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+    (ignore_plugin / "data.json").write_text("{}")
+    (ignore_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    ignore_config = root / "ignore-config.json"
+    ignore_config.write_text(json.dumps({"vaultPath": str(ignore_vault), "features": {"autoCommit": False}}))
+    ignore_plan = json.loads(invoke(ignore_vault, ignore_config, "--configure").stdout)
+    assert ignore_plan["ignoreDiagnostics"] and "already tracked" in ignore_plan["ignoreDiagnostics"][0]
+    assert "/.vault-meta/retrieval/" in ignore_plan["ignoreDiffs"]
+    assert "/.vault-meta/lifecycle/" in ignore_plan["ignoreDiffs"]
+    invoke(ignore_vault, ignore_config, "--configure", "--apply", "--confirm", ignore_plan["planHash"])
+    for probe in (".vault-meta/retrieval/", ".vault-meta/retrieval/bm25.json",
+                  ".vault-meta/retrieval/bm25.json.tmp", ".vault-meta/retrieval/index.json",
+                  ".vault-meta/lifecycle/", ".vault-meta/lifecycle/finalize.lock",
+                  ".vault-meta/lifecycle/finalize.lock.tmp", ".vault-meta/lifecycle/.state-123-abcd",
+                  ".vault-meta/lifecycle/state.json"):
+        assert subprocess.run(["git", "-C", str(ignore_vault), "check-ignore", "--no-index", "-q", "--", probe]).returncode == 0, probe
+    assert subprocess.run(["git", "-C", str(ignore_vault), "ls-files", "--error-unmatch", ".vault-meta/lifecycle/tracked.json"],
+                          text=True, capture_output=True).returncode == 0
+    staged_fixture_after = subprocess.run(["git", "-C", str(ignore_vault), "diff", "--cached", "--binary"],
+                                          check=True, capture_output=True).stdout
+    assert staged_fixture_after == staged_fixture_before
+
+    # Git evaluates .gitignore from linked-worktree context too; selective child
+    # exceptions must be closed by reviewed final directory exclusions.
+    main_repo = root / "ignore-worktree-main"
+    main_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(main_repo)], check=True)
+    subprocess.run(["git", "-C", str(main_repo), "config", "user.name", "Bootstrap Test"], check=True)
+    subprocess.run(["git", "-C", str(main_repo), "config", "user.email", "bootstrap@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(main_repo), "commit", "--allow-empty", "-qm", "fixture"], check=True)
+    linked_vault = root / "ignore-linked-worktree"
+    subprocess.run(["git", "-C", str(main_repo), "worktree", "add", "-q", "-b", "setup-ignore-linked", str(linked_vault)], check=True)
+    (linked_vault / ".gitignore").write_text(
+        "/.vault-meta/retrieval/\n!/.vault-meta/retrieval/\n/.vault-meta/retrieval/*\n!/.vault-meta/retrieval/bm25.json\n"
+        "/.vault-meta/lifecycle/\n!/.vault-meta/lifecycle/\n/.vault-meta/lifecycle/*\n!/.vault-meta/lifecycle/finalize.lock\n!/.vault-meta/lifecycle/.state-*\n")
+    linked_plugin = linked_vault / ".obsidian/plugins/obsidian-git"
+    linked_plugin.mkdir(parents=True)
+    (linked_plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+    (linked_plugin / "data.json").write_text("{}")
+    (linked_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    linked_config = root / "linked-config.json"
+    linked_config.write_text(json.dumps({"vaultPath": str(linked_vault), "features": {"autoCommit": False}}))
+    linked_plan = json.loads(invoke(linked_vault, linked_config, "--configure").stdout)
+    assert "/.vault-meta/retrieval/" in linked_plan["ignoreDiffs"]
+    assert "/.vault-meta/lifecycle/" in linked_plan["ignoreDiffs"]
+    invoke(linked_vault, linked_config, "--configure", "--apply", "--confirm", linked_plan["planHash"])
+    for probe in (".vault-meta/retrieval/", ".vault-meta/retrieval/bm25.json",
+                  ".vault-meta/retrieval/bm25.json.tmp", ".vault-meta/lifecycle/",
+                  ".vault-meta/lifecycle/finalize.lock", ".vault-meta/lifecycle/.state-123-abcd",
+                  ".vault-meta/lifecycle/state.json"):
+        assert subprocess.run(["git", "-C", str(linked_vault), "check-ignore", "--no-index", "-q", "--", probe]).returncode == 0, probe
+    linked_repeat = json.loads(invoke(linked_vault, linked_config, "--configure").stdout)
+    assert linked_repeat["writes"] == [] and linked_repeat["ignoreDiffs"] == []
+
+    # A non-Git scaffold retains its ownership journal/lock when its operator
+    # later initializes Git; reviewed configure adds exact exclusions without
+    # moving or rewriting either ownership file.
+    ownership_vault = root / "ownership-transition-vault"
+    ownership_config = root / "ownership-transition-config.json"
+    ownership_plan, ownership_hash = preview(ownership_vault, ownership_config)
+    invoke(ownership_vault, ownership_config, "--apply", "--confirm", ownership_hash)
+    journal = ownership_vault / ".vault-meta/okf-index-ownership.json"
+    ownership_lock = ownership_vault / ".vault-meta/okf-index-ownership.lock"
+    assert journal.is_file() and ownership_lock.is_file()
+    journal_before = journal.read_bytes()
+    lock_before = ownership_lock.read_bytes()
+    subprocess.run(["git", "init", "-q", str(ownership_vault)], check=True)
+    ownership_plugin = ownership_vault / ".obsidian/plugins/obsidian-git"
+    ownership_plugin.mkdir(parents=True)
+    (ownership_plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+    (ownership_plugin / "data.json").write_text("{}")
+    (ownership_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    ownership_plan_result = invoke(ownership_vault, ownership_config, "--configure")
+    ownership_configure = json.loads(ownership_plan_result.stdout)
+    assert "/.vault-meta/okf-index-ownership.json" in ownership_configure["ignoreDiffs"]
+    assert "/.vault-meta/okf-index-ownership.lock" in ownership_configure["ignoreDiffs"]
+    invoke(ownership_vault, ownership_config, "--configure", "--apply", "--confirm", ownership_configure["planHash"])
+    assert journal.read_bytes() == journal_before and ownership_lock.read_bytes() == lock_before
+    for entry in (".vault-meta/okf-index-ownership.json", ".vault-meta/okf-index-ownership.lock"):
+        assert subprocess.run(["git", "-C", str(ownership_vault), "check-ignore", "-q", "--", entry]).returncode == 0
+    # Existing journals work with the newly excluded residual metadata.
+    ownership_sync = subprocess.run([sys.executable, str(SCRIPT.parents[0] / ".." / "skills/wiki/scripts/okf_mw/sync.py"), str(ownership_vault)],
+                                    text=True, capture_output=True)
+    assert ownership_sync.returncode == 0, ownership_sync.stdout + ownership_sync.stderr
+
+    # Settings-only migration preserves an existing wiki/WIKI.md convention;
+    # the standalone scaffold remains responsible for Quickstart creation.
+    convention_vault = root / "wiki-convention-vault"
+    convention_wiki = convention_vault / "wiki"
+    convention_wiki.mkdir(parents=True)
+    (convention_wiki / "WIKI.md").write_text("# Existing entry point\n")
+    (convention_wiki / "seed.md").write_text("---\ntype: note\ntitle: Seed\n---\n# Seed\n")
+    convention_sync = subprocess.run([sys.executable, str(SCRIPT.parents[0] / ".." / "skills/wiki/scripts/okf_mw/sync.py"), str(convention_vault)],
+                                     text=True, capture_output=True)
+    assert convention_sync.returncode == 0, convention_sync.stdout + convention_sync.stderr
+    convention_before = {path.relative_to(convention_vault): path.read_bytes()
+                         for path in convention_wiki.rglob("*") if path.is_file()}
+    convention_plugin = convention_vault / ".obsidian/plugins/obsidian-git"
+    convention_plugin.mkdir(parents=True)
+    (convention_plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+    (convention_plugin / "data.json").write_text("{}")
+    (convention_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    convention_config = root / "wiki-convention-config.json"
+    convention_config.write_text(json.dumps({"vaultPath": str(convention_vault), "features": {"autoCommit": True}, "custom": "keep"}))
+    convention_plan_result = invoke(convention_vault, convention_config, "--configure")
+    convention_plan = json.loads(convention_plan_result.stdout)
+    wiki_writes = [entry for entry in convention_plan["writes"]
+                   if Path(entry["path"]).is_relative_to(convention_wiki)]
+    assert wiki_writes == []
+    assert not any(Path(entry["path"]) == convention_wiki / "quickstart.md" for entry in convention_plan["writes"])
+    assert Path("wiki/index.md") in convention_before
+    invoke(convention_vault, convention_config, "--configure", "--apply", "--confirm", convention_plan["planHash"])
+    convention_after = {path.relative_to(convention_vault): path.read_bytes()
+                        for path in convention_wiki.rglob("*") if path.is_file()}
+    assert convention_after == convention_before
+    assert not (convention_wiki / "quickstart.md").exists()
+    assert json.loads(convention_config.read_text())["features"]["autoCommit"] is False
 
     # A nonexistent fresh vault is previewed with its root directory planned, then created on apply.
     fresh = root / "brand-new" / "vault"
@@ -252,6 +465,285 @@ with tempfile.TemporaryDirectory() as temp:
     spec = importlib.util.spec_from_file_location("bootstrap_vault", SCRIPT)
     bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap)
+
+    # Ancestor symlinks to the same pinned inode are still unsafe: the public
+    # path chain must remain symlink-free for both create success and rollback.
+    create_ancestor_root = root / "ancestor-symlink-create"
+    create_ancestor_settings = create_ancestor_root / "base/settings"
+    create_ancestor_settings.mkdir(parents=True)
+    (create_ancestor_settings / "foreign.txt").write_text("keep create peer")
+    moved_create_ancestor = root / "moved-ancestor-create"
+    create_ancestor_target = create_ancestor_settings / "profile.json"
+    create_ancestor_plan = {"vault": str(create_ancestor_root), "directories": [],
+                            "configure": True, "pluginReady": True,
+                            "writes": [{"path": str(create_ancestor_target), "content": "{}\\n"}]}
+    real_read_at = bootstrap._read_at
+    create_ancestor_swap = [False]
+
+    def swap_create_ancestor(parent_fd, name):
+        if not create_ancestor_swap[0]:
+            create_ancestor_swap[0] = True
+            (create_ancestor_root / "base").rename(moved_create_ancestor)
+            (create_ancestor_root / "base").symlink_to(moved_create_ancestor, target_is_directory=True)
+        return real_read_at(parent_fd, name)
+
+    with mock.patch.object(bootstrap, "_read_at", side_effect=swap_create_ancestor):
+        try:
+            bootstrap.apply_plan(create_ancestor_plan)
+            raise AssertionError("symlinked ancestor after file creation must refuse success")
+        except ValueError as exc:
+            assert "destination parent changed" in str(exc) or "destination changed during apply" in str(exc)
+    assert create_ancestor_swap[0]
+    assert (moved_create_ancestor / "settings/profile.json").read_text() == "{}\\n"
+    assert (moved_create_ancestor / "settings/foreign.txt").read_text() == "keep create peer"
+
+    replace_ancestor_root = root / "ancestor-symlink-replace"
+    replace_ancestor_settings = replace_ancestor_root / "base/settings"
+    replace_ancestor_settings.mkdir(parents=True)
+    ancestor_profile = replace_ancestor_settings / "profile.json"
+    ancestor_profile.write_text('{"old":true}')
+    (replace_ancestor_settings / "foreign.txt").write_text("keep replacement peer")
+    moved_replace_ancestor = root / "moved-ancestor-replace"
+    replace_ancestor_plan = {"vault": str(replace_ancestor_root), "directories": [],
+                             "configure": True, "pluginReady": True,
+                             "writes": [{"path": str(ancestor_profile), "content": '{"new":true}',
+                                         "preimage": '{"old":true}'}]}
+    replace_ancestor_swap = [0]
+
+    def swap_replace_ancestor_on_final_read(parent_fd, name):
+        replace_ancestor_swap[0] += 1
+        if replace_ancestor_swap[0] == 5:
+            (replace_ancestor_root / "base").rename(moved_replace_ancestor)
+            (replace_ancestor_root / "base").symlink_to(moved_replace_ancestor, target_is_directory=True)
+        return real_read_at(parent_fd, name)
+
+    with mock.patch.object(bootstrap, "_read_at", side_effect=swap_replace_ancestor_on_final_read):
+        try:
+            bootstrap.apply_plan(replace_ancestor_plan)
+            raise AssertionError("symlinked ancestor must prevent replacement success")
+        except ValueError as exc:
+            assert "destination changed during apply" in str(exc)
+    assert replace_ancestor_swap[0] == 5
+    assert json.loads((moved_replace_ancestor / "settings/profile.json").read_text()) == {"new": True}
+    assert (moved_replace_ancestor / "settings/foreign.txt").read_text() == "keep replacement peer"
+
+    # A failed mixed migration rolls back owned config/scaffold changes while
+    # preserving a concurrent user edit to the settings postimage.
+    rollback_vault = root / "rollback-vault"
+    rollback_vault.mkdir()
+    rollback_plugin = rollback_vault / ".obsidian/plugins/obsidian-git"
+    rollback_plugin.mkdir(parents=True)
+    (rollback_plugin / "manifest.json").write_text(json.dumps({"id": "obsidian-git", "version": "2.39.0"}))
+    rollback_settings = rollback_plugin / "data.json"
+    rollback_settings.write_text('{"custom": "before"}')
+    (rollback_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    rollback_config = root / "rollback-config.json"
+    rollback_config.write_text(json.dumps({"vaultPath": str(rollback_vault), "features": {"autoCommit": True}}))
+    rollback_plan = bootstrap.plan_for(rollback_vault, rollback_config, configure=True)
+    rollback_marker = rollback_vault / ".vault-meta/setup-marker"
+    rollback_plan["directories"].append(str(rollback_marker.parent))
+    rollback_plan["writes"].append({"path": str(rollback_marker), "content": "created marker\\n"})
+    real_parent_matches = bootstrap._public_parent_matches
+    injected_rollback_edit = [False]
+
+    def fail_after_external_settings_edit(path, identity):
+        if path == rollback_marker.parent and not injected_rollback_edit[0]:
+            injected_rollback_edit[0] = True
+            rollback_settings.write_text('{"external": "edit"}')
+            rollback_marker.write_text("user edit to newly-created marker\\n")
+            return False
+        return real_parent_matches(path, identity)
+
+    with mock.patch.object(bootstrap, "_public_parent_matches", side_effect=fail_after_external_settings_edit):
+        try:
+            bootstrap.apply_plan(rollback_plan)
+            raise AssertionError("injected parent ownership failure should abort setup")
+        except ValueError as exc:
+            assert "parent changed" in str(exc)
+    assert injected_rollback_edit[0]
+    assert json.loads(rollback_config.read_text())["features"]["autoCommit"] is True
+    assert rollback_settings.read_text() == '{"external": "edit"}'
+    assert rollback_marker.read_text() == "user edit to newly-created marker\\n"
+    assert not (rollback_vault / "wiki").exists()
+    assert not (rollback_vault / ".gitignore").exists()
+
+    # A settings parent swapped after file creation/replacement cannot make the
+    # apply report success based on a freshly reopened, unrelated directory.
+    def parent_swap_fixture(name, existing_settings):
+        swap_root = root / name
+        swap_plugin = swap_root / ".obsidian/plugins/obsidian-git"
+        swap_plugin.mkdir(parents=True)
+        (swap_plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+        if existing_settings:
+            (swap_plugin / "data.json").write_text('{"squashCommitsBeforePush":true}')
+        (swap_root / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+        swap_config = root / f"{name}-config.json"
+        swap_config.write_text(json.dumps({"vaultPath": str(swap_root), "features": {"autoCommit": False}}))
+        return swap_root, swap_plugin, swap_config, bootstrap.plan_for(swap_root, swap_config, configure=True)
+
+    # Reproduce the old final-check bug exactly: the second parent open used
+    # to see a replaced directory and compare that new identity to itself.
+    for case_name, has_settings in (("second-open-create", False), ("second-open-replace", True)):
+        second_open_vault, second_open_dir, _, second_open_plan = parent_swap_fixture(case_name, has_settings)
+        real_directory_fd = bootstrap._directory_fd
+        directory_open_count = [0]
+        moved_second_open = root / f"{case_name}-moved"
+
+        def swap_on_reopened_parent(path, created):
+            if path == second_open_dir:
+                directory_open_count[0] += 1
+                if directory_open_count[0] == 2:
+                    second_open_dir.rename(moved_second_open)
+                    second_open_dir.mkdir()
+                    (second_open_dir / "foreign.txt").write_text("preserve second-open peer")
+            return real_directory_fd(path, created)
+
+        with mock.patch.object(bootstrap, "_directory_fd", side_effect=swap_on_reopened_parent):
+            bootstrap.apply_plan(second_open_plan)
+        assert directory_open_count[0] == 1
+        assert json.loads((second_open_dir / "data.json").read_text())["squashCommitsBeforePush"] is (False if has_settings else False)
+
+    create_parent_vault, create_parent_dir, create_parent_config, create_parent_plan = parent_swap_fixture(
+        "create-parent-swap-vault", False)
+    moved_create_parent = root / "moved-create-plugin"
+    create_parent_foreign = root / "create-parent-foreign.txt"
+    create_swapped = [False]
+    real_parent_matches = bootstrap._public_parent_matches
+
+    def swap_create_parent(path, identity):
+        if path == create_parent_dir and not create_swapped[0]:
+            create_swapped[0] = True
+            create_parent_dir.rename(moved_create_parent)
+            create_parent_dir.mkdir()
+            (create_parent_dir / "foreign.txt").write_text("preserve me")
+        return real_parent_matches(path, identity)
+
+    with mock.patch.object(bootstrap, "_public_parent_matches", side_effect=swap_create_parent):
+        try:
+            bootstrap.apply_plan(create_parent_plan)
+            raise AssertionError("created profile parent swap must refuse apply")
+        except ValueError as exc:
+            assert "parent changed" in str(exc)
+    assert create_swapped[0] and not (create_parent_dir / "data.json").exists()
+    assert (create_parent_dir / "foreign.txt").read_text() == "preserve me"
+    assert (moved_create_parent / "data.json").is_file()
+
+    replace_parent_vault, replace_parent_dir, replace_parent_config, replace_parent_plan = parent_swap_fixture(
+        "replace-parent-swap-vault", True)
+    moved_replace_parent = root / "moved-replace-plugin"
+    replace_swapped = [0]
+    real_parent_matches = bootstrap._public_parent_matches
+
+    def swap_replace_parent(path, identity):
+        if path == replace_parent_dir:
+            replace_swapped[0] += 1
+            if replace_swapped[0] == 2:
+                replace_parent_dir.rename(moved_replace_parent)
+                replace_parent_dir.mkdir()
+                (replace_parent_dir / "foreign.txt").write_text("preserve replacement peer")
+        return real_parent_matches(path, identity)
+
+    with mock.patch.object(bootstrap, "_public_parent_matches", side_effect=swap_replace_parent):
+        try:
+            bootstrap.apply_plan(replace_parent_plan)
+            raise AssertionError("replaced profile parent swap must refuse apply")
+        except ValueError as exc:
+            assert "parent changed" in str(exc)
+    assert replace_swapped[0] >= 2
+    assert (replace_parent_dir / "foreign.txt").read_text() == "preserve replacement peer"
+    assert not (replace_parent_dir / "data.json").exists()
+    assert json.loads((moved_replace_parent / "data.json").read_text())["squashCommitsBeforePush"] is False
+
+    # In-place edits and identity swaps after the initial preimage read are
+    # caught before atomic replacement.
+    def replacement_fixture(name):
+        race_vault = root / name
+        race_plugin = race_vault / ".obsidian/plugins/obsidian-git"
+        race_plugin.mkdir(parents=True)
+        (race_plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+        (race_plugin / "data.json").write_text('{"squashCommitsBeforePush":true}')
+        (race_vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+        race_config = root / f"{name}-config.json"
+        race_config.write_text(json.dumps({"vaultPath": str(race_vault), "features": {"autoCommit": False}}))
+        return race_vault, race_plugin / "data.json", race_config, bootstrap.plan_for(race_vault, race_config, configure=True)
+
+    rollback_temp_vault, rollback_temp_settings, _, rollback_temp_plan = replacement_fixture("rollback-temp-vault")
+    rollback_temp_marker = rollback_temp_vault / ".trigger"
+    rollback_temp_plan["writes"].append({"path": str(rollback_temp_marker), "content": "trigger\\n"})
+    parent_checks = [0]
+    real_parent_matches = bootstrap._public_parent_matches
+
+    def fail_after_all_writes(path, identity):
+        if path == rollback_temp_vault:
+            parent_checks[0] += 1
+            if parent_checks[0] == 3:
+                return False
+        return real_parent_matches(path, identity)
+
+    real_open = os.open
+    rollback_race_injected = [False]
+
+    def edit_during_rollback_temp_open(path, flags, *args, **kwargs):
+        if isinstance(path, str) and ".data.json.rollback-" in path and not rollback_race_injected[0]:
+            rollback_race_injected[0] = True
+            rollback_temp_settings.write_text('{"external":"rollback race"}')
+        return real_open(path, flags, *args, **kwargs)
+
+    with mock.patch.object(bootstrap, "_public_parent_matches", side_effect=fail_after_all_writes), \
+            mock.patch.object(bootstrap.os, "open", side_effect=edit_during_rollback_temp_open):
+        try:
+            bootstrap.apply_plan(rollback_temp_plan)
+            raise AssertionError("injected final parent failure should initiate rollback")
+        except ValueError as exc:
+            assert "parent changed" in str(exc)
+    assert rollback_race_injected[0]
+    assert rollback_temp_settings.read_text() == '{"external":"rollback race"}'
+    assert not rollback_temp_marker.exists()
+    assert not (rollback_temp_vault / ".gitignore").exists()
+    assert not list(rollback_temp_settings.parent.glob("*.rollback-*"))
+
+    race_vault, race_settings, race_config, race_plan = replacement_fixture("content-race-vault")
+    real_stat = os.stat
+    injected = [False]
+
+    def inject_in_place_edit(path, *args, **kwargs):
+        if path == "data.json" and kwargs.get("dir_fd") is not None and not injected[0]:
+            injected[0] = True
+            race_settings.write_text('{"external":"must survive"}')
+        return real_stat(path, *args, **kwargs)
+
+    with mock.patch.object(bootstrap.os, "stat", side_effect=inject_in_place_edit):
+        try:
+            bootstrap.apply_plan(race_plan)
+            raise AssertionError("concurrent in-place settings edit must abort")
+        except (OSError, ValueError):
+            pass
+    assert injected[0] and race_settings.read_text() == '{"external":"must survive"}'
+
+    identity_vault, identity_settings, identity_config, identity_plan = replacement_fixture("identity-race-vault")
+    outside_settings = root / "external-settings.json"
+    outside_settings.write_text('{"outside":"stay"}')
+    displaced_settings = root / "displaced-settings.json"
+    real_stat = os.stat
+    swapped_identity = [False]
+
+    def inject_identity_swap(path, *args, **kwargs):
+        if path == "data.json" and kwargs.get("dir_fd") is not None and not swapped_identity[0]:
+            swapped_identity[0] = True
+            identity_settings.rename(displaced_settings)
+            identity_settings.symlink_to(outside_settings)
+        return real_stat(path, *args, **kwargs)
+
+    with mock.patch.object(bootstrap.os, "stat", side_effect=inject_identity_swap):
+        try:
+            bootstrap.apply_plan(identity_plan)
+            raise AssertionError("replacement identity swap must abort")
+        except (OSError, ValueError):
+            pass
+    assert swapped_identity[0] and outside_settings.read_text() == '{"outside":"stay"}'
+    identity_settings.unlink()
+    displaced_settings.rename(identity_settings)
+
     late_vault = root / "late-vault"
     late_config = root / "late-config" / "properties.json"
     late_plan, _ = preview(late_vault, late_config)
@@ -275,7 +767,7 @@ with tempfile.TemporaryDirectory() as temp:
             bootstrap.apply_plan(late_plan)
             raise AssertionError("late destination conflict should fail")
         except ValueError as exc:
-            assert "collision" in str(exc)
+            assert "collision" in str(exc) or "stale" in str(exc)
     assert injected[0] and late_target.read_text() == "appeared concurrently\n"
     assert not late_config.exists()
     assert not (late_vault / ".obsidian").exists()
@@ -344,5 +836,41 @@ with tempfile.TemporaryDirectory() as temp:
     wrong_config = root / "wrong-config.json"
     wrong_config.write_text('{"vaultPath": "' + str(elsewhere) + '"}')
     invoke(root / "other", wrong_config, ok=False)
+
+# Whole-directory proof must accept broader exclusions without rewriting them,
+# and reject child wildcards even when all diagnostic samples stay ignored.
+with tempfile.TemporaryDirectory() as scope_temp:
+    for existing in (False, True):
+        for number, (rules, expected) in enumerate((
+            ("/.vault-meta/\n", True),
+            ("/.vault-meta\n", True),
+            ("/.vault-meta/lifecycle/\n/.vault-meta/retrieval/\n", True),
+            ("/.vault-meta/lifecycle/\n!/.vault-meta/lifecycle/\n"
+             "/.vault-meta/lifecycle/*\n!/.vault-meta/lifecycle/.state-[0-9]*\n"
+             "/.vault-meta/retrieval/\n", False),
+            ("/.vault-meta/lifecycle/\n!/.vault-meta/lifecycle/\n"
+             "/.vault-meta/lifecycle/*\n/.vault-meta/lifecycle/*/\n"
+             "!/.vault-meta/lifecycle/.state-[0-9]*\n"
+             "/.vault-meta/retrieval/\n", False),
+        )):
+            vault = Path(scope_temp).resolve() / f"vault-{existing}-{number}"
+            vault.mkdir()
+            subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
+            plugin = vault / ".obsidian/plugins/obsidian-git"
+            plugin.mkdir(parents=True)
+            (plugin / "manifest.json").write_text('{"id":"obsidian-git","version":"2.39.0"}')
+            (vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+            config = vault.parent / f"config-{existing}-{number}.json"
+            config.write_text(json.dumps({"vaultPath": str(vault), "features": {"autoCommit": False}}))
+            if existing:
+                (vault / ".vault-meta/lifecycle").mkdir(parents=True)
+                (vault / ".vault-meta/retrieval").mkdir()
+            (vault / ".gitignore").write_text(rules)
+            assert bootstrap._git_directory_ignored(vault, ".vault-meta/lifecycle/") == expected
+            plan = bootstrap.plan_for(vault, config, configure=True)
+            if not expected:
+                assert "/.vault-meta/lifecycle/" in plan["ignoreDiffs"]
+            bootstrap.apply_plan(plan)
+            assert not bootstrap.plan_for(vault, config, configure=True)["writes"]
 
 print("vault bootstrap regressions PASS")

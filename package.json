@@ -52,6 +52,6 @@
     "release:check": "node scripts/release.mjs check",
     "version": "node scripts/release.mjs sync",
     "prepublishOnly": "npm run release:check",
-    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_agents.py"
+    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_wiki_lifecycle.py && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_agents.py"
   }
 }

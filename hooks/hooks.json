@@ -1,16 +1,20 @@
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Edit|MultiEdit|NotebookEdit|Write", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" prewrite", "timeout": 5 }] }
+      { "matcher": "Edit|MultiEdit|NotebookEdit|Write", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" prewrite", "timeout": 10 }] },
+      { "matcher": "Read", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" finalize-read", "timeout": 30 }] }
     ],
     "SessionStart": [
       { "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" start", "timeout": 10 }] }
     ],
     "PostToolUse": [
-      { "matcher": "Edit|MultiEdit|NotebookEdit|Write", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" autocommit", "timeout": 15 }] }
+      { "matcher": "Edit|MultiEdit|NotebookEdit|Write", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" postwrite", "timeout": 15 }] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" stop", "timeout": 10 }] }
+      { "matcher": "", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" stop", "timeout": 60 }] }
+    ],
+    "SubagentStop": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" stop", "timeout": 60 }] }
     ]
   }
 }

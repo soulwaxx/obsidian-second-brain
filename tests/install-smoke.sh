@@ -6,6 +6,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 export HOME="$work/home"
 export XDG_CONFIG_HOME="$work/xdg"
+export OBSIDIAN_AGENT_CONFIG="$work/agent-config.json"
+unset OBSIDIAN_VAULT_PATH WIKI_MIDDLEWARE_DIR
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$work/vault" "$work/outside"
 
 # Both package managers are redirected to temporary state; no user config is read/written.
@@ -25,7 +27,7 @@ assert len(packages) == 1, f"unexpected Pi package declarations: {packages!r}"
 # before applying ../ components incorrectly redirects an otherwise valid path.
 package = pathlib.Path(__import__("os").path.abspath(agent_dir / packages[0]))
 assert package == repo, f"Pi package resolved to {package}, expected {repo}"
-for resource in ("extensions/obsidian.ts", "skills/wiki/SKILL.md", "hooks/obsidian-session.sh", "agents/pi/wiki-vault.md"):
+for resource in ("extensions/obsidian.ts", "skills/wiki/SKILL.md", "hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "agents/pi/wiki-vault.md"):
     assert (package / resource).is_file(), f"missing Pi-installed resource: {resource}"
 print(f"Pi local package and resources verified: {package}")
 PY
@@ -39,19 +41,22 @@ entry = registry["plugins"]["obsidian-second-brain@obsidian-second-brain"][0]
 installed = pathlib.Path(entry["installPath"]).resolve()
 repo = pathlib.Path(sys.argv[2]).resolve()
 assert installed.is_dir(), f"Claude installed resource directory is missing: {installed}"
-for resource in ("hooks/obsidian-session.sh", "skills/wiki/SKILL.md", "agents/claude/wiki-vault.md", ".claude-plugin/plugin.json"):
+for resource in ("hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "skills/wiki/SKILL.md", "agents/claude/wiki-vault.md", ".claude-plugin/plugin.json"):
     assert (installed / resource).is_file(), f"missing Claude installed resource: {resource}"
 print(f"Claude plugin install and resources verified: {installed}")
 PY
 
-# An outside-vault lifecycle invocation must not touch even the temporary vault.
+# Startup from another cwd supplies a locator without touching the temporary vault.
 config="$work/agent-config.json"
 printf '{"vaultPath":"%s"}\n' "$work/vault" >"$config"
 for hook in "$repo/hooks/obsidian-session.sh" "$work"/claude/plugins/cache/obsidian-second-brain/obsidian-second-brain/*/hooks/obsidian-session.sh; do
   test -f "$hook"
   before=$(find "$work/vault" -mindepth 1 -print | sort)
-  (cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$config" bash "$hook" session-start)
+  locator=$(cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$config" bash "$hook" start)
+  [[ "$locator" == *"Configured Obsidian wiki:"* ]]
+  denied=$(cd "$work/outside" && printf '{"tool_name":"Write","tool_input":{"file_path":"%s/wiki/index.md"}}\n' "$work/vault" | bash "$hook" prewrite)
+  printf '%s\n' "$denied" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
   after=$(find "$work/vault" -mindepth 1 -print | sort)
   [[ "$before" == "$after" ]]
 done
-printf 'Outside-vault no-op verified for source and installed Claude lifecycle hooks.\n'
+printf 'Cross-directory locator, no startup writes, and destination guard verified for source and installed Claude hooks.\n'

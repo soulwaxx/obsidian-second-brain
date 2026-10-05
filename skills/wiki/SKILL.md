@@ -28,28 +28,31 @@ material never invalidates a pointer.
 
 ## Canonical Location
 
-The wiki lives under `<vault>/wiki/`. The vault root is the project root directory
-that contains `wiki/`. Always reference files by vault-relative paths (e.g.,
-`wiki/concepts/my-concept.md`). Never use host absolute paths in instructions,
-documentation, or frontmatter.
+The wiki lives under `<vault>/wiki/`. The configured vault, the agent's working
+directory, and the installed package are separate locations. Keep authored
+links and provenance portable with wiki-relative paths and source identifiers;
+absolute paths are appropriate for runtime filesystem access.
 
-**Locating the vault.** The vault root is the session's current working
-directory. Launch the agent from inside the vault so `wiki/`, `scripts/`,
-`.git`, and `.obsidian/` are all in cwd. Resolve the vault before any wiki operation —
-do not ask where it is once these hold:
+**Locating the vault.** Use the lifecycle's vault locator, or resolve
+`OBSIDIAN_VAULT_PATH` before the `vaultPath` in the selected integration config.
+`OBSIDIAN_AGENT_CONFIG` selects that config; its default is
+`~/.config/obsidian-second-brain/properties.json`. Verify the selected vault
+before wiki work. Read `wiki/WIKI.md` when present, or the vault's root convention
+file, and preserve its layout and entry point. A flat wiki is valid.
 
-- `wiki/` exists in cwd → that is the vault; use vault-relative paths from here.
-- `wiki/` is absent but `.obsidian/` exists → an empty vault; Init Mode
-  scaffolds `wiki/` in place.
-- Neither exists → you are **not** in a vault. Do not guess a path, and do not
-  create `wiki/` inside an unrelated repo. Ask the user to `cd` into the vault
-  and stop.
+The agent may remain in a repository or any other working directory. Use
+resolved absolute vault paths for file tools when outside the vault; ordinary
+relative tool paths still refer to the agent's working directory. Do not scan
+the host, infer a vault from an unrelated `wiki/`, or scaffold in the source
+repository by accident. Ask only when selection is missing, invalid, or
+ambiguous; never require a directory change as a substitute for resolution.
 
-The lifecycle hooks — protected file writes, session-start index context,
-post-write validation/index synchronization, and optional auto-commit — are
-**cwd-gated**: they run only when cwd is inside the configured vault. Run from
-anywhere else and vault lifecycle work does not run. The vault is wherever cwd
-is, and cwd must be the vault; never accept a host absolute path as a substitute.
+The lifecycle protects selected-vault destinations independently of caller
+cwd. Startup supplies a small locator rather than the full personal index;
+load relevant pages when a task needs the wiki. Keep one wiki writer at a time.
+Obsidian Git is the required version-control integration and exclusively owns
+commit, pull, and push. It must be running to automate sync, but local wiki
+reads and maintenance do not require the app to be open.
 
 Reserved files:
 
@@ -84,17 +87,21 @@ preview the scaffold and review its output and `planHash`:
 python3 <plugin-dir>/scripts/bootstrap-vault.py --vault /absolute/path/to/vault
 ```
 
-Apply the reviewed plan with `--apply --confirm 'HASH_FROM_PREVIEW'`, replacing
-the quoted placeholder with the exact printed hash. Bootstrap does not
-run `git init`, and preserves existing notes, indexes, and logs. A
-newly-created config uses `features.autoCommit: false`; existing configs are
-left unchanged, including omitted defaults. If an existing config has
-`vaultPath: null` or no `vaultPath`,
-select the intended vault; do not guess if that choice is ambiguous. If the
-integration reports a config diagnostic, stop wiki writes and use the exact,
-explicitly approved repair workflow below. A missing `autoCommit` setting in
-an existing config retains its `true` default. For Git, opt in separately and
-write `.gitignore` before staging any notes; see [Git setup](references/git-setup.md).
+Apply the reviewed scaffold with `--apply --confirm 'HASH_FROM_PREVIEW'`, using
+the exact printed hash. Bootstrap preserves existing notes, indexes, and logs
+and does not initialize Git. After installing and enabling Obsidian Git, preview
+integration settings with the same command plus `--configure`; review its
+selected differences before applying with its own hash. Configuration sets
+`features.autoCommit: false`, merges portable plugin defaults and ignore rules,
+and preserves unrelated settings. The legacy flag is deprecated and never
+authorizes agent commits. See [setup](../../docs/setup.md) and
+[Git setup](references/git-setup.md).
+
+If an existing config has null or missing `vaultPath`, explicitly select the
+intended vault; do not guess if ambiguous. A config pointing elsewhere is not
+silently retargeted. If the lifecycle reports a config diagnostic, stop the
+relevant wiki writes and use the approved repair workflow below; unrelated
+coding work remains independent.
 
 **Configuration repair is explicit and narrow.** When a lifecycle diagnostic
 reports a malformed or stale integration config, stop wiki writes. Explain the
@@ -102,40 +109,32 @@ exact minimal change to the selected config, preserving unrelated fields, and
 obtain explicit user approval for those actual changes before editing. That
 approval permits editing only the selected integration config as an exception
 to the wiki-only write boundary. Never reset the config, edit other settings,
-or enable `autoCommit` without separate direction. An identical repeated
+or change plugin sync/push policy without separate direction. An identical repeated
 diagnostic is the same pending proposal: do not restart the repair conversation
 or ask for approval again. A changed diagnostic is a new proposal and requires
 its own exact approval. Revalidate the effective config and vault boundary in
 the same session before resuming wiki work. If the vault/config selection is
 ambiguous, ask; do not guess.
 
-Distinct from the skill middleware are optional **vault-provided** scripts under
-`<vault>/scripts/` (`retrieve.py`, `contextual-prefix.py`, and `bm25-index.py`).
-They are not installed by bootstrap. From the plugin checkout, preview safe
-provisioning and review its plan and `planHash`:
+Retrieval scripts ship with the package; a vault-local `scripts/` directory is
+not required. Resolve `<package-dir>` from this skill's installed package, not
+from caller cwd. Build or query from anywhere with an explicit vault:
 
 ```sh
-python3 <plugin-dir>/scripts/provision-retrieval.py --vault /path/to/vault
+python3 <package-dir>/scripts/bm25-index.py build --vault <vault-root>
+python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root>
 ```
 
-Apply with `--apply --confirm 'HASH_FROM_PREVIEW'`, replacing the quoted
-placeholder with the exact printed hash. Provisioning refuses to overwrite
-any existing helper. It adds `.vault-meta/retrieval/` to `.git/info/exclude`
-only for Git vaults (preserving existing entries). The deterministic BM25
-index is local derived state and is never auto-staged or committed. If already
-tracked, remove it from Git deliberately and keep it excluded. In a linked Git
-worktree (`.git` is a file), provisioning requires the cache path to be
-_effectively_ ignored: a later negation rule can undo `.vault-meta/retrieval/`.
-It verifies this with Git before any writes and refuses until the ignore rules
-are corrected; then preview and apply the plan again. This avoids editing a Git
-exclude outside the vault without a reviewed plan.
+The BM25 cache is derived local state under `.vault-meta/retrieval/`; lifecycle
+tracking belongs under `.vault-meta/lifecycle/`. Both must be effectively
+ignored in Git, including later negation rules. The lifecycle reports exclusion
+problems rather than editing ignore rules or staging files. Use reviewed setup
+to repair exclusions; already-tracked state needs a deliberate owner-approved
+untracking step.
 
-Build or rebuild the index and retrieve locally from the vault root:
-
-```sh
-python3 scripts/bm25-index.py build --vault .
-python3 scripts/retrieve.py "query terms" --vault .
-```
+`provision-retrieval.py` remains a legacy preview/apply workflow for vault-local
+helper copies. It refuses overwrites; existing helpers and journals are never
+automatically deleted or migrated. New setup uses package-owned scripts.
 
 BM25 indexes Markdown directly; `contextual-prefix.py` is a hook-compatible
 no-op, not contextual or model-augmented indexing. Embedding reranking is
@@ -143,7 +142,7 @@ optional and requires Ollama running locally plus an already-installed model.
 Install it explicitly with `ollama pull nomic-embed-text`, then opt in per query:
 
 ```sh
-python3 scripts/retrieve.py "query terms" --vault . --rerank
+python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> --rerank
 ```
 
 Without `--rerank`, retrieval makes no Ollama request or download. Reranking
@@ -162,18 +161,20 @@ probe first.
 
 Core behavioral rules for every operation:
 
-- Use filesystem tools (Read, Write, Edit) for all wiki file **writes**. Claude
-  and pi block protected wiki paths before their file tools run and check them
-  again before auto-commit. Shell commands are not pre-write sandboxed: still
-  run `guard.py` yourself before every write, then `validate.py` afterwards.
+- Prefer filesystem tools (Read, Write, Edit) for wiki **writes**. Claude and
+  Pi authorize destinations before supported file tools run and validate the
+  resulting pages. Do not duplicate manual middleware calls when those checks
+  are active. Shell commands are not pre-write sandboxed: run `guard.py` before
+  every shell write and `validate.py` afterwards.
 - For reads and link-graph queries, `obsidian-cli` is available when Obsidian is
   running and answers questions the filesystem cannot (alias-aware backlinks,
   orphans, Bases views). See
   [references/cli-transport.md](references/cli-transport.md). It is an
   accelerator, never a dependency: fall back to Read/ripgrep when it is absent.
-- Use shell only for git history, middleware invocation, CLI transport, and
-  discovery commands.
-- Never pass host absolute paths to filesystem tools. Use vault-relative paths.
+- Use shell for read-only Git history, middleware invocation, CLI transport,
+  and discovery. Do not stage, commit, pull, or push the vault.
+- Resolve file-tool paths against the intended vault, not caller cwd. Absolute
+  runtime paths are allowed; authored internal links remain wiki-relative.
 - Do not exhaustively read every file. Use targeted discovery: first grep/glob,
   then short targeted reads.
 - Do not glob `**/*` from the vault root. Scope globs to specific directories
@@ -203,8 +204,9 @@ in its frontmatter. It is generated by middleware (sync.py), never authored.
 
 ## Middleware Invocation
 
-Every write to `wiki/` has two middleware phases. Run the write guard before
-the write:
+Every wiki write requires pre-write authorization and post-write validation.
+Supported file-tool lifecycle checks perform these phases. When working without
+those checks, run the middleware explicitly:
 
 **Write guard:**
 
@@ -220,20 +222,32 @@ wiki depth, and symlinks under `wiki/`. The reserved set lives in
 is blocked exactly like `wiki/index.md`.
 Exit 0 = allowed. Exit 1 = blocked. Exit 2 = usage error.
 
-After the resulting write, run validation before commit:
+For shell writes without file-tool lifecycle checks, capture the pre-write
+baseline after authorization and before changing the page:
 
 ```
-python3 <skill-dir>/scripts/okf_mw/validate.py <vault-relative-path-to-md>
+python3 <package-root>/scripts/wiki_lifecycle.py capture --vault <vault-root> --cwd <caller-cwd> --path <absolute-path-to-md>
 ```
 
-Checks OKF frontmatter validity. Exit 0 = valid. Exit 1 = invalid (errors
-printed to stderr as JSON array). Exit 2 = not a markdown file. A validation
-failure blocks auto-commit; repair the page and validate it again.
+After the write, record and validate it:
 
-Run both middleware checks with `<vault-root>` set to the vault's working
-directory; the scripts themselves resolve from `<skill-dir>` (see Canonical
-Location). If `guard.py` fails, do not write. If `validate.py` fails, do not
-commit.
+```
+python3 <package-root>/scripts/wiki_lifecycle.py record --vault <vault-root> --cwd <caller-cwd> --path <absolute-path-to-md> --validator <skill-dir>/scripts/okf_mw/validate.py
+```
+
+This retains changed pages for batch finalization and repair. Do not duplicate
+these calls for file tools whose integration already performs them.
+`<package-root>` is the directory containing this package's `scripts/` and
+`hooks/`; `<skill-dir>` is its `skills/wiki/` directory.
+
+For standalone middleware without the lifecycle helper, validate each changed
+page with `python3 <skill-dir>/scripts/okf_mw/validate.py <absolute-path-to-md>`.
+Exit 0 = valid; a non-zero exit means repair the page before publishing its
+batch's generated navigation.
+
+Pass the selected vault as `<vault-root>`, regardless of caller cwd. The scripts
+resolve from `<skill-dir>` (see Canonical Location). If the guard fails, do not
+write; if validation fails, repair or remove the invalid changed page.
 
 **Link-graph lint.** `validate.py` checks one file's frontmatter and `guard.py`
 checks one path; neither can see a link target, so a wikilink to a renamed page
@@ -247,25 +261,49 @@ python3 <skill-dir>/scripts/okf_mw/lint.py <vault-root>
 Read-only, writes nothing, exits 0 regardless of findings. Reports
 `dead_links`, `ambiguous_targets`, `duplicate_basenames`, `orphans`,
 `stale_index_entries`, `empty_sections`, and `missing_frontmatter`, with
-`--format markdown` for a readable summary. The session-end hook runs it and
-prints counts only. Run it directly after any rename or a large write pass, and
-fix what it reports — dangling links that are intentional go in
-`.vault-meta/lint-allowlist.json`.
+`--format markdown` for a readable summary. Run it directly after any rename
+or a large write pass, and
+fix what it reports. Propose intentional dangling links for an owner-reviewed
+change to `.vault-meta/lint-allowlist.json`; normal wiki edits do not authorize
+writes to vault settings.
 
 **Index regeneration.** Directory `index.md` files are generated deterministically
-by `scripts/okf_mw/sync.py` after each successful page write. The middleware
-reads OKF frontmatter `title` and `description` from each file and builds an
-indexed listing. **You never create or edit index.md files.** Your writes and
-edits are to content pages only. The vault root's `index.md` declares
-`okf_version: "0.2"` and is also middleware-generated. After each successful
-page write, the lifecycle validates changed Markdown and syncs indexes
-independently of Git and auto-commit; committing is a separate optional step.
-Shutdown also runs a convergence sync. Run sync yourself when working outside
-that hook, or when you need a fresh index mid-session:
+by `scripts/okf_mw/sync.py`, using frontmatter `title` and `description` for the
+listing. **Never create or edit index.md files.** The root index declares
+`okf_version: "0.2"`. The lifecycle finalizes a validated writing batch and
+refreshes navigation before a dependent navigation read. It retains failed
+changes for repair; an unrelated pre-existing malformed page is a diagnostic,
+not a blanket veto on wiki work. Unrelated startup/read-only shutdown must not
+write the vault.
+
+After a manually recorded batch, finalize through the lifecycle helper:
 
 ```
-python3 <skill-dir>/scripts/okf_mw/sync.py <vault-root>
+python3 <package-root>/scripts/wiki_lifecycle.py finalize --vault <vault-root> --middleware <skill-dir>/scripts/okf_mw
 ```
+
+Add `--retrieval-script <package-root>/scripts/bm25-index.py` when retrieval
+refresh is enabled. Finalization owns navigation and logging; never update the
+log through an agent file tool. A failed finalization remains pending for repair.
+
+Automatic captures belong to a namespaced frontend session and tool call. A
+reader must not settle another session\'s captures; retry navigation after its
+writer finishes. Normal turn finalization requires settled results. Only the
+same writer\'s settled Stop/shutdown may recover its missing results. After
+confirming a different writer is no longer active, explicit trusted recovery is:
+
+```
+python3 <package-root>/scripts/wiki_lifecycle.py finalize --vault <vault-root> --middleware <skill-dir>/scripts/okf_mw --recover-owner <captured-owner>
+```
+
+Never infer abandonment from elapsed time or matching bytes. The ownerless
+capture/record/finalize commands above are the explicit manual workflow, not a
+way to claim frontend-owned captures.
+
+For standalone middleware without the helper, validate every changed page,
+then run `python3 <skill-dir>/scripts/okf_mw/sync.py <vault-root>`. This refreshes
+navigation only: report lifecycle logging as unavailable rather than inventing
+log entries or claiming full integration.
 
 `<skill-dir>` is this skill's own directory (the parent of this `SKILL.md`).
 
@@ -276,14 +314,16 @@ python3 <skill-dir>/scripts/okf_mw/sync.py <vault-root>
 This skill supports four operations. The user or harness selects the mode; the
 skill executes it.
 
-**Middleware order is mandatory.** Claude and pi have pre-write checks for
-file tools, but shell commands do not. Run `guard.py` before **every** write.
-Run `validate.py` after the resulting write and before commit. The lifecycle hook repeats post-write validation,
-runs `sync.py`, commits changed indexes with the page, and runs the vault-wide
-`lint.py` and retrieval convergence checks at shutdown. When operating outside
-that hook, run `sync.py` and `lint.py` yourself too. Checkable test before
-declaring a write done: did `guard.py` run before the write and `validate.py`
-after it? If not, the write is not done.
+**Middleware order is mandatory.** Authorize the destination before a write,
+validate the result, then finalize generated navigation and lifecycle logging.
+Supported file-tool hooks handle this order; shell writes and sessions without
+the integration need explicit guard/validation/sync checks. Do not declare a
+write complete while validation or finalization is unresolved. Obsidian Git
+owns version control, not the agent.
+
+Run link-graph lint after renames or a large write pass. Also compare claims
+against their sources: flag contradictions, superseded evidence, duplicate
+concepts, and gaps. Structural lint alone cannot verify factual grounding.
 
 All three writing modes below author pages under the rules in
 [references/authoring-standards.md](references/authoring-standards.md), and
@@ -293,10 +333,11 @@ gather evidence under [references/research-discipline.md](references/research-di
 
 ### Chat Mode
 
-Respond to questions directly from your knowledge and the conversation context.
-Do not create or update wiki pages unless explicitly asked. If asked to init
-or update the wiki, explain that the user can trigger those modes explicitly.
-Use Wiki-First Answering when wiki content exists.
+Use Wiki-First Answering for relevant questions, then synthesize with the
+conversation context and cited sources. Ordinary questions are read-only unless
+filing was requested. An explicit init, update, or research-and-filing request
+selects the corresponding writing mode directly; do not require another slash
+command or ask the user to repeat an already authorized task.
 
 ### Init Mode
 
@@ -306,7 +347,7 @@ Build the wiki from scratch for a new repository or project. Full procedure:
 Not done until the Coverage Self-Check in
 [references/authoring-standards.md](references/authoring-standards.md) passes:
 every identified area documented or explicitly backlogged, every link resolves,
-no orphan pages, `_plan.md` deleted.
+no unintended orphan pages, and any temporary `_plan.md` deleted.
 
 ### Update Mode
 
@@ -314,7 +355,8 @@ Surgical updates to an existing wiki. Full procedure:
 [references/update-mode.md](references/update-mode.md).
 
 For a major update, the same Coverage Self-Check applies: every touched area
-documented or backlogged, every link resolves, `_plan.md` deleted.
+documented or backlogged, every link resolves, and any temporary `_plan.md`
+deleted.
 
 ### Auto Mode
 
@@ -328,26 +370,23 @@ procedure: [references/auto-mode.md](references/auto-mode.md).
 Answer from the wiki first. The wiki has already done the synthesis work. Read
 strategically, not exhaustively:
 
-1. If `scripts/retrieve.py` exists in the vault root, call it to rank
-   candidate pages for the query (e.g. `python3 scripts/retrieve.py "<query>"`),
-   then read the top-ranked candidates it returns. Retrieval failures, including
-   a missing/corrupt index, explicitly direct you to the `index.md` hierarchy;
-   use that hierarchy directly whenever retrieval is unavailable. Otherwise,
-   traverse the vault's entry-point page and generated `index.md` hierarchy for
-   the overview and section map (see Entry Point & Documentation Layout in
+1. Use the package's `scripts/retrieve.py` with the explicit vault root to rank
+   candidate pages, then read the top-ranked candidates. Retrieval failures,
+   including a missing/corrupt cache, direct you to the `index.md` hierarchy;
+   use the vault contract's entry point and generated indexes when retrieval
+   is unavailable (see Entry Point & Documentation Layout in
    `references/authoring-standards.md`).
-   The index behind `retrieve.py` is refreshed at session end by the vault
-   lifecycle hook when provisioned. Date queries remain lexical: matching dated
+   Retrieval refresh follows finalized writing batches when enabled. Read a
+   page by its resolved path while its batch is still pending rather than
+   expecting search to find it. Date queries remain lexical: matching dated
    notes rank first, then relevant dated sections in canonical pages. Query
-   qualifiers refine section relevance rather than disabling date priority. If a
-   page written earlier in *this* session must be findable, read it by path rather
-   than expecting retrieval to surface it.
+   qualifiers refine section relevance rather than disabling date priority.
    For an exact known string rather than a topic, `obsidian-cli search` is
    faster than a ranked query (see `references/cli-transport.md`).
 2. If the question is narrow, read the relevant section page directly.
 3. Only inspect raw source code, connectors, or external data when:
    - The wiki is missing the relevant page entirely.
-   - The wiki is stale (based on git timestamps vs source changes).
+   - Source changes or freshness metadata indicate the relevant claims need review.
    - The wiki is ambiguous or self-contradictory.
    - The user explicitly asks you to verify against source.
 
@@ -365,8 +404,10 @@ specific range, not entire directories.
   or `.env` files.
 - `.env.example` files with placeholder values only may be read for
   documentation of required environment variables.
-- Every piece of documentation stays under `wiki/`. Never create or edit
-  files outside the wiki directory.
+- Wiki documentation belongs under the selected vault's `wiki/`. Treat curated
+  `.raw/` sources and vault settings as read-only during wiki work. An approved
+  setup/configuration repair is a separate, narrowly scoped operation. These
+  wiki rules do not prevent an agent's unrelated source-repository work.
 - The middleware guard.py enforces path bounds and blocks reserved `index.md`
   and `log.md` at any wiki depth. Do not attempt to bypass it.
 
@@ -388,12 +429,11 @@ and the other syntax conventions.
 **You never write `wiki/log.md`.** The vault lifecycle hook owns it. It writes
 the OKF v0.2 §9 shape: an `# Directory Update Log` title, `## YYYY-MM-DD` date
 headings newest first, and one prose bullet per changed page
-(`* **Creation**: Added [path](/path).` / `* **Revised**: …`), classified
-Creation or Update from whether the path already existed in `HEAD`. Same-day
-auto-commits merge under one date heading rather than stacking a heading per
-commit. The "why" rides the commit message. It had two writers before — the
-hook rewrites the whole file through a temp file, so an agent prepend taken
-from a stale read silently dropped the hook's line, and vice versa.
+(`* **Creation**: Added [path](/path).` / `* **Update**: Revised [path](/path).`),
+classified from pre-write existence, not Git history. Finalization records
+successful content changes independently of commits, preserves prior entries,
+and avoids duplicate no-op/retry entries. The log has one writer because an
+agent prepend based on a stale read can lose lifecycle entries.
 
-If a change needs narrative beyond the per-page bullets, put it in the commit
-message, not in `log.md`.
+Put the rationale in the relevant source, decision, or synthesis page, not in
+an agent-generated commit message or a direct edit to `log.md`.
