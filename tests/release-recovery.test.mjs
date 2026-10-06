@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { assertNpmRelease, githubCommand, npmCommand, recoverRelease, releaseVersion } from "../scripts/release-recovery.mjs";
+import { assertNpmRelease, githubCommand, npmCommand, recoverRelease, releaseVersion, waitForNpmRelease } from "../scripts/release-recovery.mjs";
 
 const input = { tag: "v2.0.1", sha: "a".repeat(40), name: "@soulwaxx/obsidian-second-brain", repository: "soulwaxx/obsidian-second-brain" };
 function fixture(npmExists, githubExists, latest = "2.0.0") {
@@ -69,6 +69,41 @@ test("network/auth failure is not treated as a missing package", async () => {
   deps.npm = () => { throw new Error("registry unavailable"); };
   await assert.rejects(recoverRelease(input, deps), /registry unavailable/);
   assert.deepEqual(state.calls, []);
+});
+
+test("publication visibility may take longer than the old one-minute window", async (t) => {
+  t.mock.method(console, "log", () => {});
+  let calls = 0, elapsed = 0;
+  const npm = (command, spec, format) => {
+    assert.deepEqual([command, spec, format], ["view", `${input.name}@2.0.1`, "--json"]);
+    return ++calls === 22 ? { version: "2.0.1", gitHead: input.sha } : undefined;
+  };
+  await waitForNpmRelease(npm, input.name, "2.0.1", input.sha, async (ms) => { elapsed += ms; });
+  assert.equal(calls, 22);
+  assert.equal(elapsed, 210000);
+});
+
+test("visibility polling stops after five minutes without an extra final sleep", async (t) => {
+  t.mock.method(console, "log", () => {});
+  let calls = 0, elapsed = 0;
+  await assert.rejects(waitForNpmRelease(() => { calls++; }, input.name, "2.0.1", input.sha,
+    async (ms) => { elapsed += ms; }), /check registry visibility before tag recovery/);
+  assert.equal(calls, 31);
+  assert.equal(elapsed, 300000);
+});
+
+test("visibility polling refuses a source mismatch immediately", async () => {
+  let sleeps = 0;
+  await assert.rejects(waitForNpmRelease(() => ({ version: "2.0.1", gitHead: "b".repeat(40) }),
+    input.name, "2.0.1", input.sha, async () => { sleeps++; }), /different source/);
+  assert.equal(sleeps, 0);
+});
+
+test("visibility polling does not retry authentication or network failures", async () => {
+  let sleeps = 0;
+  await assert.rejects(waitForNpmRelease(() => { throw new Error("registry unavailable"); },
+    input.name, "2.0.1", input.sha, async () => { sleeps++; }), /registry unavailable/);
+  assert.equal(sleeps, 0);
 });
 
 test("CLI adapters treat only explicit 404s as missing outputs", (t) => {
