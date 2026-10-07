@@ -18,8 +18,11 @@ The wiki is the product. Chat is just the interface.
 
 This skill implements the Open Knowledge Format (OKF) v0.2 specification — the
 vendor-neutral standard (a directory of Markdown files with YAML frontmatter),
-not an Obsidian-specific format. It follows the openwiki deep-agent model: one
-agent that handles the whole lifecycle rather than routing to sub-skills.
+not an Obsidian-specific format. This remains the general `/wiki` entry point
+and authoritative shared safety contract. Focused skills route common query,
+selected-conversation save, bounded ingest/research, and read-only health intents;
+they all follow this skill and its references rather than defining separate
+write rules. Use one wiki writer at a time.
 
 Cross-references below name sections rather than numbering them, so moving
 material never invalidates a pointer.
@@ -116,14 +119,42 @@ its own exact approval. Revalidate the effective config and vault boundary in
 the same session before resuming wiki work. If the vault/config selection is
 ambiguous, ask; do not guess.
 
-Retrieval scripts ship with the package; a vault-local `scripts/` directory is
-not required. Resolve `<package-dir>` from this skill's installed package, not
-from caller cwd. Build or query from anywhere with an explicit vault:
+The package-owned `obsidian-second-brain` CLI provides read-only diagnostics
+(`doctor --json`) and structured search (`search "query terms" --json`). Both
+use the selected vault, or accept an explicit `--vault <vault-root>`; search
+does not build an index. A client plugin installation does not necessarily add
+the npm bin to shell `PATH`: use the bin only when
+`command -v obsidian-second-brain` succeeds. Otherwise invoke the currently loaded
+package's `scripts/obsidian-second-brain.mjs` by following [the package-relative
+launcher procedure](references/focused-workflows.md#run-the-package-cli). That
+procedure derives an absolute package root from Claude's active skill base
+directory or Pi's loaded skill path; it does not depend on caller cwd or vault location.
+The lower-level package retrieval scripts remain available for index
+maintenance and direct retrieval:
 
 ```sh
 python3 <package-dir>/scripts/bm25-index.py build --vault <vault-root>
 python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root>
 ```
+
+Page-level BM25 is the default and works without an embedding service. Optional
+semantic chunking requires an explicit build with an already-installed local
+model; hybrid search is separately opt-in and fuses current chunk candidates
+with BM25. Stale chunks are not evidence. If the installed model identity
+cannot be verified, cached vectors are retained but not used, and page-level
+BM25 remains available. ISO-date queries stay lexical:
+
+```sh
+python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \\
+  --semantic-chunks --ollama-model <installed-model>
+python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \\
+  --hybrid --ollama-model <installed-model>
+```
+
+Do not install/download a model or send retrieval content to a remote service.
+The deterministic boundary benchmark (`python3
+<package-dir>/scripts/benchmark-semantic-retrieval.py`) tests fixture logic only;
+it is not live model-quality evidence.
 
 The BM25 cache is derived local state under `.vault-meta/retrieval/`; lifecycle
 tracking belongs under `.vault-meta/lifecycle/`. Both must be effectively
@@ -139,16 +170,19 @@ automatically deleted or migrated. New setup uses package-owned scripts.
 BM25 indexes Markdown directly; `contextual-prefix.py` is a hook-compatible
 no-op, not contextual or model-augmented indexing. Embedding reranking is
 optional and requires Ollama running locally plus an already-installed model.
-Install it explicitly with `ollama pull nomic-embed-text`, then opt in per query:
+Install it explicitly with `ollama pull qwen3-embedding:4b`, then opt in per query:
 
 ```sh
 python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> --rerank
 ```
 
-Without `--rerank`, retrieval makes no Ollama request or download. Reranking
+Without `--rerank` or `--hybrid`, retrieval makes no Ollama request or download.
+Embedding operations default to `qwen3-embedding:4b`; `--ollama-model` can select
+another installed model. Rebuild semantic chunks explicitly after a model change;
+old-model vectors are not compatible. Reranking
 uses Ollama's local `POST /api/embed` endpoint with `model` and `input` (see
 [Ollama Embed API](https://docs.ollama.com/api/embed)); model installation is
-explicit ([nomic-embed-text](https://ollama.com/library/nomic-embed-text)). The
+explicit ([qwen3-embedding:4b](https://ollama.com/library/qwen3-embedding:4b)). The
 client restricts requests to localhost/loopback, disables proxies and rejects
 redirects; there is no remote egress or automatic model download. If reranking
 is unavailable it keeps BM25 results. Missing/invalid index state and retrieval
@@ -311,8 +345,12 @@ log entries or claiming full integration.
 
 ## Operations
 
-This skill supports four operations. The user or harness selects the mode; the
-skill executes it.
+The general `/wiki` entry point supports vault setup, broad maintenance, and
+unmatched requests. Focused intents may use `wiki-query`, `wiki-save`,
+`wiki-ingest`, `wiki-research`, or `wiki-health`; the shared instructions are
+in [focused workflows](references/focused-workflows.md). Focus does not change
+vault selection or write authorization. The user selects the intent; the skill
+executes only that bounded operation.
 
 **Middleware order is mandatory.** Authorize the destination before a write,
 validate the result, then finalize generated navigation and lifecycle logging.
@@ -370,12 +408,15 @@ procedure: [references/auto-mode.md](references/auto-mode.md).
 Answer from the wiki first. The wiki has already done the synthesis work. Read
 strategically, not exhaustively:
 
-1. Use the package's `scripts/retrieve.py` with the explicit vault root to rank
-   candidate pages, then read the top-ranked candidates. Retrieval failures,
-   including a missing/corrupt cache, direct you to the `index.md` hierarchy;
-   use the vault contract's entry point and generated indexes when retrieval
-   is unavailable (see Entry Point & Documentation Layout in
-   `references/authoring-standards.md`).
+1. Use `obsidian-second-brain search "query terms" --json` when its bin is on
+   `PATH`; otherwise use the package-relative launcher procedure described
+   above. Rank candidate pages, then read the top-ranked candidates. Search is
+   read-only and does not build the index. Retrieval failures, unavailable CLI,
+   empty results, or a missing/corrupt cache direct you to the `index.md`
+   hierarchy; use the vault contract's entry point and generated indexes when
+   search is unavailable (see Entry Point & Documentation Layout in
+   `references/authoring-standards.md`). Direct package retrieval scripts remain
+   available for maintenance and lower-level retrieval.
    Retrieval refresh follows finalized writing batches when enabled. Read a
    page by its resolved path while its batch is still pending rather than
    expecting search to find it. Date queries remain lexical: matching dated

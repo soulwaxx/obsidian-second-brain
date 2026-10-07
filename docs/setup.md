@@ -112,7 +112,17 @@ repeat an unchanged repair proposal or reset other agent/plugin settings.
 ## 5. Use the wiki from the source workspace
 
 Launch Claude Code or Pi where the main task belongs, including a repository
-outside the vault. Invoke `/obsidian-second-brain:wiki` or `/skill:wiki`. The
+outside the vault. Use `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki`
+in Pi as the general entry point. The focused skills are namespaced as
+`/obsidian-second-brain:wiki-query`, `/obsidian-second-brain:wiki-save`,
+`/obsidian-second-brain:wiki-ingest`, `/obsidian-second-brain:wiki-research`, and
+`/obsidian-second-brain:wiki-health` in Claude Code; use `/skill:wiki-query`,
+`/skill:wiki-save`, `/skill:wiki-ingest`, `/skill:wiki-research`, and
+`/skill:wiki-health` in Pi. Query and health are read-only; conversation save requires an explicitly
+selected answer or insight; ingest/research do not imply capture or automatic
+filing. An explicitly requested local UTF-8 source capture and optional
+recoverable batch for larger multi-page edits are available as separate,
+reviewed package CLI workflows; neither is required for small edits. The
 startup locator identifies the selected vault; the skill reads its existing
 contract and relevant pages rather than loading the entire index into every
 unrelated conversation. A pre-existing flat wiki remains flat.
@@ -138,6 +148,28 @@ currently loaded, unpaused, authenticated, or successfully pushing. Local wiki
 work can continue while the app is closed, but automatic backups cannot. Git
 history is recovery support, not a multi-page transaction or write sandbox.
 
+## Read-only CLI search and diagnostics
+
+When `obsidian-second-brain` is on shell `PATH`, use
+`obsidian-second-brain search "query terms" --json` or
+`obsidian-second-brain doctor --json`. Claude/Pi plugin installation does not
+necessarily add the npm bin to `PATH`; if it is missing, invoke the active
+package's Node launcher using the package-relative procedure in the
+[shared workflow reference](../skills/wiki/references/focused-workflows.md#run-the-package-cli).
+That derives an absolute package root from Claude's loaded skill base directory
+or Pi's loaded skill path, without relying on caller cwd or guessing an npm cache path.
+Both routes resolve the selected vault consistently with the integration.
+Search reports structured results, fallback, and freshness without rebuilding
+an index. Doctor reports
+configuration, dependency, vault, cache-exclusion, lifecycle, and retrieval
+status; it does not repair anything. `obsidian-second-brain evidence-report
+--json` is an additional read-only report. Optional source/claim ledgers are
+canonical wiki data and are never migrated or required; the report describes
+structure and declared metadata, not factual verification. Use the generated index hierarchy if
+search is unavailable or unhelpful. See the
+[focused workflow reference](../skills/wiki/references/focused-workflows.md)
+for scope boundaries.
+
 ## Local retrieval
 
 Use package-owned helpers from any working directory; no scripts are copied
@@ -161,10 +193,38 @@ and prioritize matching dated notes, then relevant dated sections. Additional
 qualifiers refine dated-section relevance. Read a pending new page by path
 rather than assuming search has already indexed it.
 
+Page-level BM25 remains the default and does not require embeddings. Semantic
+chunk indexing and hybrid search are separate, explicit opt-ins; both require
+Ollama running locally with a model you have already installed. Build the cached
+chunk vectors only when requested, then opt in to rank fusion per search:
+
+```sh
+python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \\
+  --semantic-chunks --ollama-model <installed-model>
+python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \\
+  --hybrid --ollama-model <installed-model>
+```
+
+The derived cache is `.vault-meta/retrieval/chunks.json`; changed, removed, or
+otherwise stale pages are excluded as semantic evidence. Hybrid search fuses
+semantic chunk candidates with page-level BM25. If an embedding request or
+installed-model identity check is unavailable, hybrid search falls back to
+page-level BM25; cached vectors stay on disk but are not used until the current
+identity can be verified. ISO-date queries remain lexical. No build or search
+command installs a model. A repeatable deterministic boundary-logic comparison is
+available with `python3 scripts/benchmark-semantic-retrieval.py`; its hand-authored
+vectors are not live model-quality evidence.
+
+Embedding operations default to `qwen3-embedding:4b`. Use `--ollama-model` to
+select another already-installed model. Old-model semantic vectors are excluded
+when selecting a different model; explicitly rebuild with `build --semantic-chunks`
+only after the selected model is available. Neither search nor ordinary BM25
+builds install models or migrate semantic caches.
+
 Embedding reranking is separate and opt-in:
 
 ```sh
-ollama pull nomic-embed-text
+ollama pull qwen3-embedding:4b
 python3 "$PLUGIN_DIR/scripts/retrieve.py" "query terms" --vault "$VAULT" --rerank
 ```
 

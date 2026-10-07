@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { verifySource, validateEvidence } from "../scripts/release-source.mjs";
+import { verifySource, validateEvidence } from "../.github/release-tools/release-source.mjs";
 
 const repository = "soulwaxx/obsidian-second-brain";
 const sha = "a".repeat(40), tree = "b".repeat(40), parent = "c".repeat(40), head = "d".repeat(40);

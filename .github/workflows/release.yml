@@ -47,9 +47,9 @@ jobs:
           RECOVERY_TAG: ${{ inputs.tag }}
         run: |
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
-            SOURCE_SHA=$(node scripts/release-recovery.mjs resolve "$RECOVERY_TAG")
+            SOURCE_SHA=$(node .github/release-tools/release-recovery.mjs resolve "$RECOVERY_TAG")
           fi
-          node scripts/release-source.mjs verify "$SOURCE_SHA"
+          node .github/release-tools/release-source.mjs verify "$SOURCE_SHA"
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
   release:
@@ -58,8 +58,23 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      pull-requests: read
       id-token: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Preserve trusted recovery orchestration
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ORCHESTRATION_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$ORCHESTRATION_SHA"
+          mkdir "$RUNNER_TEMP/release-orchestration"
+          git archive "$ORCHESTRATION_SHA" .github/release-tools .releaserc.json package.json .claude-plugin \
+            | tar -x -C "$RUNNER_TEMP/release-orchestration"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify.outputs.source_sha }}
@@ -98,7 +113,15 @@ jobs:
           CLAUDE_VERSION: '2.1.288'
         run: npm install --global "@earendil-works/pi-coding-agent@$PI_VERSION" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
       - name: Install and verify locked release tools
+        if: github.event_name == 'push'
         run: |
+          npm ci --prefix .github/release-tools --ignore-scripts --no-fund
+          node .github/release-tools/check.mjs
+          npm audit --prefix .github/release-tools --audit-level=critical
+      - name: Install and verify trusted recovery tools
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cd "$RUNNER_TEMP/release-orchestration"
           npm ci --prefix .github/release-tools --ignore-scripts --no-fund
           node .github/release-tools/check.mjs
           npm audit --prefix .github/release-tools --audit-level=critical
@@ -115,4 +138,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RECOVERY_TAG: ${{ inputs.tag }}
           NPM_CONFIG_PROVENANCE: 'true'
-        run: node scripts/release-recovery.mjs recover "$RECOVERY_TAG"
+        run: node "$RUNNER_TEMP/release-orchestration/.github/release-tools/release-recovery.mjs" recover "$RECOVERY_TAG"

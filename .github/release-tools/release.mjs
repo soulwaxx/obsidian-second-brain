@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const [command] = process.argv.slice(2);
 
 function manifests() {
@@ -39,5 +39,5 @@ switch (command) {
     console.log(`Release versions synchronized: ${checkVersions()}`);
     break;
   default:
-    throw new Error("usage: node scripts/release.mjs check | sync");
+    throw new Error("usage: node .github/release-tools/release.mjs check | sync");
 }

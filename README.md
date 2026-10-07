@@ -127,10 +127,24 @@ different vault. Re-preview when inspected files change. See
 ## Work from any folder
 
 Start the agent in the repository or folder where the main task belongs.
-Invoke `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki` in Pi.
-The skill resolves the configured vault, reads its existing contract, and uses
-absolute runtime paths when necessary. Ordinary relative coding paths keep
-their current-directory meaning.
+Use `/obsidian-second-brain:wiki` in Claude Code or `/skill:wiki` in Pi as the
+general entry point. Focused intents are available as
+`/obsidian-second-brain:wiki-query`, `/obsidian-second-brain:wiki-save`,
+`/obsidian-second-brain:wiki-ingest`, `/obsidian-second-brain:wiki-research`,
+and `/obsidian-second-brain:wiki-health` in Claude Code, or `/skill:wiki-query`,
+`/skill:wiki-save`, `/skill:wiki-ingest`, `/skill:wiki-research`, and
+`/skill:wiki-health` in Pi. Query and health are read-only; save only files an
+explicitly selected conversation insight; ingest/research do not imply raw
+source capture or automatic filing. Every intent follows the shared wiki
+write rules. The skill resolves the configured vault and uses absolute runtime
+paths when necessary. Ordinary relative coding paths keep their
+current-directory meaning. Larger coordinated wiki edits may optionally use the
+reviewed recoverable batch CLI; small edits retain the normal lifecycle. An
+explicitly selected local UTF-8 text source may also be preserved through a
+separate reviewed, immutable capture into `.raw/agent-captures/`. Neither is
+mandatory, and capture does not provide web/media extraction or authorize wiki
+filing. See the [focused workflow reference](skills/wiki/references/focused-workflows.md)
+for exact approval and recovery commands.
 
 Startup supplies a small vault locator rather than injecting the entire
 personal index into unrelated work. The skill searches and reads relevant
@@ -151,6 +165,35 @@ Unrelated startup/read-only shutdown does not regenerate the vault. Obsidian
 Git handles version control independently, including for legacy configs with
 `autoCommit: true`.
 
+## Query and diagnose
+
+When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
+for read-only structured search and doctor commands from any folder:
+
+```sh
+obsidian-second-brain search "query terms" --json
+obsidian-second-brain doctor --json
+obsidian-second-brain evidence-report --json
+```
+
+Pi and Claude plugin installation does not necessarily put that npm bin on
+shell `PATH`. If `command -v obsidian-second-brain` fails, do not install a
+second copy: invoke the active package's Node launcher using its package-relative
+path. The [shared workflow reference](skills/wiki/references/focused-workflows.md#run-the-package-cli)
+shows how to derive an absolute package root from Claude's loaded skill base
+directory or Pi's loaded skill location; this works from any caller cwd and selects the
+version already loaded by that client.
+
+Search uses the selected vault and does not rebuild the index; doctor reports
+configuration, dependencies, vault, cache-exclusion, lifecycle, and retrieval
+status without repairing them. `evidence-report` is also read-only; optional
+source/claim records are not migrated or required, and its structural,
+freshness, and relationship output does not establish factual truth or source
+verification. Use the wiki's generated index hierarchy when search is
+unavailable or has no useful result. Focused workflow limits and
+selected-conversation save rules are documented in
+[the shared workflow reference](skills/wiki/references/focused-workflows.md).
+
 ## Local retrieval
 
 Retrieval ships with the package; no vault-local helper installation, Ollama,
@@ -167,11 +210,14 @@ package-owned scripts; a missing/corrupt cache falls back to generated index
 navigation. Existing vault-local helpers are left untouched; the legacy
 `provision-retrieval.py` preview/apply workflow remains available if needed.
 
-Embedding reranking is a separate opt-in. Install/start Ollama and explicitly
-download the model before querying:
+Embedding operations default to `qwen3-embedding:4b`; `--ollama-model` selects
+another already-installed model. Changing models does not make old-model cache
+vectors compatible: rebuild semantic chunks explicitly after the selected model
+is available. Embedding reranking is a separate opt-in. Install/start Ollama and
+explicitly download the model before querying:
 
 ```sh
-ollama pull nomic-embed-text
+ollama pull qwen3-embedding:4b
 python3 "$PLUGIN_DIR/scripts/retrieve.py" "query terms" --vault "$VAULT" --rerank
 ```
 

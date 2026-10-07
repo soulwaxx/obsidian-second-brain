@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const script = fileURLToPath(new URL("../scripts/release-source.mjs", import.meta.url));
+const script = fileURLToPath(new URL("../.github/release-tools/release-source.mjs", import.meta.url));
 
 test("record and verify CLI checks a real squash tree through paginated APIs and a ZIP artifact", (t) => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-source-proof-"));

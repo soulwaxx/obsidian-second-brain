@@ -4,6 +4,7 @@ set -euo pipefail
 hook=${1:?hook path required}
 middleware=${2:?middleware path required}
 hook=$(cd "$(dirname "$hook")" && pwd -P)/$(basename "$hook")
+hooks_dir=$(dirname "$hook")
 middleware=$(cd "$middleware" && pwd -P)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -71,13 +72,11 @@ grep -Fq '**Creation**' "$vault/wiki/log.md"
 # active prewrite snapshot; writer settlement retains Update classification.
 capture_with_prewrite "$vault/wiki/topic/new page.md"
 state_before_reader=$(cat "$vault/.vault-meta/lifecycle/state.json")
-if (cd "$caller" && printf '{"session_id":"%s","background_tasks":[{"id":"still-running"}],"session_crons":[]}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop) >/dev/null 2>&1; then
-  echo 'Claude Stop recovered while a background task was still active' >&2; exit 1
-fi
+stop_result=$(cd "$caller" && printf '{"session_id":"%s","background_tasks":[{"id":"still-running"}],"session_crons":[]}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("deferred until they settle"))' >/dev/null
 [ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$state_before_reader" ]
-if (cd "$caller" && printf '%s' '{"session_id":"reader-fixture","background_tasks":[],"session_crons":[]}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop) >/dev/null 2>&1; then
-  echo 'reader Stop recovered a foreign writer capture' >&2; exit 1
-fi
+stop_result=$(cd "$caller" && printf '%s' '{"session_id":"reader-fixture","background_tasks":[],"session_crons":[]}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("another writer session"))' >/dev/null
 read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/topic/index.md" '{session_id:"reader-fixture",tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
 printf '%s' "$read_result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
 [ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$state_before_reader" ]
@@ -109,6 +108,21 @@ fi
 printf 'ordinary repository write\n' >"$caller/code.py"
 (cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" guard code.py)
 
+# Claude's installed hook contract includes clear/compact SessionStart reasons;
+# each invocation resolves the current configured vault instead of stale state.
+jq -e '.hooks.SessionStart[0].matcher | split("|") | (index("startup") != null and index("resume") != null and index("clear") != null and index("compact") != null)' "$hooks_dir/hooks.json" >/dev/null
+second_vault=$work/reselected-vault
+mkdir -p "$second_vault/wiki"
+printf '# Reselected Wiki\n' >"$second_vault/wiki/page.md"
+properties=$work/reselected-properties.json
+printf '{"vaultPath":"%s"}\n' "$vault" >"$properties"
+output=$(cd "$caller" && OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start 2>/dev/null)
+printf '%s' "$output" | grep -F "$vault/wiki" >/dev/null
+printf '{"vaultPath":"%s"}\n' "$second_vault" >"$properties"
+output=$(cd "$caller" && OBSIDIAN_AGENT_CONFIG=$properties WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start 2>/dev/null)
+printf '%s' "$output" | grep -F "$second_vault/wiki" >/dev/null
+[ ! -e "$second_vault/.vault-meta" ]
+
 # Invalid changed writes stay pending; later repair allows one coherent publication.
 capture_with_prewrite "$vault/wiki/topic/invalid.md"
 cat >"$vault/wiki/topic/invalid.md" <<'EOF'
@@ -117,10 +131,22 @@ EOF
 if postwrite_captured "$vault/wiki/topic/invalid.md" >/dev/null 2>&1; then
   echo 'invalid changed page accepted' >&2; exit 1
 fi
+hook_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/topic/invalid.md" --arg session "$TEST_SESSION" --arg id "$TEST_TOOL_ID" '{session_id:$session,tool_use_id:$id,tool_name:"Write",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" postwrite)
+printf '%s' "$hook_result" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | contains("not finalized") and contains("retained for repair"))' >/dev/null
 index_before=$(shasum -a 256 "$vault/wiki/index.md" | awk '{print $1}')
 if (cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize --owner "claude:$TEST_SESSION") >/dev/null 2>&1; then
   echo 'invalid batch finalized' >&2; exit 1
 fi
+stop_result=$(cd "$caller" && printf '{"session_id":"%s","background_tasks":[],"session_crons":[],"stop_hook_active":false}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("retained"))' >/dev/null
+invalid_bytes=$(cat "$vault/wiki/topic/invalid.md")
+invalid_state=$(cat "$vault/.vault-meta/lifecycle/state.json")
+for attempt in 1 2; do
+  stop_result=$(cd "$caller" && printf '{"session_id":"%s","background_tasks":[],"session_crons":[],"stop_hook_active":true}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+  printf '%s' "$stop_result" | jq -e '(.decision // "") != "block" and (.systemMessage | contains("remains unresolved") and contains("retained") and contains("not finalized"))' >/dev/null
+  [ "$(cat "$vault/wiki/topic/invalid.md")" = "$invalid_bytes" ]
+  [ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$invalid_state" ]
+done
 read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/topic/index.md" --arg session "$TEST_SESSION" '{session_id:$session,tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
 printf '%s' "$read_result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
 read_result=$(cd "$caller" && jq -nc --arg p "$caller/code.py" --arg session "$TEST_SESSION" '{session_id:$session,tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
@@ -198,6 +224,14 @@ result=$(cd "$caller" && printf '%s' '{"tool_name":"Write","tool_input":{"file_p
 [ -z "$result" ]
 result=$(cd "$caller" && printf '%s' "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$vault/wiki/base.md\"}}" | OBSIDIAN_AGENT_CONFIG=$properties OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)
 printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+for active in false true true; do
+  stop_result=$(cd "$caller" && printf '{"session_id":"config-failure","stop_hook_active":%s,"background_tasks":[],"session_crons":[]}' "$active" | OBSIDIAN_AGENT_CONFIG=$properties OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+  if [ "$active" = false ]; then
+    printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("invalid"))' >/dev/null
+  else
+    printf '%s' "$stop_result" | jq -e '(.decision // "") != "block" and (.systemMessage | contains("remains unresolved") and contains("invalid") and contains("not finalized"))' >/dev/null
+  fi
+done
 read_result=$(cd "$caller" && jq -nc --arg p "$caller/code.py" '{tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_AGENT_CONFIG=$properties OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
 [ -z "$read_result" ]
 read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/index.md" '{tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_AGENT_CONFIG=$properties OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)

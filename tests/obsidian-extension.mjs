@@ -47,6 +47,24 @@ try {
   injected = await handlers.get("before_agent_start")({}, ctx);
   assert.match(injected.message.content, /wiki locator/);
   assert.doesNotMatch(injected.message.content, /# Test TOC/);
+  const resumedLocator = await handlers.get("before_agent_start")({}, { ...ctx, sessionManager: { getSessionId: () => "pi-resumed-session" } });
+  assert.match(resumedLocator.message.content, /wiki locator/, "new/resumed session identity receives its own locator");
+  await handlers.get("session_compact")({}, ctx);
+  assert.match((await handlers.get("before_agent_start")({}, ctx)).message.content, /wiki locator/,
+    "compaction re-injects the locator after its prior context may have been discarded");
+  const locatorRetargetVault = path.join(tmp, "locator-retarget-vault");
+  fs.mkdirSync(path.join(locatorRetargetVault, "wiki"), { recursive: true });
+  fs.writeFileSync(path.join(locatorRetargetVault, "wiki", "Unique Locator.md"), "---\\ntype: note\\ntitle: Unique Retarget Locator\\n---\\n# Unique Retarget Locator\\n");
+  process.env.OBSIDIAN_VAULT_PATH = locatorRetargetVault;
+  const retargetedLocator = await handlers.get("before_agent_start")({}, ctx);
+  assert.match(retargetedLocator.message.content, /locator-retarget-vault/,
+    "same session reloads and injects the locator for a newly selected vault");
+  process.env.OBSIDIAN_VAULT_PATH = vault;
+  const returnedLocator = await handlers.get("before_agent_start")({}, ctx);
+  assert.match(returnedLocator.message.content, /Configured Obsidian wiki: .*\/vault\/wiki/,
+    "same session reinjects the current locator when configuration returns from B to previously visited A");
+  assert.equal(await handlers.get("before_agent_start")({}, ctx), undefined,
+    "same selected session/vault pair remains deduplicated after A-B-A reselection");
 
   // Broken-config repair is limited to the exact selected regular config file.
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard: "bad" }, custom: { preserve: true } }));
@@ -230,8 +248,15 @@ try {
   const repairCtx = { ...ctx, ui: { notify: (message) => repairWarnings.push(message) } };
   fs.writeFileSync(repairPage, "# Missing required frontmatter\n");
   await simulateWrite({ toolCallId: "repair-failed-write", toolName: "write", input: { path: repairPage } }, repairCtx);
-  await featureHandlers.get("tool_result")({ toolCallId: "repair-failed-write", toolName: "write", input: { path: repairPage }, isError: false }, repairCtx);
+  const failedWriteResult = await featureHandlers.get("tool_result")({ toolCallId: "repair-failed-write", toolName: "write", input: { path: repairPage }, isError: false, content: [{ type: "text", text: "write succeeded" }] }, repairCtx);
   assert.match(repairWarnings.join(" "), /post-write validation\/sync failed/);
+  assert.match(failedWriteResult.content.map((part) => part.text ?? "").join(" "), /bytes were retained and were not successfully finalized/,
+    "validation failure must be visible in the tool result presented to the model");
+  const settleDiagnostic = await featureHandlers.get("agent_before_settle")({ entries: [], continue: false }, repairCtx);
+  assert.equal(settleDiagnostic.continue, true, "the final actionable boundary allows at most one repair turn");
+  assert.match(settleDiagnostic.entries[0].content, /Inspect\/repair the retained page/);
+  const repeatedSettleDiagnostic = await featureHandlers.get("agent_before_settle")({ entries: [], continue: false }, repairCtx);
+  assert.equal(repeatedSettleDiagnostic.continue, undefined, "persistent failures cannot cause unbounded continuation");
   const topicIndex = path.join(vault, "wiki/topic/index.md");
   const validPage = path.join(vault, "wiki/topic/valid-after-failure.md");
   fs.writeFileSync(validPage, "---\ntype: note\ntitle: Valid After Failure\nlast_updated: 2026-01-09\n---\n# Valid After Failure\n");
@@ -259,6 +284,10 @@ try {
     "generated navigation is readable again after recovery");
   assert.match(fs.readFileSync(topicIndex, "utf8"), /\[Repaired Page\]\(repair-me.md\)/,
     "navigation read finalizes the successful repair batch");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(vault, ".vault-meta/lifecycle/state.json"), "utf8")).pending, {},
+    "successful navigation-read finalization empties durable lifecycle pending state");
+  assert.equal(await featureHandlers.get("agent_before_settle")({ entries: [], continue: false }, repairCtx), undefined,
+    "successful navigation-read finalization clears this owner's obsolete model diagnostic and continuation budget");
 
   // Shutdown must not publish a valid later page while an earlier ordinary
   // page remains invalid, even after its immediate postwrite failure.

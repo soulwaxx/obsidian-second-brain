@@ -85,5 +85,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     fs.writeFileSync(argument, JSON.stringify(proof) + "\n");
   } else if (command === "verify") {
     await verifySource({ repository, sha: argument, git, api: githubApi, evidence: (run) => githubEvidence(repository, run) });
-  } else throw new Error("usage: node scripts/release-source.mjs record <file> | verify <sha>");
+  } else throw new Error("usage: node .github/release-tools/release-source.mjs record <file> | verify <sha>");
 }

@@ -211,12 +211,29 @@ def main():
     parser.add_argument("command", choices=("build", "update"), help="build or fully regenerate the local index (update is an alias)")
     parser.add_argument("--vault", type=Path, default=Path("."), help="vault root (default: current directory)")
     parser.add_argument("--index", type=Path, help="index file under .vault-meta/retrieval/ (default: .vault-meta/retrieval/bm25.json)")
+    parser.add_argument("--semantic-chunks", action="store_true", help="also explicitly build optional local semantic chunk cache")
+    parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="loopback Ollama URL for explicit semantic chunk builds")
+    parser.add_argument("--ollama-model", default="qwen3-embedding:4b", help="already-installed embedding model; no download is attempted")
+    parser.add_argument("--timeout", type=float, default=8.0, help="embedding request timeout in seconds")
+    parser.add_argument("--chunk-max-chars", type=int, default=1800, help="maximum source characters per semantic chunk")
+    parser.add_argument("--chunk-target-chars", type=int, default=1000, help="target source characters per semantic chunk")
     args = parser.parse_args()
     try:
         count = build(args.vault, args.index)
     except (OSError, UnicodeError, ValueError) as exc:
         parser.exit(1, f"bm25-index: {exc}\n")
     print(f"Indexed {count} Markdown pages")
+    if args.semantic_chunks:
+        try:
+            from module_loading import load_source
+            module = load_source("semantic_chunks", str(Path(__file__).with_name("semantic-chunks.py")))
+            result = module.build(args.vault, args.ollama_url, args.ollama_model,
+                                  timeout=args.timeout, max_chars=args.chunk_max_chars,
+                                  target_chars=args.chunk_target_chars)
+            print(f"Semantic chunks: indexed {result['indexed']}, reused {result['reused']}, deferred {len(result['deferred'])}")
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+            print(f"Semantic chunks unavailable ({exc}); page-level BM25 remains available", file=__import__("sys").stderr)
+
 
 
 if __name__ == "__main__":
