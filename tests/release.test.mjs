@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function fixture(t) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-release-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
-  for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "scripts/release.mjs"]) {
+  for (const file of ["package.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".github/release-tools/release.mjs"]) {
     fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
     fs.copyFileSync(path.join(root, file), path.join(work, file));
   }
@@ -26,7 +26,7 @@ function fixture(t) {
   git("config", "commit.gpgsign", "false");
   git("add", ".");
   git("commit", "-m", "Fixture");
-  const run = (command) => spawnSync(process.execPath, [path.join(work, "scripts/release.mjs"), command],
+  const run = (command) => spawnSync(process.execPath, [path.join(work, ".github/release-tools/release.mjs"), command],
     { cwd: work, env, encoding: "utf8" });
   return { work, env, git, run };
 }

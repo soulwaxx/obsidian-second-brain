@@ -151,7 +151,8 @@ async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverr
 
 export default function (pi: ExtensionAPI) {
 	let toc = "";
-	let injected = false;
+	let locatorVault: string | null = null;
+	const injectedLocators = new Map<string, string>();
 	const touchedByVault = new Map<string, Set<string>>();
 	const pendingWikiWrites = new Map<string, { owner: string; toolId: string; vault: string; path: string }>();
 	const ownedVaultsBySession = new Map<string, Set<string>>();
@@ -169,6 +170,9 @@ export default function (pi: ExtensionAPI) {
 	};
 	const postwriteQueues = new Map<string, Promise<void>>();
 	const pendingSyncFailures = new Map<string, string>();
+	const pendingModelDiagnostics = new Map<string, string>();
+	const diagnosticContinuations = new Set<string>();
+	const ownerVaultKey = (owner: string, vault: string) => JSON.stringify([owner, vault]);
 	let lastConfigDiagnostic: string | null = null;
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -176,7 +180,9 @@ export default function (pi: ExtensionAPI) {
 		if (configError) ctx.ui.notify(`obsidian configuration needs repair: ${configError}`, "warning");
 		if (!knownVault) return;
 		rememberVault(sessionIdentity(ctx), knownVault);
-		const result = await runHook("start", ctx.cwd);
+		if (locatorVault === knownVault) return;
+		const result = await runHook("start", ctx.cwd, [], knownVault);
+		locatorVault = knownVault;
 		toc = result.output.trim();
 		if (result.error) ctx.ui.notify(`obsidian start hook failed: ${result.error}`, "warning");
 	});
@@ -190,9 +196,24 @@ export default function (pi: ExtensionAPI) {
 			return { message: { customType: "obsidian-config-diagnostic", content: `Obsidian wiki integration is fail-closed: ${configError}. Do not resume wiki writes. Propose the exact minimal changes to ${configPath}, preserving unrelated fields. Ask the user to approve those exact changes before editing; after approval edit only this selected config, then revalidate it in this session. Do not reset settings or enable autoCommit.`, display: false } };
 		}
 		if (!configError) lastConfigDiagnostic = null;
-		if (injected || toc.length === 0) return;
-		injected = true;
+		if (!knownVault) return;
+		if (locatorVault !== knownVault) {
+			const result = await runHook("start", ctx.cwd, [], knownVault);
+			locatorVault = knownVault;
+			toc = result.output.trim();
+			if (result.error) ctx.ui.notify(`obsidian start hook failed: ${result.error}`, "warning");
+		}
+		const owner = sessionIdentity(ctx);
+		if (!owner || toc.length === 0) return;
+		if (injectedLocators.get(owner) === knownVault) return;
+		injectedLocators.set(owner, knownVault);
 		return { message: { customType: "obsidian-toc", content: "Obsidian wiki locator (load wiki/WIKI.md and relevant wiki/index.md only when this task needs the wiki):\n\n" + toc, display: false } };
+	});
+
+	pi.on("session_compact", (_event, ctx) => {
+		const owner = sessionIdentity(ctx);
+		if (!owner) return;
+		injectedLocators.delete(owner);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -229,6 +250,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			pendingSyncFailures.delete(eventVault);
 			touchedByVault.delete(eventVault);
+			const diagnosticKey = ownerVaultKey(owner, eventVault);
+			pendingModelDiagnostics.delete(diagnosticKey);
+			diagnosticContinuations.delete(diagnosticKey);
 		}
 		if (isWrite && eventVault) {
 			candidate = wikiWriteCandidate(event.input.path, ctx.cwd);
@@ -311,8 +335,9 @@ export default function (pi: ExtensionAPI) {
 		if (configError) {
 			const reason = configError ?? "vault boundary changed";
 			pendingSyncFailures.set(eventVault, reason);
+			pendingModelDiagnostics.set(ownerVaultKey(pending?.owner ?? currentOwner, eventVault), `Post-write synchronization is blocked for ${touchedPath}; bytes were retained: ${reason}`);
 			ctx.ui.notify(`obsidian post-write sync failed; path retained for retry: ${reason}`, "warning");
-			return;
+			return { content: [...(event.content ?? []), { type: "text", text: `\n\nObsidian could not validate/finalize ${touchedPath} because its configuration needs repair. The written bytes were retained; do not assume successful finalization. Details: ${reason}` }] };
 		}
 		try {
 			const queueKey = JSON.stringify([pending?.owner ?? currentOwner, eventVault]);
@@ -327,7 +352,9 @@ export default function (pi: ExtensionAPI) {
 			if (result.error || (result.output !== "pending" && result.output !== "clean")) {
 				const reason = result.error ?? `Unexpected post-write result: ${result.output}`;
 				pendingSyncFailures.set(eventVault, reason);
+				pendingModelDiagnostics.set(ownerVaultKey(pending?.owner ?? currentOwner, eventVault), `Post-write validation/sync failed for ${touchedPath}; bytes were retained for repair: ${reason}`);
 				ctx.ui.notify(`obsidian post-write validation/sync failed; path retained for retry: ${reason}`, "warning");
+				return { content: [...(event.content ?? []), { type: "text", text: `\n\nObsidian wiki validation/finalization failed for ${touchedPath}. The written bytes were retained and were not successfully finalized. Repair the page and retry; do not assume it is published in navigation. Details: ${reason}` }] };
 			} else {
 				pendingSyncFailures.delete(eventVault);
 			}
@@ -356,16 +383,43 @@ export default function (pi: ExtensionAPI) {
 		const pending = [...touched];
 		const result = await runHook("finalize", ctx.cwd, ["--owner", owner], knownVault);
 		if (result.error) {
+			pendingModelDiagnostics.set(ownerVaultKey(owner, knownVault), `Wiki finalization failed; touched paths were retained: ${result.error}`);
 			ctx.ui.notify(`obsidian wiki finalization failed; touched paths retained: ${result.error}`, "warning");
 			return;
 		}
 		if (result.output !== "synced" && result.output !== "clean") {
+			const reason = `Unexpected finalization result: ${result.output}`;
+			pendingModelDiagnostics.set(ownerVaultKey(owner, knownVault), `Wiki finalization failed; touched paths were retained: ${reason}`);
 			ctx.ui.notify("obsidian did not settle touched paths; changes retained", "warning");
 			return;
 		}
 		pendingSyncFailures.delete(knownVault);
+		const diagnosticKey = ownerVaultKey(owner, knownVault);
+		pendingModelDiagnostics.delete(diagnosticKey);
+		diagnosticContinuations.delete(diagnosticKey);
 		for (const touchedPath of pending) touched.delete(touchedPath);
 		if (touched.size === 0) touchedByVault.delete(knownVault);
+	});
+
+	pi.on("agent_before_settle", (event, ctx) => {
+		const owner = sessionIdentity(ctx);
+		if (!owner) return;
+		const vault = knownVault;
+		if (!vault) return;
+		const key = ownerVaultKey(owner, vault);
+		const diagnostic = pendingModelDiagnostics.get(key);
+		if (!diagnostic) return;
+		const shouldContinue = !diagnosticContinuations.has(key);
+		diagnosticContinuations.add(key);
+		return {
+			entries: [...event.entries, {
+				type: "custom_message",
+				customType: "obsidian-finalization-diagnostic",
+				content: `Action required before considering wiki work complete: ${diagnostic}. Inspect/repair the retained page or explain the unresolved failure; do not claim successful finalization.`,
+				display: false,
+			}],
+			...(shouldContinue ? { continue: true } : {}),
+		};
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
@@ -388,9 +442,13 @@ export default function (pi: ExtensionAPI) {
 			if (result.error || (result.output !== "synced" && result.output !== "clean")) {
 				const reason = result.error ?? `Unexpected recovery result: ${result.output}`;
 				pendingSyncFailures.set(vault, reason);
+				pendingModelDiagnostics.set(ownerVaultKey(owner, vault), `Agent-end recovery failed; captured changes were retained: ${reason}`);
 				ctx.ui.notify(`obsidian agent-end recovery failed; changes retained: ${reason}`, "warning");
 			} else {
 				pendingSyncFailures.delete(vault);
+				const diagnosticKey = ownerVaultKey(owner, vault);
+				pendingModelDiagnostics.delete(diagnosticKey);
+				diagnosticContinuations.delete(diagnosticKey);
 				touchedByVault.delete(vault);
 			}
 		}

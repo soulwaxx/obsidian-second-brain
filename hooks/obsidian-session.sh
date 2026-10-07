@@ -84,6 +84,25 @@ deny_prewrite() {
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
 }
 
+postwrite_hook_failure() {
+  jq -n --arg reason "$1" \
+    '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("Obsidian wiki write was not finalized: " + $reason + ". The change is retained for repair; repair the page and retry finalization.")}}'
+}
+
+stop_hook_failure() {
+  jq -n --arg reason "$1" \
+    '{decision:"block",reason:("Obsidian wiki finalization failed; pending changes are retained: " + $reason + ". Repair the reported issue and retry.")}'
+}
+
+stop_hook_response() {
+  if [ "${stop_hook_active:-false}" = true ]; then
+    jq -n --arg reason "$1" \
+      '{systemMessage:("Obsidian wiki finalization remains unresolved; pending changes are retained and were not finalized: " + $reason)}'
+  else
+    stop_hook_failure "$1"
+  fi
+}
+
 case "$cmd" in
 guard)
   guard_path "${1:-}"
@@ -154,6 +173,11 @@ prewrite-capture)
 
 postwrite)
   if [ -n "$config_error" ]; then
+    if [ $# -eq 0 ]; then
+      cat >/dev/null
+      postwrite_hook_failure "$config_error"
+      exit 0
+    fi
     echo "obsidian lifecycle: $config_error; refusing wiki synchronization until config repair and revalidation" >&2
     exit 1
   fi
@@ -179,20 +203,30 @@ postwrite)
     requested+=("$raw")
   fi
   [ ${#requested[@]} -gt 0 ] || exit 0
+  hook_failure() {
+    if [ "$from_hook" = 1 ]; then
+      postwrite_hook_failure "$1"
+      exit 0
+    fi
+    echo "$1" >&2
+    exit 1
+  }
   if [ "$from_hook" = 1 ] && { [ -z "$owner" ] || [ -z "$tool_id" ]; }; then
     if is_selected_wiki_target "${requested[0]}"; then
-      echo "obsidian lifecycle: postwrite owner/tool identity unavailable; session stop must recover its own capture" >&2
-      exit 1
+      hook_failure "postwrite owner/tool identity unavailable; session stop must recover its own capture"
     fi
     exit 0
   fi
   mw=$(middleware_dir)
   for raw in "${requested[@]}"; do
-    guard_path "$raw" >/dev/null || exit 1
+    if ! guard_error=$(guard_path "$raw" 2>&1); then hook_failure "$guard_error"; fi
     record_args=(--vault "$vault" --cwd "$invocation_cwd" --path "$raw" --validator "$mw/validate.py")
     if [ -n "$owner" ] && [ -n "$tool_id" ]; then record_args+=(--owner "$owner" --tool "$tool_id"); fi
-    python3 "$script_root/scripts/wiki_lifecycle.py" record "${record_args[@]}" || exit 1
+    if ! record_error=$(python3 "$script_root/scripts/wiki_lifecycle.py" record "${record_args[@]}" 2>&1); then hook_failure "$record_error"; fi
   done
+  # The Pi adapter calls this subcommand directly and relies on the stable
+  # status token. Claude's PostToolUse invocation emits event-specific JSON.
+  if [ "$from_hook" = 0 ]; then printf 'pending\n'; fi
   ;;
 
 finalize|finalize-read)
@@ -265,7 +299,21 @@ PY
   ;;
 
 stop)
+  hook_invocation=0
+  stop_hook_active=false
+  input=
+  if [ $# -eq 0 ] && command -v jq >/dev/null 2>&1; then
+    input=$(cat)
+    if [ -n "$(printf '%s' "$input" | claude_owner)" ]; then
+      hook_invocation=1
+      stop_hook_active=$(printf '%s' "$input" | jq -r 'if .stop_hook_active == true then "true" else "false" end')
+    fi
+  fi
   if [ -n "$config_error" ]; then
+    if [ "$hook_invocation" = 1 ]; then
+      stop_hook_response "$config_error"
+      exit 0
+    fi
     echo "obsidian lifecycle: $config_error; pending wiki work retained until config repair" >&2
     exit 1
   fi
@@ -276,9 +324,16 @@ stop)
       *) echo "obsidian lifecycle: unknown stop argument: $1" >&2; exit 2 ;;
     esac
   done
-  if [ -z "$owner" ] && command -v jq >/dev/null 2>&1; then
-    input=$(cat)
+  if [ -z "$owner" ] && [ "$hook_invocation" = 1 ]; then
     if [ "$(printf '%s' "$input" | jq -r '((.background_tasks // []) | length) > 0 or ((.session_crons // []) | length) > 0')" = true ]; then
+      stop_hook_response "Claude Stop has background tasks or session crons; owner recovery is deferred until they settle"
+      exit 0
+    fi
+    owner=$(printf '%s' "$input" | claude_owner)
+  fi
+  if [ -z "$owner" ] && [ -n "$input" ] && command -v jq >/dev/null 2>&1; then
+    if [ "$(printf '%s' "$input" | jq -r '((.background_tasks // []) | length) > 0 or ((.session_crons // []) | length) > 0')" = true ]; then
+      if [ "$hook_invocation" = 1 ]; then stop_hook_response "Claude Stop has background tasks or session crons; owner recovery is deferred until they settle"; exit 0; fi
       echo "obsidian lifecycle: Claude Stop has background tasks or session crons; owner recovery deferred until they settle" >&2
       exit 1
     fi
@@ -292,7 +347,15 @@ stop)
   if [ -n "$owner" ]; then
     finalize_args+=(--recover-owner "$owner")
   fi
-  python3 "$script_root/scripts/wiki_lifecycle.py" finalize "${finalize_args[@]}"
+  if hook_output=$(python3 "$script_root/scripts/wiki_lifecycle.py" finalize "${finalize_args[@]}" 2>&1); then
+    printf '%s\n' "$hook_output"
+  elif [ "$hook_invocation" = 1 ]; then
+    stop_hook_response "$hook_output"
+    exit 0
+  else
+    printf '%s\n' "$hook_output" >&2
+    exit 1
+  fi
   ;;
 
 *)

@@ -5,7 +5,7 @@
       { "matcher": "Read", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" finalize-read", "timeout": 30 }] }
     ],
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" start", "timeout": 10 }] }
+      { "matcher": "startup|resume|clear|compact", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" start", "timeout": 10 }] }
     ],
     "PostToolUse": [
       { "matcher": "Edit|MultiEdit|NotebookEdit|Write", "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/obsidian-session.sh\" postwrite", "timeout": 15 }] }

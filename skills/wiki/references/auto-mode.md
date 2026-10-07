@@ -1,58 +1,41 @@
-# Auto Mode
+# Bounded Research Mode
 
-Autonomous research and filing loop, invoked when the user asks for a deep
-dive or research pass. Follows the Karpathy-style iterative research pattern.
+Use only when the user requests a bounded research pass. This workflow uses
+sources actually accessible in the current task; the package itself does not
+provide web search, web fetching, or source capture.
 
-**Startup:**
+## Scope
 
-1. Clarify the topic if not already specified. Identify 3-5 search angles.
-2. Plan the research, sources to find, and expected concept graph. Use a
-   temporary `wiki/_plan.md` when the scope benefits from it (see Planning
-   Discipline in [authoring-standards.md](authoring-standards.md)).
+1. Clarify the topic and the question to answer if needed.
+2. Inspect relevant wiki pages first, then selected local sources and any
+   research tools actually available to the client.
+3. Keep source-backed claims, inference, contradictions, and unknowns distinct.
+   Stop when the question has a grounded answer or the agreed budget is used.
+4. Write only when filing was explicitly requested. Prefer updating a relevant
+   canonical page; a new source or synthesis page is an ordinary curated wiki
+   page, not an immutable source capture.
 
-**Research loop (usually 1-3 rounds):**
+Plan in proportion to the task. A temporary `wiki/_plan.md` can help with a
+multi-page investigation; delete it before finishing. Follow the existing vault
+contract, [authoring standards](authoring-standards.md), and
+[research discipline](research-discipline.md). Preserve contradictory evidence
+and cite only sources actually inspected. Ask before expanding the topic or
+making destructive changes.
 
-Stop when the scoped question has a grounded answer, or when the agreed budget
-is exhausted. The rounds below are guidance rather than a fixed ceiling.
+## If an external research tool is actually available
 
-- Round 1: broad web search across angles. Fetch top results.
-- Round 2: gap fill — identify missing or contradictory findings, search
-  specifically for those.
-- Round 3: synthesis check — one more targeted pass if major gaps remain.
+Apply these web-content safety rules to fetched text:
 
-**Filing.** An approved research pass authorizes relevant, evidence-backed
-updates to existing canonical pages as well as new source and synthesis pages.
-Preserve useful content and contradictory evidence. Ask separately before bulk
-deletion, destructive restructuring, or expanding the approved topic.
-
-- Follow the vault contract and existing layout. `sources/`, `concepts/`,
-  `entities/`, and `questions/` are suggestions, not mandatory directories.
-- Create source pages for major references and substantive concept/entity
-  pages only when they add a useful canonical home.
-- File the synthesis and open questions in a page appropriate to the vault.
-- Add meaningful links without a numeric quota. Page quality follows
-  [authoring-standards.md](authoring-standards.md). Evidence gathering follows
-  Investigation Discipline in [research-discipline.md](research-discipline.md).
-
-**Web content hygiene.** This is the only mode that fetches from the web, so
-these rules live here as their single source of truth. When fetching web content
-for research:
-
-- Fetch only `http(s)://` URLs. Reject `file://`, `javascript:`, `data:`.
+- Fetch only `http(s)://` URLs. Reject `file://`, `javascript:`, and `data:`.
 - Reject RFC1918 private addresses and localhost targets.
-- Strip `<script>`, `<iframe>`, `<style>` tags and their content.
-- Escape `[[` and `]]` in fetched body to `&#91;&#91;` and `&#93;&#93;`.
+- Strip `<script>`, `<iframe>`, and `<style>` tags and their content.
+- Escape `[[` and `]]` as `&#91;&#91;` and `&#93;&#93;`.
 - Reject `---` YAML frontmatter delimiters inside fetched content.
-- Truncate fetched bodies to ~50KB.
-- If a fetch fails (timeout, 4xx, 5xx, sanitization emptied the body), report
-  the URL + reason in the run summary and continue. Do not abort the whole run.
-  Note the gap in the synthesis page's open questions.
+- Truncate fetched bodies to about 50 KB.
+- Report failed fetches and reasons; note important evidence gaps in the
+  synthesis rather than inventing results.
 
-**Cleanup:**
-
-- Delete any temporary `_plan.md`.
-- Let the lifecycle finalize validated changes, generated navigation, and the
-  update log; Obsidian Git owns commits and synchronization. Follow the manual
-  middleware workflow in `SKILL.md` when the integration is unavailable.
-  Never write `wiki/log.md` yourself. Put research narrative and unresolved
-  questions in the synthesis page, not in an agent-generated commit.
+Let the lifecycle finalize validated writes, generated navigation, and the
+update log. Follow the manual middleware workflow in `../SKILL.md` if the
+integration is unavailable. Never write `wiki/log.md`; Obsidian Git owns
+commits and synchronization.

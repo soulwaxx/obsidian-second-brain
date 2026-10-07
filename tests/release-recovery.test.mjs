@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { assertNpmRelease, githubCommand, npmCommand, recoverRelease, releaseVersion, waitForNpmRelease } from "../scripts/release-recovery.mjs";
+import { assertNpmRelease, githubCommand, npmCommand, recoverRelease, releaseVersion, waitForNpmRelease } from "../.github/release-tools/release-recovery.mjs";
 
 const input = { tag: "v2.0.1", sha: "a".repeat(40), name: "@soulwaxx/obsidian-second-brain", repository: "soulwaxx/obsidian-second-brain" };
 function fixture(npmExists, githubExists, latest = "2.0.0") {
@@ -24,6 +24,10 @@ function fixture(npmExists, githubExists, latest = "2.0.0") {
       return fields;
     },
     prepareArtifact() { state.calls.push(["prepare"]); },
+    describeRelease() {
+      state.calls.push(["describe"]);
+      return { previousTag: "v2.0.0", notes: "## Detailed changes\n\nAll milestone features and limitations." };
+    },
   };
   return { state, deps };
 }
@@ -36,11 +40,41 @@ for (const npmExists of [false, true]) for (const githubExists of [false, true])
     assert.equal(state.calls.filter((call) => call[1] === "publish").length, npmExists ? 0 : 1);
     assert.equal(state.calls.filter((call) => call[1] === "POST" && call[2].endsWith("/releases")).length, githubExists ? 0 : 1);
     assert.equal(state.latest, "2.0.1");
+    assert.equal(state.calls.filter((call) => call[0] === "describe").length, githubExists ? 0 : 1);
+    if (!githubExists) {
+      assert.match(state.release.body, /All milestone features and limitations/);
+      assert.equal(state.calls.find((call) => call[2]?.endsWith("generate-notes"))[3].previous_tag_name, "v2.0.0");
+    }
     state.calls = [];
     await recoverRelease(input, deps);
     assert.ok(state.calls.every((call) => call[1] === "view" || call[1] === "GET"), "repeat recovery must be read-only");
   });
 }
+
+test("missing-description preflight failure prevents every publication write", async () => {
+  const { state, deps } = fixture(false, false);
+  deps.describeRelease = () => { throw new Error("source PR description missing"); };
+  await assert.rejects(recoverRelease(input, deps), /source PR description missing/);
+  assert.ok(state.calls.every((call) => call[1] === "view" || call[1] === "GET"));
+});
+
+test("existing GitHub body remains untouched and needs no metadata fetch", async () => {
+  const { state, deps } = fixture(false, true);
+  state.release.body = "Existing published description";
+  deps.describeRelease = () => { throw new Error("must not fetch descriptions"); };
+  await recoverRelease(input, deps);
+  assert.equal(state.release.body, "Existing published description");
+  assert.ok(!state.calls.some((call) => call[1] === "POST"));
+});
+
+test("first-release recovery never compares to a later GitHub release", async () => {
+  const { state, deps } = fixture(true, false, "3.0.0");
+  deps.describeRelease = () => ({ notes: "First release complete details" });
+  await recoverRelease(input, deps);
+  assert.ok(!state.calls.some((call) => call[2]?.endsWith("generate-notes")));
+  assert.equal(state.release.body, "# v2.0.1\n\nFirst release complete details");
+  assert.equal(state.latest, "3.0.0");
+});
 
 test("recovering an older release never downgrades latest", async () => {
   const { state, deps } = fixture(false, false, "3.0.0");

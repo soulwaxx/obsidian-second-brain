@@ -392,7 +392,7 @@ class RetrievalTests(unittest.TestCase):
         preview = subprocess.run([sys.executable, str(provision), "--vault", str(linked)], check=True, text=True, capture_output=True)
         plan = json.loads(preview.stdout)
         self.assertIn("effective Git ignore check excludes", plan["cacheIgnore"])
-        self.assertEqual(len(plan["writes"]), 3)
+        self.assertEqual(len(plan["writes"]), 4)
         apply = subprocess.run([sys.executable, str(provision), "--vault", str(linked), "--apply", "--confirm", plan["planHash"]], check=True, text=True, capture_output=True)
         self.assertIn("Provisioned", apply.stdout)
         self.assertEqual(gitignore.read_text(encoding="utf-8"), "!.vault-meta/retrieval/\n.vault-meta/retrieval/\n")
@@ -457,7 +457,7 @@ class RetrievalTests(unittest.TestCase):
     def test_provision_refuses_overwrite_and_adds_local_exclude(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(self.vault)], check=True, text=True, capture_output=True)
         plan = json.loads(result.stdout)
-        self.assertEqual(len(plan["writes"]), 3)
+        self.assertEqual(len(plan["writes"]), 4)
         apply = subprocess.run([sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(self.vault), "--apply", "--confirm", plan["planHash"]], check=True, text=True, capture_output=True)
         self.assertIn("Provisioned", apply.stdout)
         conflict = subprocess.run([sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(self.vault)], text=True, capture_output=True)

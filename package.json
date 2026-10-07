@@ -16,6 +16,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "bin": {
+    "obsidian-second-brain": "scripts/obsidian-second-brain.mjs"
+  },
   "files": [
     ".claude-plugin/*.json",
     "agents/**/*.md",
@@ -24,8 +27,14 @@
     "hooks/*.json",
     "hooks/*.sh",
     "scripts/*.py",
+    "scripts/obsidian-second-brain.mjs",
     "skills/wiki/SKILL.md",
     "skills/wiki/references/*.md",
+    "skills/wiki-query/SKILL.md",
+    "skills/wiki-save/SKILL.md",
+    "skills/wiki-ingest/SKILL.md",
+    "skills/wiki-research/SKILL.md",
+    "skills/wiki-health/SKILL.md",
     "skills/wiki/scripts/okf_mw/*.py",
     "skills/wiki/scripts/okf_mw/LICENSE-claude-obsidian",
     "skills/wiki/scripts/okf_mw/pyrightconfig.json",
@@ -35,7 +44,14 @@
   "type": "module",
   "pi": {
     "extensions": ["./extensions/obsidian.ts"],
-    "skills": ["./skills/wiki"],
+    "skills": [
+      "./skills/wiki",
+      "./skills/wiki-query",
+      "./skills/wiki-save",
+      "./skills/wiki-ingest",
+      "./skills/wiki-research",
+      "./skills/wiki-health"
+    ],
     "subagents": { "agents": ["./agents/pi"] }
   },
   "peerDependencies": {
@@ -48,10 +64,12 @@
   },
   "scripts": {
     "test:package": "node tests/npm-package.mjs",
+    "test:pi-runtime": "node tests/pi-runtime-contract.mjs",
+    "test:claude-runtime": "node tests/claude-runtime-contract.mjs && node tests/claude-cli-fallback-contract.mjs",
     "test:release": "node --test tests/release*.test.mjs && python3 tests/test_release_workflows.py",
-    "release:check": "node scripts/release.mjs check",
-    "version": "node scripts/release.mjs sync",
+    "release:check": "node .github/release-tools/release.mjs check",
+    "version": "node .github/release-tools/release.mjs sync",
     "prepublishOnly": "npm run release:check",
-    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_wiki_lifecycle.py && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_agents.py"
+    "test": "bash tests/obsidian-lifecycle.sh hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && python3 tests/test_wiki_lifecycle.py && python3 tests/obsidian-middleware.py skills/wiki/scripts/okf_mw && python3 tests/test_bootstrap.py && python3 tests/test_retrieval.py && python3 tests/test_retrieval_consolidated.py && python3 tests/test_module_loading.py && python3 tests/test_semantic_chunks.py && python3 tests/test_hybrid_retrieval.py && python3 tests/test_semantic_benchmark.py && python3 tests/test_wiki_batch.py && python3 tests/test_local_capture.py && python3 tests/test_ingest_integration.py && python3 tests/test_evidence_ledger.py && python3 tests/test_evidence_reports.py && node tests/obsidian-extension.mjs extensions/obsidian.ts hooks/obsidian-session.sh skills/wiki/scripts/okf_mw && node tests/pi-runtime-contract.mjs && node tests/claude-runtime-contract.mjs && node tests/claude-cli-fallback-contract.mjs && python3 tests/test_agents.py && python3 tests/test_cli.py && python3 tests/test_skill_contracts.py"
   }
 }

@@ -95,10 +95,17 @@ assert verify['permissions'] == {'contents': 'read', 'actions': 'read', 'pull-re
 assert 'release-source.mjs verify' in verify['steps'][-1]['run']
 job = release['jobs']['release']
 assert job['needs'] == ['verify']
-assert job['permissions'] == {'contents': 'write', 'id-token': 'write'}
+assert job['permissions'] == {'contents': 'write', 'pull-requests': 'read', 'id-token': 'write'}
 assert 'environment' not in job
-assert job['steps'][0]['with']['ref'] == '${{ needs.verify.outputs.source_sha }}'
-assert job['steps'][0]['with']['fetch-depth'] == '0'
+trusted_checkout, preserve, artifact_checkout = job['steps'][:3]
+assert trusted_checkout['if'] == "github.event_name == 'workflow_dispatch'"
+assert trusted_checkout['with']['ref'] == '${{ github.sha }}'
+assert preserve['name'] == 'Preserve trusted recovery orchestration'
+assert preserve['if'] == "github.event_name == 'workflow_dispatch'"
+assert preserve['env'] == {'ORCHESTRATION_SHA': '${{ github.sha }}'}
+assert 'git archive "$ORCHESTRATION_SHA"' in preserve['run']
+assert artifact_checkout['with']['ref'] == '${{ needs.verify.outputs.source_sha }}'
+assert artifact_checkout['with']['fetch-depth'] == '0'
 python = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/setup-python@'))
 assert python['with']['python-version'] == '3.14'
 prerequisites = next(step for step in job['steps'] if step.get('name') == 'Install artifact-check prerequisites')
@@ -112,7 +119,10 @@ assert semantic['env'] == {
 recovery = job['steps'][-1]
 assert recovery['if'] == "github.event_name == 'workflow_dispatch'"
 assert recovery['env']['RECOVERY_TAG'] == '${{ inputs.tag }}'
-assert 'release-recovery.mjs recover' in recovery['run']
+assert recovery['run'] == 'node "$RUNNER_TEMP/release-orchestration/.github/release-tools/release-recovery.mjs" recover "$RECOVERY_TAG"'
+trusted_tools = next(step for step in job['steps'] if step.get('name') == 'Install and verify trusted recovery tools')
+assert trusted_tools['if'] == "github.event_name == 'workflow_dispatch'"
+assert 'cd "$RUNNER_TEMP/release-orchestration"' in trusted_tools['run']
 assert 'NPM_TOKEN' not in json.dumps(release)
 for steps in (checks['jobs']['test']['steps'], job['steps']):
     tool_commands = '\n'.join(step.get('run', '') for step in steps)
@@ -124,8 +134,9 @@ assert config['branches'] == ['main']
 assert config['plugins'][0][1]['releaseRules'] == [
     {'breaking': True, 'release': 'major'}, {'type': 'feat', 'release': 'minor'}, {'type': '*', 'release': 'patch'},
 ]
-assert config['plugins'][2:4] == ['@semantic-release/npm', './scripts/release-artifact.mjs']
-assert config['plugins'][4] == ['@semantic-release/github', {
+assert config['plugins'][2] == './.github/release-tools/release-description.mjs'
+assert config['plugins'][3:5] == ['@semantic-release/npm', './.github/release-tools/release-artifact.mjs']
+assert config['plugins'][5] == ['@semantic-release/github', {
     'successCommentCondition': False, 'failCommentCondition': False, 'releasedLabels': False,
 }]
 tools = json.loads((root / '.github/release-tools/package.json').read_text())
@@ -141,9 +152,9 @@ for entry in lock['packages'].values():
         assert entry['resolved'].startswith('https://registry.npmjs.org/')
         assert 'integrity' in entry
 assert 'bash tests/install-smoke.sh' in commands
-assert 'tests/install-smoke.sh' in (root / 'scripts/release-artifact.mjs').read_text()
+assert 'tests/install-smoke.sh' in (root / '.github/release-tools/release-artifact.mjs').read_text()
 manifest = json.loads((root / 'package.json').read_text())
-assert manifest['scripts']['version'] == 'node scripts/release.mjs sync'
+assert manifest['scripts']['version'] == 'node .github/release-tools/release.mjs sync'
 assert manifest['scripts']['prepublishOnly'] == 'npm run release:check'
 
 renovate = workflows['renovate']

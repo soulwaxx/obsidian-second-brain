@@ -46,6 +46,30 @@ publish; a superseded main update is refused, and the newest verified update
 can release all accumulated commits. There is no guarantee of a separate npm
 version for every rapidly merged PR.
 
+## Complete GitHub release descriptions
+
+The GitHub Release description is the changelog; there is no repository
+`CHANGELOG.md` or changelog/release commit. Conventional Commit notes still
+supply the versioned summary. A second package-owned notes generator appends
+the full descriptions of associated squash-merged PRs in the release range,
+including coalesced updates. This does not depend on the squash commit retaining
+the original commit list or PR body.
+
+Write PR descriptions for publication: include every delivered feature and fix,
+compatibility/safety changes, verification, and applicable limitations. These
+public descriptions are copied verbatim into releases; do not include personal
+vault contents, machine-specific private paths, credentials, or private review
+artifacts. The release fails closed if the verified source PR is missing or has
+an empty description, or metadata cannot be fetched. A nonempty description is
+not an automated proof of completeness: the author and reviewer must check its
+coverage. Older PRs without descriptions retain only ordinary summary coverage;
+no historical details are fabricated.
+
+Descriptions are mutable GitHub metadata, not extra CI evidence or proof of
+factual truth. The existing exact-tree/base verifier remains the publishing
+authority. Description-only edits do not rerun the code matrix. Publishing needs
+read access to PR metadata in addition to its existing release/OIDC permissions.
+
 ## Recover a partial publication
 
 semantic-release creates its tag before publishing, so a registry/API failure
@@ -66,11 +90,19 @@ gh workflow run release.yml --ref main -f tag=vX.Y.Z
 ```
 
 Replace `vX.Y.Z` with the exact existing tag. Recovery verifies the tagged source
-against the same PR evidence, then checks out that source. It:
+against the same PR evidence, then checks out that source. The workflow preserves
+trusted orchestration from its current main commit separately before the tagged
+checkout, verifies those locked tools in the preserved directory, and runs the
+current recovery implementation with artifact operations rooted in the exact
+verified tag. Pre-relocation tags therefore do not need the newer tooling paths
+or silently fall back to an older notes-less recovery implementation. It:
 
 1. Refuses an existing npm version whose `gitHead` does not match the tag.
 2. Rebuilds and smoke-tests only if npm publication is missing.
-3. Creates a GitHub Release only if missing, using GitHub-generated notes.
+3. Creates a GitHub Release only if missing, combining summary notes with the
+   same full PR descriptions. It preflights details before missing-output writes
+   and binds the range to the tagged source and its preceding stable ancestor
+   tag, not later main changes. A first release has no preceding comparison.
 4. Preserves existing outputs and never downgrades npm `latest`.
 
 A missing npm package is initially published under `recovered`; `latest` is
@@ -85,8 +117,11 @@ created by rerunning the automatic release, not tag recovery.
 
 ## Release tooling and security policy
 
-Release dependencies belong in `.github/release-tools/`, with a committed
-lockfile separate from the dependency-free shipped package. Both PR CI and
+All release tooling lives in `.github/release-tools/`: version synchronization,
+source verification, prepared-artifact checks, description generation, and
+partial-publication recovery. `scripts/` is reserved for vault/package runtime
+tools. Release dependencies use a committed lockfile in the tooling directory,
+separate from the dependency-free shipped package. Both PR CI and
 publishing run:
 
 ```sh
