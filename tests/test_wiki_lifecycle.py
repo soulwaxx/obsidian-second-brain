@@ -6,8 +6,10 @@ import os
 from datetime import datetime as RealDateTime
 from pathlib import Path
 import subprocess
+import string
 import sys
 import tempfile
+from urllib.parse import quote, unquote
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +33,12 @@ def run(*args: object, ok: bool = True, cwd: Path | None = None) -> subprocess.C
 def page(title: str, body: str | None = None) -> str:
     body = body or title
     return f"---\ntype: note\ntitle: {title}\nlast_updated: 2026-01-01\n---\n# {title}\n\n{body}\n"
+
+
+def baseline_log_bullet(verb: str, rel: str) -> str:
+    prose = {"Creation": "Added", "Update": "Revised"}
+    label = "".join(("\\n" if ch == "\\n" else "\\r" if ch == "\\r" else "\\" + ch if ch in string.punctuation else ch) for ch in rel)
+    return f"* **{verb}**: {prose[verb]} [{label}](/{quote(rel)})."
 
 
 def setup(root: Path, ignored: bool = True) -> tuple[Path, Path]:
@@ -107,13 +115,13 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     assert "brand-new.md" not in (vault / "wiki/index.md").read_text()
     assert subprocess.check_output(["git", "-C", str(vault), "rev-parse", "HEAD"], text=True).strip() == head
     finalize(vault, retrieve=True)
-    assert "[UniqueSearchTerm Quasar](brand-new.md)" in (vault / "wiki/index.md").read_text()
+    assert "[UniqueSearchTerm Quasar](./brand-new.md)" in (vault / "wiki/index.md").read_text()
     log = (vault / "wiki/log.md").read_text()
-    assert "**Creation**" in log and "(/brand-new.md)" in log and "Historical entry." in log
-    assert log.count("(/brand-new.md)") == 1
+    assert "**Creation**" in log and "(./brand-new.md)" in log and "Historical entry." in log
+    assert log.count("(./brand-new.md)") == 1
     # Crash/retry after log publication must be idempotent, and an empty retry is a no-op.
     finalize(vault)
-    assert (vault / "wiki/log.md").read_text().count("(/brand-new.md)") == 1
+    assert (vault / "wiki/log.md").read_text().count("(./brand-new.md)") == 1
     assert subprocess.check_output(["git", "-C", str(vault), "rev-parse", "HEAD"], text=True).strip() == head
 
     # Existing content produces Update; a no-op write produces no pending/log entry.
@@ -121,13 +129,13 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     capture(vault, caller, existing)
     assert record(vault, caller, existing).stdout.strip() == "clean"
     finalize(vault)
-    assert "(/base.md)" not in (vault / "wiki/log.md").read_text()
+    assert "(./base.md)" not in (vault / "wiki/log.md").read_text()
     capture(vault, caller, existing)
     existing.write_text(page("Base", "edited body"))
     record(vault, caller, existing)
     finalize(vault)
     assert "**Update**" in (vault / "wiki/log.md").read_text()
-    assert (vault / "wiki/log.md").read_text().count("(/base.md)") == 1
+    assert (vault / "wiki/log.md").read_text().count("(./base.md)") == 1
 
     # A failure after atomic log publication keeps the batch retryable and preserves history.
     # Isolate the log so earlier batches using the real clock cannot affect date ordering.
@@ -165,7 +173,7 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
             pass
         else:
             raise AssertionError("injected second-sync failure did not fail finalization")
-    assert "(/log-retry.md)" in (retry_vault / "wiki/log.md").read_text()
+    assert "(./log-retry.md)" in (retry_vault / "wiki/log.md").read_text()
     assert "Historical entry." in (retry_vault / "wiki/log.md").read_text()
     pending_after_log = json.loads((retry_vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
     assert pending_after_log and next(iter(pending_after_log.values()))["log_date"] == "2026-10-03"
@@ -176,7 +184,7 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     with patch.object(wiki_lifecycle, "datetime", DayTwo):
         wiki_lifecycle.finalize(finalize_args)
     retry_log = (retry_vault / "wiki/log.md").read_text()
-    assert retry_log.count("(/log-retry.md)") == 1
+    assert retry_log.count("(./log-retry.md)") == 1
     assert retry_log.count("## 2026-10-03") == 1 and retry_log.count("## 2026-10-05") == 1
     assert "## 2026-10-04" not in retry_log
     assert (retry_vault / "wiki/log.md").read_bytes() == log_before_retry
@@ -186,20 +194,20 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     missing_result = vault / "wiki/missing-result.md"
     capture(vault, caller, missing_result); missing_result.write_text(page("Missing Tool Result"))
     finalize(vault)
-    assert "[Missing Tool Result](missing-result.md)" in (vault / "wiki/index.md").read_text()
-    assert "(/missing-result.md)" in (vault / "wiki/log.md").read_text()
+    assert "[Missing Tool Result](./missing-result.md)" in (vault / "wiki/index.md").read_text()
+    assert "(./missing-result.md)" in (vault / "wiki/log.md").read_text()
 
     # If first sync publishes a creation but logging fails, deletion remains a
     # reconciliation batch and must remove stale navigation without phantom log entry.
     transient = vault / "wiki/transient.md"
     capture(vault, caller, transient); transient.write_text(page("Transient Publication")); record(vault, caller, transient)
     fail_after_first_sync(vault)
-    assert "[Transient Publication](transient.md)" in (vault / "wiki/index.md").read_text()
+    assert "[Transient Publication](./transient.md)" in (vault / "wiki/index.md").read_text()
     transient.unlink()
     assert record(vault, caller, transient).stdout.strip() == "pending"
     finalize(vault)
     assert "transient.md" not in (vault / "wiki/index.md").read_text()
-    assert "(/transient.md)" not in (vault / "wiki/log.md").read_text()
+    assert "(./transient.md)" not in (vault / "wiki/log.md").read_text()
 
     # Reverting an update after partial publication similarly restores indexes
     # without treating the net no-op as another content update.
@@ -210,8 +218,8 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     existing.write_bytes(baseline_bytes)
     assert record(vault, caller, existing).stdout.strip() == "pending"
     finalize(vault)
-    assert "[Base](base.md)" in (vault / "wiki/index.md").read_text()
-    assert (vault / "wiki/log.md").read_text().count("(/base.md)") == 1
+    assert "[Base](./base.md)" in (vault / "wiki/index.md").read_text()
+    assert (vault / "wiki/log.md").read_text().count("(./base.md)") == 1
 
     # Untouched historical invalid pages are diagnostics, not a vault-wide repair veto.
     historical_bad = vault / "wiki/historical-bad.md"
@@ -219,7 +227,7 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     untouched_repair = vault / "wiki/untouched-repair.md"
     capture(vault, caller, untouched_repair); untouched_repair.write_text(page("Repair With Historical Error")); record(vault, caller, untouched_repair)
     finalize(vault)
-    assert "[Repair With Historical Error](untouched-repair.md)" in (vault / "wiki/index.md").read_text()
+    assert "[Repair With Historical Error](./untouched-repair.md)" in (vault / "wiki/index.md").read_text()
 
     # An invalid member blocks the whole changed batch and retains valid sibling work.
     first, bad = vault / "wiki/first.md", vault / "wiki/bad.md"
@@ -232,9 +240,9 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     assert (vault / ".vault-meta/lifecycle/state.json").exists()
     bad.write_text(page("Bad Repaired")); record(vault, caller, bad)
     finalize(vault)
-    assert "[First Batch](first.md)" in (vault / "wiki/index.md").read_text()
-    assert "[Bad Repaired](bad.md)" in (vault / "wiki/index.md").read_text()
-    assert (vault / "wiki/log.md").read_text().count("(/first.md)") == 1
+    assert "[First Batch](./first.md)" in (vault / "wiki/index.md").read_text()
+    assert "[Bad Repaired](./bad.md)" in (vault / "wiki/index.md").read_text()
+    assert (vault / "wiki/log.md").read_text().count("(./first.md)") == 1
 
     # Deleted invalid pages can be removed and the remaining batch finalized.
     deleted = vault / "wiki/deleted.md"
@@ -289,7 +297,7 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-no-git-") as tmp:
     target.write_text(page("No Git Wiki"))
     record(vault, caller, target)
     finalize(vault, retrieve=True)
-    assert "[No Git Wiki](local-only.md)" in (vault / "wiki/index.md").read_text()
+    assert "[No Git Wiki](./local-only.md)" in (vault / "wiki/index.md").read_text()
     assert not (vault / ".git").exists()
     assert "local-only.md" in run(RETRIEVE, "No Git Wiki", "--vault", vault).stdout
 
@@ -442,8 +450,115 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-log-multiline-label-") a
     assert content.count("**Creation**") == 1
     assert "Earlier history." in content
     assert "odd\\nname\\[brackets\\]\\*\\.md" in content
-    assert "(/odd%0Aname%5Bbrackets%5D%2A.md)" in content
+    assert "(./odd%0Aname%5Bbrackets%5D%2A.md)" in content
     assert content == first, "retry of a newline/special label must be byte-for-byte idempotent"
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-upgrade-retry-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    created = vault / "wiki/nested folder/naïve #?%[x].md"
+    created.parent.mkdir()
+    updated = vault / "wiki/base.md"
+    for path in (created, updated):
+        capture(vault, caller, path)
+    created.write_text(page("Created target", "created"))
+    updated.write_text(page("Base", "updated"))
+    assert record(vault, caller, created).stdout.strip() == "pending"
+    assert record(vault, caller, updated).stdout.strip() == "pending"
+    marker = root / "sync-count"
+    wrapper = root / "failing-middleware"
+    wrapper.mkdir()
+    (wrapper / "validate.py").symlink_to(MIDDLEWARE / "validate.py")
+    (wrapper / "sync.py").write_text(
+        "import pathlib, subprocess, sys\n"
+        f"real = {str(MIDDLEWARE / 'sync.py')!r}\n"
+        f"marker = pathlib.Path({str(marker)!r})\n"
+        "count = int(marker.read_text()) if marker.exists() else 0\n"
+        "result = subprocess.run([sys.executable, real, *sys.argv[1:]])\n"
+        "marker.write_text(str(count + 1))\n"
+        "raise SystemExit(1 if count == 1 else result.returncode)\n"
+    )
+    class UpgradeDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 3, tzinfo=_tz)
+
+    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    with patch.object(wiki_lifecycle, "datetime", UpgradeDay):
+        try:
+            wiki_lifecycle.finalize(args)
+        except wiki_lifecycle.LifecycleError:
+            pass
+        else:
+            raise AssertionError("injected second-sync failure did not fail finalization")
+    log = vault / "wiki/log.md"
+    published = log.read_text()
+    for verb, rel in (("Creation", "nested folder/naïve #?%[x].md"), ("Update", "base.md")):
+        current = "./" + quote(rel, safe="/")
+        assert f"({current})." in published, published
+        published = published.replace(f"({current}).", f"(/{quote(rel)}).")
+    log.write_text(published)
+    log_before_retry = log.read_bytes()
+    class UpgradeRetryDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 5, tzinfo=_tz)
+
+    with patch.object(wiki_lifecycle, "datetime", UpgradeRetryDay):
+        wiki_lifecycle.finalize(args)
+    assert log.read_bytes() == log_before_retry, "upgrade retry must preserve legacy bullets byte-for-byte"
+    state = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())
+    assert not state["pending"], "successful upgrade retry must clear pending state"
+    assert log.read_text().count(baseline_log_bullet("Creation", "nested folder/naïve #?%[x].md")) == 1
+    assert log.read_text().count(baseline_log_bullet("Update", "base.md")) == 1
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-log-relative-links-") as tmp:
+    vault_root = Path(tmp)
+    wiki = vault_root / "wiki"
+    wiki.mkdir()
+    wiki = wiki.resolve()
+    (vault_root / "root page.md").write_text("loose root decoy\n")
+    (vault_root / "nested folder").mkdir()
+    (vault_root / "nested folder/naïve #?%[x].md").write_text("loose root decoy\n")
+    (wiki / "root page.md").write_text(page("Wiki page"))
+    (wiki / "nested folder").mkdir()
+    (wiki / "nested folder/naïve #?%[x].md").write_text(page("Nested wiki page"))
+    log = wiki / "log.md"
+    history = "# Directory Update Log\n\n## 2026-10-03\n* Historical entry, unchanged.\n"
+    log.write_text(history)
+    entries = [
+        ("Creation", "root page.md"),
+        ("Update", "nested folder/naïve #?%[x].md"),
+    ]
+    wiki_lifecycle.safe_log_update(log, entries, "2026-10-04")
+    first = log.read_bytes()
+    content = first.decode("utf-8")
+    assert "[root page\\.md](./root%20page.md)" in content
+    assert "[nested folder\\/naïve \\#\\?\\%\\[x\\]\\.md](./nested%20folder/na%C3%AFve%20%23%3F%25%5Bx%5D.md)" in content
+    for encoded in ("root%20page.md", "nested%20folder/na%C3%AFve%20%23%3F%25%5Bx%5D.md"):
+        assert (wiki / unquote(encoded)).resolve().is_relative_to(wiki)
+        assert (wiki / unquote(encoded)).is_file()
+    assert "* Historical entry, unchanged.\n" in content
+    wiki_lifecycle.safe_log_update(log, entries, "2026-10-04")
+    assert log.read_bytes() == first, "relative-link retry must be byte-for-byte idempotent"
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-log-identity-controls-") as tmp:
+    log = (Path(tmp) / "log.md").resolve()
+    rel = "nested folder/naïve #?%[x].md"
+    old_creation = baseline_log_bullet("Creation", rel)
+    same_day_other_verb = baseline_log_bullet("Update", rel)
+    history = (
+        "# Directory Update Log\n\n## 2026-10-03\n" + old_creation +
+        "\n\n## 2026-10-04\n" + same_day_other_verb + "\n"
+    )
+    log.write_text(history)
+    wiki_lifecycle.safe_log_update(log, [("Creation", rel), ("Creation", "new page.md")], "2026-10-04")
+    updated = log.read_text()
+    assert old_creation in updated
+    assert same_day_other_verb in updated
+    assert "* **Creation**: Added [nested folder\\/naïve \\#\\?\\%\\[x\\]\\.md](./nested%20folder/na%C3%AFve%20%23%3F%25%5Bx%5D.md)." in updated
+    assert "* **Creation**: Added [new page\\.md](./new%20page.md)." in updated
+    assert updated.count(old_creation) == 1
 
 with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-symlink-") as tmp:
     root = Path(tmp)

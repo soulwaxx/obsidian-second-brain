@@ -457,11 +457,16 @@ specific range, not entire directories.
 ## Markdown Standards
 
 Wiki pages are OKF concept documents in Markdown that Obsidian also renders.
-Concept-to-concept links use **standard Markdown links**
-(`[Beta](/concepts/beta.md)`) so any OKF consumer can build the backlink graph;
-legacy wikilinks stay readable but are not authored for new content. See
-`references/markdown-standards.md` for links, citations, embeds, callouts, tags,
-and the other syntax conventions.
+Use source-file-relative, percent-encoded standard Markdown links for configured
+Obsidian navigation (for example, `[Concepts](./concepts/index.md)` from the root
+index and `[Beta](../concepts/beta.md)` from a nested page); generated directory
+links target each subdirectory's `index.md` with an explicit `./` prefix.
+Existing OKF bundle-root-relative
+links such as `[Beta](/concepts/beta.md)` remain valid for OKF reading and
+conformance, but OKF lint success does not establish native Obsidian
+compatibility. Legacy wikilinks stay readable but are not authored for new
+content. See `references/markdown-standards.md` for links, citations, embeds,
+callouts, tags, and the other syntax conventions.
 
 ---
 
@@ -469,9 +474,10 @@ and the other syntax conventions.
 
 **You never write `wiki/log.md`.** The vault lifecycle hook owns it. It writes
 the OKF v0.2 §9 shape: an `# Directory Update Log` title, `## YYYY-MM-DD` date
-headings newest first, and one prose bullet per changed page
-(`* **Creation**: Added [path](/path).` / `* **Update**: Revised [path](/path).`),
-classified from pre-write existence, not Git history. Finalization records
+headings newest first, and one prose bullet per changed page with a
+wiki-root-relative link (for example, `* **Creation**: Added [path](./path).` /
+`* **Update**: Revised [path](./path).`), classified from pre-write existence,
+not Git history. Finalization records
 successful content changes independently of commits, preserves prior entries,
 and avoids duplicate no-op/retry entries. The log has one writer because an
 agent prepend based on a stale read can lose lifecycle entries.

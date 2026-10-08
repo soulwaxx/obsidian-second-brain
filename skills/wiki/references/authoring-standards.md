@@ -29,8 +29,10 @@ affected, what edit is needed, and why.
 ## OKF Relationship Modeling
 
 Every non-reserved `.md` file is a concept node. Standard Markdown links
-between concept documents — `[Beta](/concepts/beta.md)` — are directed edges in
-the knowledge graph. Use Markdown links, not wikilinks, for new content (see
+between concept documents — for example, `[Beta](../concepts/beta.md)` from a
+nested page — are directed edges in the knowledge graph. For configured
+Obsidian navigation, use source-file-relative targets and percent-encode
+special characters. Use Markdown links, not wikilinks, for new content (see
 `markdown-standards.md`).
 
 Model meaningful relationships. Common relationship types:
@@ -101,8 +103,10 @@ The entry-point page contains:
 
 Navigation rides the generated `index.md` hierarchy: `sync.py` writes a
 deterministic `index.md` in every directory listing its concepts and
-subdirectories, and the root `wiki/index.md` is the top of the tree. These are
-middleware-generated — never author or edit an `index.md` by hand. Section hubs
+subdirectories, and the root `wiki/index.md` is the top of the tree. Directory
+entries link to the subdirectory's `index.md` with an explicit `./` source-file-
+relative, percent-encoded path. These files are middleware-generated — never
+author or edit an `index.md` by hand. Section hubs
 (pages with `type: index`) remain the human-authored overviews within that
 tree. This `index.md` hierarchy is what Wiki-First Answering falls back to when
 `retrieve.py` is unavailable.

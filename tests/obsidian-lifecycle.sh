@@ -64,7 +64,7 @@ postwrite_captured "$vault/wiki/topic/new page.md"
 [ "$(git -C "$vault" rev-parse HEAD)" = "$base_head" ]
 [ -z "$(git -C "$vault" diff --cached --name-only)" ]
 (cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize --owner "claude:$TEST_SESSION")
-grep -Fq '[New Page](new%20page.md)' "$vault/wiki/topic/index.md"
+grep -Fq '[New Page](./new%20page.md)' "$vault/wiki/topic/index.md"
 grep -Fq '**Creation**' "$vault/wiki/log.md"
 [ "$(git -C "$vault" rev-parse HEAD)" = "$base_head" ]
 
@@ -161,7 +161,7 @@ title: Repaired
 EOF
 postwrite_captured "$vault/wiki/topic/invalid.md"
 stop_session
-grep -Fq '[Repaired](invalid.md)' "$vault/wiki/topic/index.md"
+grep -Fq '[Repaired](./invalid.md)' "$vault/wiki/topic/index.md"
 
 # No-op and retry do not duplicate log entries; unrelated Git state is untouched.
 cat >"$vault/unrelated.txt" <<'EOF'
@@ -175,7 +175,7 @@ staged_before=$(git -C "$vault" diff --cached --name-only)
 stop_session
 [ "$(git -C "$vault" diff --cached --name-only)" = "$staged_before" ]
 [ "$(git -C "$vault" status --porcelain -- unrelated.txt | cut -c 4-)" = unrelated.txt ]
-[ "$(grep -Fc '(/topic/invalid.md)' "$vault/wiki/log.md")" -eq 1 ]
+[ "$(grep -Fc '(./topic/invalid.md)' "$vault/wiki/log.md")" -eq 1 ]
 
 # Legacy autoCommit=true cannot commit, stage, reset, or disturb unrelated staged data.
 properties=$work/auto-commit-true.json

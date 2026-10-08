@@ -232,7 +232,7 @@ def build_index_content(dirpath, is_root, directory_fd=None):
             if not title:
                 title = os.path.splitext(fname)[0]
 
-            href = quote(fname, safe='')
+            href = './' + quote(fname, safe='')
             if desc:
                 section.append(f'- [{_index_text(title)}]({href}) - {_index_text(desc)}')
             else:
@@ -242,7 +242,7 @@ def build_index_content(dirpath, is_root, directory_fd=None):
     if bases:
         section = ['# Bases', '']
         for bname in bases:
-            href = quote(bname, safe='')
+            href = './' + quote(bname, safe='')
             title = os.path.splitext(bname)[0]
             section.append(f'- [{_index_text(title)}]({href})')
         sections.append(section)
@@ -250,7 +250,7 @@ def build_index_content(dirpath, is_root, directory_fd=None):
     if subdirs:
         section = ['# Directories', '']
         for dname in subdirs:
-            href = quote(dname, safe='') + '/'
+            href = './' + quote(dname, safe='') + '/index.md'
             section.append(f'- [{_index_text(dname)}/]({href})')
         sections.append(section)
 
