@@ -88,7 +88,7 @@ with tempfile.TemporaryDirectory() as temp:
     sync = subprocess.run([sys.executable, str(SCRIPT.parents[0] / ".." / "skills/wiki/scripts/okf_mw/sync.py"), str(vault)],
                           text=True, capture_output=True)
     assert sync.returncode == 0, sync.stdout + sync.stderr
-    assert "(first.md)" in (vault / "wiki/index.md").read_text()
+    assert "(./first.md)" in (vault / "wiki/index.md").read_text()
     before = {p: p.read_bytes() for p in (vault / "wiki").rglob("*") if p.is_file()}
     second, second_hash = preview(vault, config)
     assert second["writes"] == []
@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory() as temp:
     (git_vault / "wiki/nested/first.md").write_text('---\ntype: note\ntitle: First nested\n---\n')
     git_sync = subprocess.run([sys.executable, str(SCRIPT.parents[0] / ".." / "skills/wiki/scripts/okf_mw/sync.py"), str(git_vault)], text=True, capture_output=True)
     assert git_sync.returncode == 0, git_sync.stdout + git_sync.stderr
-    assert "[First nested](first.md)" in (git_vault / "wiki/nested/index.md").read_text()
+    assert "[First nested](./first.md)" in (git_vault / "wiki/nested/index.md").read_text()
     repeat, repeat_hash = preview(git_vault, git_config)
     assert repeat["writes"] == []
     invoke(git_vault, git_config, "--apply", "--confirm", repeat_hash)

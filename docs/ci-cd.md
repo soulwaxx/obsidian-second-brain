@@ -141,8 +141,10 @@ passing gate is not a vulnerability-free claim. Authentication or audit-service
 failures still fail the job. Revisit this policy when compatible upstream fixes
 are available; do not run `npm audit fix --force` just to make the report green.
 
-The initial locked toolset reports 11 affected package entries (10 high,
-1 moderate), stemming from these upstream dependencies:
+The locked toolset updates `handlebars` to 4.7.10 to resolve the critical
+JavaScript-injection advisories affecting 4.7.9. The audit still reports 12
+affected package entries (10 high, 2 moderate), stemming from these upstream
+dependencies:
 
 | Dependency | Findings and relevance |
 | --- | --- |
@@ -151,12 +153,27 @@ The initial locked toolset reports 11 affected package entries (10 high,
 | npm-bundled `http-cache-semantics` | Cache disclosure through `max-stale`. Disposable runners/caches reduce cross-user reuse, but are not a proof of safety. |
 | npm-bundled `undici` | WebSocket denial of service and retry-interceptor response splitting. The workflow does not intentionally use WebSockets; applicability still needs upstream review. |
 | npm-bundled `ip-address` | Address-classification/subnet and diagnostic-size issues. Do not assume these establish a vulnerability in the shipped plugin. |
+| npm-bundled `postcss-selector-parser` | Quadratic selector-parsing complexity can exhaust CPU. This is release tooling, not a shipped runtime dependency; upstream remediation is still needed. |
 
-npm cannot automatically fix its bundled dependencies, and the current `braces`
-report suggests an obsolete semantic-release downgrade rather than a compatible
-patch. These findings are not suppressed, patched locally, or declared harmless.
-Renovate maintains the direct tool pins and lockfile through reviewed PRs. The
-preset remains below v10 until the changelog writer is compatible.
+The remaining high-severity findings are waiting for upstream patches:
+
+- [`braces` GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+  has no patched upstream release; 3.0.3 remains the latest. Its recursive
+  AST walkers can exhaust the stack on deeply nested patterns. The finding
+  propagates through `micromatch` to semantic-release and its plugins; these
+  audit entries are not ten independent root vulnerabilities. npm's suggested
+  semantic-release 15.14.0 downgrade is not a compatible remediation.
+- Patched upstream library releases exist for `brace-expansion` (5.0.12),
+  `http-cache-semantics` (4.3.0), and `undici` (6.28.1 or later in v6), but npm
+  11.21.0 and 12.2.0 still bundle vulnerable copies. A disposable installation
+  confirmed that npm dependency overrides do not replace those bundled files.
+  Updating a lockfile or adding overrides alone is not a verified runtime fix.
+
+Do not suppress these findings, adopt unreviewed forks, patch installed files
+ad hoc, or declare them harmless. Keep the full audit visible and reassess both
+installed dependency versions and the release-plugin check when upstream fixes
+arrive. Renovate maintains the direct tool pins and lockfile through reviewed
+PRs. The preset remains below v10 until the changelog writer is compatible.
 
 ## Renovate credentials
 

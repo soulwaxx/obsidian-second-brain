@@ -316,11 +316,14 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
     title = "# Directory Update Log"
     prose = {"Creation": "Added", "Update": "Revised"}
     bullets = []
+    legacy_bullets = []
     from urllib.parse import quote
     for verb, rel in entries:
-        href = "/" + quote(rel)
+        # wiki/log.md lives at the wiki root, so page paths are relative to it.
+        href = "./" + quote(rel, safe="/")
         label = "".join(("\\n" if ch == "\n" else "\\r" if ch == "\r" else "\\" + ch if ch in string.punctuation else ch) for ch in rel)
         bullets.append(f"* **{verb}**: {prose[verb]} [{label}]({href}).")
+        legacy_bullets.append(f"* **{verb}**: {prose[verb]} [{label}](/{quote(rel)}).")
     parent_path = log.parent
     try:
         parent_fd = secure_dir(parent_path)
@@ -348,7 +351,7 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
             section_end = next((i for i in range(section_start + 1, len(lines))
                                 if lines[i].startswith("## ")), len(lines))
             existing = set(lines[section_start + 1:section_end])
-            add = [bullet for bullet in bullets if bullet not in existing]
+            add = [bullet for bullet, legacy in zip(bullets, legacy_bullets) if bullet not in existing and legacy not in existing]
             if add:
                 insert_at = section_start + 1
                 while insert_at < section_end and not lines[insert_at].strip():

@@ -236,10 +236,10 @@ try {
     assert.match(fs.readFileSync(path.join(canonicalVaultForAlias, "wiki/topic/alias/nested/index.md"), "utf8"), /\[Alias Page\]/);
   }
   // A later tool/read in the same assistant turn must observe fresh navigation.
-  assert.match(fs.readFileSync(path.join(vault, "wiki/topic/index.md"), "utf8"), /\[Disabled Page\]\(disabled.md\)/);
+  assert.match(fs.readFileSync(path.join(vault, "wiki/topic/index.md"), "utf8"), /\[Disabled Page\]\(\.\/disabled.md\)/);
   await featureHandlers.get("turn_end")({}, { ...ctx, ui: { notify: (message) => notifications.push(message) } });
   assert.deepEqual(notifications, []);
-  assert.match(fs.readFileSync(path.join(vault, "wiki/topic/index.md"), "utf8"), /\[Disabled Page\]\(disabled.md\)/);
+  assert.match(fs.readFileSync(path.join(vault, "wiki/topic/index.md"), "utf8"), /\[Disabled Page\]\(\.\/disabled.md\)/);
 
   // A failed post-write validation must leave ordinary pages available for repair,
   // while generated navigation stays hidden until a successful synchronization.
@@ -282,7 +282,7 @@ try {
   await featureHandlers.get("tool_result")({ toolCallId: "repair-write", toolName: "write", input: { path: path.relative(vault, repairPage) }, isError: false }, repairCtx);
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "read", input: { path: fs.realpathSync(topicIndex) } }, repairCtx), undefined,
     "generated navigation is readable again after recovery");
-  assert.match(fs.readFileSync(topicIndex, "utf8"), /\[Repaired Page\]\(repair-me.md\)/,
+  assert.match(fs.readFileSync(topicIndex, "utf8"), /\[Repaired Page\]\(\.\/repair-me.md\)/,
     "navigation read finalizes the successful repair batch");
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(vault, ".vault-meta/lifecycle/state.json"), "utf8")).pending, {},
     "successful navigation-read finalization empties durable lifecycle pending state");
