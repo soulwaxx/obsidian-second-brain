@@ -149,7 +149,6 @@ def _safe_cache_path(vault):
 
 def _valid_semantic_pages(vault, model, endpoint, timeout):
     """Load only well-formed vectors whose page and exact source spans are current."""
-    from module_loading import load_source
     chunk_module = load_source("retrieve_semantic_chunks", str(Path(__file__).with_name("semantic-chunks.py")))
     path = _safe_cache_path(vault)
     if not path.is_file():
@@ -174,7 +173,7 @@ def _valid_semantic_pages(vault, model, endpoint, timeout):
         source_path = vault / rel
         if not _index_module.eligible(source_path, vault) or not isinstance(entry, dict):
             continue
-        if entry.get("model") != model:
+        if entry.get("model") != model or entry.get("inputScheme") != chunk_module.INPUT_SCHEME:
             continue
         if model_digest is not None and entry.get("modelDigest") != model_digest:
             continue
@@ -185,7 +184,7 @@ def _valid_semantic_pages(vault, model, endpoint, timeout):
                 or settings["targetChars"] > settings["maxChars"]):
             continue
         try:
-            source = source_path.read_text(encoding="utf-8", errors="replace")
+            source = _index_module.projection.read_source(source_path)
         except OSError:
             continue
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -208,7 +207,7 @@ def _valid_semantic_pages(vault, model, endpoint, timeout):
                 continue
             good_chunks.append({"text": chunk["text"], "start": start, "end": end,
                                 "vector": [float(value) for value in vector], "source": source,
-                                "pageHash": digest})
+                                "pageHash": digest, "displaySource": _index_module.projection.current(source)})
         if good_chunks:
             pages[relative] = good_chunks
     return chunk_module, pages
@@ -233,13 +232,18 @@ def semantic_candidates(query, vault, endpoint, model, timeout):
     query_vector = chunk_module.embeddings([query[:MAX_QUERY_CHARS]], url, model, timeout)[0]
     if not any(query_vector):
         raise ValueError("Ollama returned a zero query embedding")
+    return score_semantic_pages(pages, query_vector, vault)
+
+
+def score_semantic_pages(pages, query_vector, vault):
+    """Rank validated pages using one query vector (also used by evaluations)."""
     candidates = []
     for page, chunks in pages.items():
         source_path = vault / page
         if not _index_module.eligible(source_path, vault):
             continue
         try:
-            current_source = source_path.read_text(encoding="utf-8", errors="replace")
+            current_source = _index_module.projection.read_source(source_path)
         except OSError:
             continue
         if hashlib.sha256(current_source.encode("utf-8")).hexdigest() != chunks[0]["pageHash"]:
@@ -261,9 +265,8 @@ def semantic_candidates(query, vault, endpoint, model, timeout):
     return grouped
 
 
-def hybrid_results(query, data, vault, lexical, endpoint, model, timeout, limit):
-    """Rank union of lexical and semantic pages with reciprocal-rank fusion."""
-    semantic = semantic_candidates(query, vault, endpoint, model, timeout)
+def fuse_ranks(lexical, semantic):
+    """Shared shipped RRF, including its deterministic tie breakers."""
     lexical_rank = {page: rank for rank, (page, _) in enumerate(lexical, 1)}
     semantic_rank = {}
     page_chunks = {}
@@ -282,6 +285,15 @@ def hybrid_results(query, data, vault, lexical, endpoint, model, timeout, limit)
         -page_chunks[page][0],
         page_chunks[page][1][0] if page_chunks[page][1] else MAX_SEMANTIC_CANDIDATES + 1,
         lexical_rank.get(page, MAX_SEMANTIC_CANDIDATES + 1), page))
+    return ranked, page_chunks
+
+
+def hybrid_results(query, data, vault, lexical, endpoint, model, timeout, limit, *, semantic=None):
+    """Rank union of lexical and semantic pages with reciprocal-rank fusion."""
+    if semantic is None:
+        semantic = semantic_candidates(query, vault, endpoint, model, timeout)
+    ranked, page_chunks = fuse_ranks(lexical, semantic)
+    lexical_rank = {page: rank for rank, (page, _) in enumerate(lexical, 1)}
     output = []
     for page in ranked[:max(0, limit)]:
         fused, semantic_info = page_chunks[page]
@@ -291,7 +303,7 @@ def hybrid_results(query, data, vault, lexical, endpoint, model, timeout, limit)
             source = chunk["source"]
             line_start = source.count("\n", 0, start) + 1
             line_end = source.count("\n", 0, end) + (1 if end == 0 or source[end - 1:end] != "\n" else 0)
-            excerpt = " ".join(source[start:end].split())
+            excerpt = " ".join(chunk.get("displaySource", source)[start:end].split())
             if len(excerpt) > 360:
                 excerpt = excerpt[:359].rstrip() + "…"
             output.append({"page": page, "score": fused, "semanticScore": similarity,
@@ -300,11 +312,16 @@ def hybrid_results(query, data, vault, lexical, endpoint, model, timeout, limit)
                            "match": "hybrid" if page in lexical_rank else "semantic"})
         else:
             path = vault / page
-            text = path.read_text(encoding="utf-8", errors="replace")
-            lines = text.splitlines() or [""]
+            text = _index_module.projection.read_source(path)
+            date = DATE.search(query)
+            excerpt, line_start, line_end = _index_module.projection.excerpt(
+                text, _index_module.tokens(query), historical=bool(date), iso_date=date.group() if date else None)
+            lines = text.splitlines(keepends=True)
+            start = sum(map(len, lines[:line_start - 1]))
+            end = sum(map(len, lines[:line_end]))
             output.append({"page": page, "score": fused, "semanticScore": None,
-                           "start": 0, "end": 0, "lineStart": 1, "lineEnd": min(3, len(lines)),
-                           "excerpt": " ".join(lines[:3])[:360], "match": "bm25"})
+                           "start": start, "end": end, "lineStart": line_start, "lineEnd": line_end,
+                           "excerpt": excerpt, "match": "bm25"})
     return output
 
 
@@ -336,8 +353,11 @@ def main():
         if (args.hybrid or args.rerank) and not date:
             try:
                 if args.hybrid:
+                    semantic = semantic_candidates(args.query, vault, args.ollama_url, args.ollama_model, args.timeout)
+                    if not semantic:
+                        raise ValueError("no current compatible semantic evidence; explicit rebuild/identity verification required")
                     hybrid = hybrid_results(args.query, data, vault, results, args.ollama_url,
-                                            args.ollama_model, args.timeout, args.limit)
+                                            args.ollama_model, args.timeout, args.limit, semantic=semantic)
                     if hybrid:
                         for rank, item in enumerate(hybrid, 1):
                             print(f"{rank}. {item['page']}\t{item['score']:.6f}\t{item['match']}\tlines={item['lineStart']}-{item['lineEnd']} chars={item['start']}-{item['end']}\t{item['excerpt']}")

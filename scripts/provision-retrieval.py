@@ -9,7 +9,8 @@ import subprocess
 import sys
 
 SOURCE = Path(__file__).resolve().parent
-HELPERS = ("retrieve.py", "bm25-index.py", "contextual-prefix.py", "module_loading.py")
+HELPERS = ("retrieve.py", "bm25-index.py", "contextual-prefix.py", "module_loading.py",
+           "retrieval_projection.py", "wiki_lifecycle.py")
 EXCLUDE = ".vault-meta/retrieval/"
 
 

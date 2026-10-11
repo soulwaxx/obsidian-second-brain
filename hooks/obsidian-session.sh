@@ -284,7 +284,11 @@ PY
   [ -n "$owner" ] && finalize_args+=(--owner "$owner")
   [ -n "$recover_owner" ] && finalize_args+=(--recover-owner "$recover_owner")
   if finalize_output=$(python3 "$script_root/scripts/wiki_lifecycle.py" finalize "${finalize_args[@]}" 2>&1); then
-    printf '%s\n' "$finalize_output"
+    if [ "$cmd" = finalize-read ] && [ "$finalize_output" = synced-retrieval-pending ]; then
+      jq -n '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:"Wiki content/navigation/log were published, but BM25 refresh is pending. A durable retrieval-only retry is retained; do not claim search freshness."}}'
+    else
+      printf '%s\n' "$finalize_output"
+    fi
     status=0
   else
     status=$?
@@ -348,7 +352,11 @@ stop)
     finalize_args+=(--recover-owner "$owner")
   fi
   if hook_output=$(python3 "$script_root/scripts/wiki_lifecycle.py" finalize "${finalize_args[@]}" 2>&1); then
-    printf '%s\n' "$hook_output"
+    if [ "$hook_invocation" = 1 ] && [ "$hook_output" = synced-retrieval-pending ]; then
+      jq -n '{systemMessage:"Wiki content/navigation/log were published, but BM25 refresh is pending. A durable retrieval-only retry is retained; do not claim search freshness."}'
+    else
+      printf '%s\n' "$hook_output"
+    fi
   elif [ "$hook_invocation" = 1 ]; then
     stop_hook_response "$hook_output"
     exit 0

@@ -21,7 +21,7 @@ try {
     "extensions/obsidian.ts", "hooks/obsidian-session.sh", "hooks/hooks.json",
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py", "scripts/provision-retrieval.py",
-    "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py",
+    "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
     "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
@@ -97,6 +97,11 @@ try {
   ], { cwd: work, encoding: "utf8" }));
   assert.equal(packageRelativeDoctor.vault, fs.realpathSync(cliVault));
   assert.equal(packageRelativeDoctor.retrieval.indexExists, false, "package-relative doctor must remain read-only");
+
+  const evaluatorHelp = run("python3", [path.join(installed, "scripts/evaluate-retrieval.py"), "--help"], { cwd: work, encoding: "utf8" });
+  assert.match(evaluatorHelp, /--vault/);
+  assert.match(evaluatorHelp, /--gold/);
+  run("python3", ["tests/test_retrieval_evaluation.py"], { env: { ...env, OSB_EVALUATOR_PATH: path.join(installed, "scripts/evaluate-retrieval.py") }, stdio: "inherit" });
 
   const captureVault = path.join(work, "capture-vault");
   fs.mkdirSync(path.join(captureVault, "wiki"), { recursive: true });

@@ -159,8 +159,13 @@ sandboxed; follow the skill's explicit guard/validation workflow if the file
 tool lifecycle is unavailable.
 
 The lifecycle validates changed pages and finalizes writing batches with
-navigation, logging, and optional retrieval refresh. Failed changed pages are
-retained for repair; an unrelated historical defect is not a vault-wide veto.
+navigation, logging, and one optional BM25 refresh per validated changed batch.
+A failed refresh leaves a durable retrieval-only retry; content/navigation/log
+publication and search freshness are reported separately. A permitted writer
+finalization or explicit BM25 build can settle it without duplicating the log.
+With `features.retrievalRefresh: false`, no automatic build occurs. Outside-lifecycle
+Obsidian/manual/shell edits are diagnosed as stale, not automatically maintained.
+Failed changed pages are retained for repair; an unrelated historical defect is not a vault-wide veto.
 Unrelated startup/read-only shutdown does not regenerate the vault. Obsidian
 Git handles version control independently, including for legacy configs with
 `autoCommit: true`.
@@ -209,6 +214,25 @@ The derived cache lives under `.vault-meta/retrieval/`. Keep it and
 package-owned scripts; a missing/corrupt cache falls back to generated index
 navigation. Existing vault-local helpers are left untouched; the legacy
 `provision-retrieval.py` preview/apply workflow remains available if needed.
+
+Current retrieval conservatively masks clear single-line Markdown strikethrough
+outside literal/code/link contexts; authored history and original source offsets
+remain unchanged. ISO-date queries use the historical lexical view. Unmarked
+contradictions still require human consolidation. Search/doctor never rebuild
+old caches: explicitly rebuild BM25 and optional semantic chunks for the new
+projection/input scheme before assuming current coverage.
+
+Document embedding builds are **manual and input-incremental**: compatible exact
+raw-unit inputs reuse verified vectors across edits/moves/duplicates; only missing
+inputs are sent to the installed model. Chunk pooling/boundaries and RRF remain
+unchanged. Legacy pooled caches cannot recover individual unit vectors; their
+first explicit compatible build populates the input cache. Builds report real
+input/character counts, duration and cache size. Cached semantic searches embed
+only the query, never missing documents or the legacy page-head shortlist.
+
+The [read-only evaluator](docs/retrieval-evaluation.md) uses privately reviewed
+paired EN/IT gold and prepared disposable snapshots. Its live quality results
+are separate from deterministic CI and do not authorize a model/fusion change.
 
 Embedding operations default to `qwen3-embedding:4b`; `--ollama-model` selects
 another already-installed model. Changing models does not make old-model cache

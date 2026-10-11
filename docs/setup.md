@@ -186,12 +186,35 @@ setup silently stages/untracks them. Existing helper copies and ownership
 journals remain untouched. The legacy provisioning command still has its own
 preview/hash-confirmed apply and overwrite refusal.
 
-The lifecycle refreshes the package BM25 cache after finalized writing batches
-when retrieval refresh is enabled. Missing/corrupt cache falls back to generated
+The lifecycle refreshes the package BM25 cache once per validated finalized
+changed batch when retrieval refresh is enabled. It durably records a retry
+before clearing changed-page state. Failure/timeout or refused acknowledgment
+leaves content/navigation/log published but retrieval pending; Claude and Pi
+expose that distinction. A later permitted writer finalization or an explicit
+BM25 `build` retries without duplicating navigation/log publication. Unrelated
+startup/read-only shutdown, search and doctor do not perform repair.
+`features.retrievalRefresh: false` disables automatic builds, not truthful
+pending/stale diagnostics. External Obsidian/manual/shell edits remain outside
+automatic coverage; use an explicit build after reviewing those changes.
+Missing/corrupt cache falls back to generated
 navigation. Exact topic-title matches are boosted; ISO-date queries stay lexical
 and prioritize matching dated notes, then relevant dated sections. Additional
 qualifiers refine dated-section relevance. Read a pending new page by path
 rather than assuming search has already indexed it.
+
+Fresh BM25 caches bind all eligible source hashes, so preserved-mtime edits are
+also diagnosed. Structured freshness includes `current-by-hash`, `stale`,
+`stale-projection`, `pending-content`, `pending-refresh`, and `unknown`; old
+unprojected caches require an explicit build, never an implicit search migration.
+A current file hash proves byte freshness, not factual currency.
+
+Current lexical/semantic inputs and excerpts mask only clear single-line
+strikethrough, leaving code fences, inline/indented code, quotes, frontmatter,
+escapes, link/HTML lines and ambiguous Markdown unchanged. Projection preserves
+original character coordinates and source hashes. ISO-date queries retain raw
+historical lexical content; there is no date-free historical-intent detector or
+new flag. Unmarked stale tables and contradictions still need human review.
+Never silently edit authored history to improve a score.
 
 Page-level BM25 remains the default and does not require embeddings. Semantic
 chunk indexing and hybrid search are separate, explicit opt-ins; both require
@@ -205,15 +228,31 @@ python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \\
   --hybrid --ollama-model <installed-model>
 ```
 
+These are **manual document builds**, not background inference. Exact projected
+raw-unit input hashes, verified model digest and a versioned input/options scheme
+form a cache namespace. Unchanged inputs can move/repeat without document
+inference; grouping/pooling and source mappings are recomputed as needed. Input
+vectors and pooled chunks are distinct. The first explicit build of a legacy
+pooled cache or changed projection/scheme must populate compatible unit vectors;
+old vectors are not relabeled or used for the new current policy. Unreachable
+input vectors are pruned only during explicit builds. Counts/characters, build
+duration and cache bytes are reported, including local-edit builds.
+
 The derived cache is `.vault-meta/retrieval/chunks.json`; changed, removed, or
 otherwise stale pages are excluded as semantic evidence. Hybrid search fuses
 semantic chunk candidates with page-level BM25. If an embedding request or
 installed-model identity check is unavailable, hybrid search falls back to
 page-level BM25; cached vectors stay on disk but are not used until the current
-identity can be verified. ISO-date queries remain lexical. No build or search
+identity can be verified. Compatible unchanged entries can remain on disk during
+a service outage; changed entries are deferred. Cached searches send only a
+query input and never lazily embed documents or invoke legacy reranking.
+ISO-date queries remain lexical. No build or search
 command installs a model. A repeatable deterministic boundary-logic comparison is
 available with `python3 scripts/benchmark-semantic-retrieval.py`; its hand-authored
-vectors are not live model-quality evidence.
+vectors are not live model-quality evidence. The separate
+[read-only evaluation command](retrieval-evaluation.md) uses reviewed paired
+EN/IT intents and temporal evidence on prepared private snapshots. Live runs are
+explicit, never CI dependencies, and do not install models or refresh caches.
 
 Embedding operations default to `qwen3-embedding:4b`. Use `--ollama-model` to
 select another already-installed model. Old-model semantic vectors are excluded

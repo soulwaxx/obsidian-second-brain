@@ -64,7 +64,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(response["results"][0]["path"], "wiki/coffee.md")
         self.assertGreaterEqual(response["results"][0]["lineStart"], 1)
         self.assertIn("Espresso", response["results"][0]["excerpt"])
-        self.assertEqual(response["freshness"], "current-by-mtime")
+        self.assertEqual(response["freshness"], "current-by-hash")
         (self.vault / "wiki" / "new.md").write_text("new material\n", encoding="utf-8")
         stale = self.run_cli("search", "espresso", "--json", cwd=other)
         self.assertEqual(json.loads(stale.stdout)["freshness"], "stale")
@@ -126,11 +126,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(doctor.returncode, 0, doctor.stderr)
         doctor_data = json.loads(doctor.stdout)
         self.assertTrue(doctor_data["retrieval"]["ready"], doctor_data)
-        self.assertEqual(doctor_data["retrieval"]["freshness"], "current-by-mtime")
+        self.assertEqual(doctor_data["retrieval"]["freshness"], "current-by-hash")
         search = self.run_cli("search", "espresso", "--json")
         self.assertEqual(search.returncode, 0, search.stderr)
         search_data = json.loads(search.stdout)
-        self.assertEqual(search_data["freshness"], "current-by-mtime")
+        self.assertEqual(search_data["freshness"], "current-by-hash")
         self.assertEqual(search_data["results"][0]["path"], "wiki/Valid.MD")
 
     def test_freshness_matches_nonempty_tokenized_bm25_documents_read_only(self):
@@ -170,8 +170,8 @@ class CliTests(unittest.TestCase):
         before = snapshot()
         doctor, search = freshness_reports()
         self.assertTrue(doctor["retrieval"]["ready"], doctor)
-        self.assertEqual(doctor["retrieval"]["freshness"], "current-by-mtime")
-        self.assertEqual(search["freshness"], "current-by-mtime")
+        self.assertEqual(doctor["retrieval"]["freshness"], "current-by-hash")
+        self.assertEqual(search["freshness"], "current-by-hash")
         self.assertEqual(snapshot(), before, "doctor/search must not write while ignoring tokenless pages")
 
         # Empty-to-nonempty changes alter the indexer's document set and remain stale.

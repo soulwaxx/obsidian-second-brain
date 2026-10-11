@@ -1,0 +1,275 @@
+"""Service-free evaluation contracts; synthetic labels are not live quality evidence."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from module_loading import load_source
+E = load_source("test_evaluation", os.environ.get("OSB_EVALUATOR_PATH") or str(Path(__file__).resolve().parents[1] / "scripts/evaluate-retrieval.py"))
+
+
+class EvaluationTests(unittest.TestCase):
+    def test_exact_metrics_and_cutoff(self):
+        results = [{"path": page} for page in ["wiki/x.md", "wiki/a.md", "wiki/b.md"]]
+        score = E.page_metrics(results, ["wiki/a.md", "wiki/b.md"], [1, 2], 2)
+        self.assertEqual(score, {"hit@1": 0, "recall@1": 0, "hit@2": 1, "recall@2": .5, "mrr@2": .5})
+        self.assertEqual(E.page_metrics(results, ["wiki/z.md"], [3], 3)["mrr@3"], 0)
+
+    def fixture(self, vault):
+        (vault / "wiki").mkdir()
+        source = "---\ntype: Note\n---\n# Archive\n\nOld value was 10.\n" + "padding " * 60 + "\nCurrent value is 20.\n"
+        (vault / "wiki/archive.md").write_text(source)
+        spans = []
+        for text, label in [("Old value was 10.", "stale"), ("Current value is 20.", "current")]:
+            start = source.index(text)
+            spans.append({"start": start, "end": start + len(text), "text": text,
+                          "label": label, "supportsAnswer": label == "current"})
+        # Review non-factual surrounding context explicitly, not just markers.
+        cursor = 0
+        for span in list(spans):
+            if source[cursor:span["start"]].strip():
+                spans.append({"start": cursor, "end": span["start"], "text": source[cursor:span["start"]],
+                              "label": "neither", "supportsAnswer": False})
+            cursor = span["end"]
+        gold = {"version": 1, "revision": "synthetic-v1", "intents": [{"id": "archive", "split": "held-out",
+                "category": "current-fact", "intent": "current", "queries": {"en": "Archive value", "it": "Valore archivio"},
+                "canonicalPages": ["wiki/archive.md"], "targets": [{"path": "wiki/archive.md",
+                "hash": hashlib.sha256(source.encode()).hexdigest(), "evidence": spans}]}]}
+        return source, gold
+
+    def test_temporal_full_span_is_not_exposed_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            source, gold = self.fixture(vault)
+            E.validate_gold(gold, vault)
+            target = gold["intents"][0]["targets"][0]
+            result = {"path": target["path"], "charStart": 0, "charEnd": len(source),
+                      "excerpt": " ".join(source.split())[:359].rstrip() + "…"}
+            score = E.evidence_metrics([result], gold["intents"][0], vault)
+            self.assertEqual(score["fullSpanLabels"], ["mixed"])
+            self.assertEqual(score["exposedLabels"], ["stale"])
+            self.assertEqual(score["ku@1"], 0)
+            self.assertTrue(score["staleBeforeCurrent"])
+
+    def test_repeated_text_beyond_excerpt_is_not_visible_gold_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            source, gold = self.fixture(vault)
+            source = source.replace("Current value is 20.", "Old value was 10.")
+            (vault / "wiki/archive.md").write_text(source)
+            case = gold["intents"][0]
+            target = case["targets"][0]
+            target["hash"] = E.digest(source.encode())
+            text = "Old value was 10."
+            start = source.rindex(text)
+            target["evidence"] = [{"start": start, "end": start + len(text), "text": text,
+                                   "label": "current", "supportsAnswer": True}]
+            E.validate_gold(gold, vault)
+            result = {"path": target["path"], "charStart": 0, "charEnd": len(source),
+                      "excerpt": " ".join(source.split())[:359].rstrip() + "…"}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["unjudgeable"])
+            self.assertIsNone(score["ku@1"])
+
+    def test_current_substring_does_not_judge_unreviewed_surrounding_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            source = "# Quota\n\nCurrent value is 20.\n\nUnmarked old value 10.\n"
+            (vault / "wiki/archive.md").write_text(source)
+            case = gold["intents"][0]
+            target = case["targets"][0]
+            target["hash"] = E.digest(source.encode())
+            text = "Current value is 20."
+            start = source.index(text)
+            target["evidence"] = [{"start": start, "end": start + len(text), "text": text,
+                                   "label": "current", "supportsAnswer": True}]
+            result = {"path": target["path"], "charStart": 0, "charEnd": len(source),
+                      "excerpt": " ".join(source.split())}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["fullSpanLabels"], ["unjudgeable"])
+            self.assertEqual(score["exposedLabels"], ["unjudgeable"])
+            self.assertIsNone(score["ku@1"])
+
+    def test_unknown_context_cannot_be_overruled_by_mixed_current_substrings(self):
+        self.assertEqual(E.combine_labels(["current", "stale", "unjudgeable"]), "unjudgeable")
+        self.assertEqual(E.combine_labels(["mixed", "unjudgeable"]), "unjudgeable")
+
+    def test_reviewed_mixed_negated_quoted_and_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            source, gold = self.fixture(vault)
+            for label in ["mixed", "neither", "unjudgeable"]:
+                gold["intents"][0]["targets"][0]["evidence"][0]["label"] = label
+                span = gold["intents"][0]["targets"][0]["evidence"][0]
+                result = {"path": "wiki/archive.md", "charStart": span["start"], "charEnd": span["end"],
+                          "excerpt": "Old value was 10."}
+                score = E.evidence_metrics([result], gold["intents"][0], vault)
+                self.assertEqual(score["exposedLabels"], [label])
+                self.assertEqual(score["ku@1"], None if label == "unjudgeable" else 0)
+
+    def test_reviewed_mixed_history_is_useful_not_automatically_a_contradiction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            source, gold = self.fixture(vault)
+            case = gold["intents"][0]
+            spans = case["targets"][0]["evidence"]
+            spans[0]["label"] = "mixed"
+            spans[0]["supportsAnswer"] = True
+            result = {"path": "wiki/archive.md", "charStart": spans[0]["start"], "charEnd": spans[0]["end"],
+                      "excerpt": spans[0]["text"]}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["mixed"])
+            self.assertEqual(score["ku@1"], 1, "credit requires a whole-span reviewed answer judgment")
+            self.assertFalse(score["staleBeforeCurrent"])
+            self.assertTrue(score["mixedBeforeCurrent"])
+
+    def test_model_report_pairing_rejects_drift_and_degradation(self):
+        import copy
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            baseline = E.evaluate(vault, gold)
+            baseline["provenance"]["modelDigest"] = "synthetic-baseline"
+            baseline["provenance"]["caches"]["chunks.json"] = {"embeddingInputScheme": "fixture", "settings": {"maxChars": 100}}
+            for row in baseline["queries"]:
+                row["semanticStatus"] = "complete"
+                row["methods"]["rrf"] = copy.deepcopy(row["methods"]["bm25"])
+            candidate = copy.deepcopy(baseline)
+            candidate["provenance"]["modelDigest"] = "synthetic-candidate"
+            candidate["queries"][0]["methods"]["rrf"]["metrics"]["mrr@10"] = .5
+            compared = E.compare_reports(baseline, candidate)
+            self.assertEqual(compared["paired"]["en"]["mean"], -.5)
+            self.assertEqual(compared["paired"]["paired-intents"]["intents"], 1)
+            candidate["queries"][0]["semanticStatus"] = "partial"
+            with self.assertRaisesRegex(ValueError, "not comparable"):
+                E.compare_reports(baseline, candidate)
+            candidate = copy.deepcopy(baseline)
+            candidate["provenance"]["corpusManifestHash"] = "drift"
+            with self.assertRaisesRegex(ValueError, "corpusManifestHash"):
+                E.compare_reports(baseline, candidate)
+
+    def test_drift_unsafe_paths_and_unpaired_queries_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            source, gold = self.fixture(vault)
+            E.validate_gold(gold, vault)
+            (vault / "wiki/archive.md").write_text(source + "changed")
+            with self.assertRaisesRegex(ValueError, "drift"):
+                E.validate_gold(gold, vault)
+            gold["intents"][0]["targets"][0]["path"] = "../private.md"
+            with self.assertRaises(ValueError):
+                E.validate_gold(gold, vault)
+            gold["intents"][0]["queries"].pop("it")
+            with self.assertRaises(ValueError):
+                E.validate_gold(gold, vault)
+
+    def test_offline_run_is_read_only_and_paired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            before = {p: p.read_bytes() for p in vault.rglob("*") if p.is_file()}
+            with patch.object(E.R, "semantic_candidates", side_effect=AssertionError("no inference")):
+                report = E.evaluate(vault, gold, live=False, repeats=2)
+            self.assertEqual(len(report["queries"]), 2)
+            self.assertEqual(report["provenance"]["hardware"], "unknown")
+            self.assertEqual(before, {p: p.read_bytes() for p in vault.rglob("*") if p.is_file()})
+            self.assertEqual(set(report["summary"]), {"en", "it"})
+
+    def test_offline_bm25_ignores_corrupt_optional_semantic_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            (vault / ".vault-meta/retrieval/chunks.json").write_text("broken optional cache")
+            with patch.object(E.CHUNKS, "model_digest", side_effect=AssertionError("offline identity request")):
+                report = E.evaluate(vault, gold)
+            self.assertIn("error", report["provenance"]["caches"]["chunks.json"])
+            self.assertTrue(all(set(r["methods"]) == {"bm25"} for r in report["queries"]))
+
+    def test_missing_identity_is_failed_not_semantic_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            with patch.object(E.CHUNKS, "model_digest", return_value=None):
+                report = E.evaluate(vault, gold, live=True)
+            for row in report["queries"]:
+                self.assertEqual(row["semanticStatus"], "unavailable")
+                self.assertNotIn("rrf", row["methods"])
+
+    def test_fake_loopback_partial_coverage_and_query_only_inference(self):
+        from http.server import HTTPServer
+        import threading
+        from test_hybrid_retrieval import QueryEmbedding
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp).resolve()
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            QueryEmbedding.model_digest = "digest"
+            QueryEmbedding.model_name = "fixture"
+            QueryEmbedding.failing = QueryEmbedding.tags_failing = False
+            server = HTTPServer(("127.0.0.1", 0), QueryEmbedding)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                E.CHUNKS.build(vault, url, "fixture")
+                (vault / "wiki/missing.md").write_text("# Missing\nNot built semantically.\n")
+                E.CLI.INDEX_MODULE.build(vault)
+                with patch.object(E.CHUNKS, "embeddings", wraps=E.CHUNKS.embeddings) as embed:
+                    report = E.evaluate(vault, gold, live=True, model="fixture", endpoint=url, repeats=2)
+                self.assertEqual(embed.call_count, 4)
+                self.assertTrue(all(len(c.args[0]) == 1 for c in embed.call_args_list))
+                for row in report["queries"]:
+                    self.assertEqual(row["semanticStatus"], "partial")
+                    self.assertIn("rrf", row["methods"])
+                    self.assertEqual(len(row["latencySeconds"]), 2)
+                QueryEmbedding.failing = True
+                failed = E.evaluate(vault, gold, live=True, model="fixture", endpoint=url)
+                self.assertTrue(all(r["semanticStatus"] == "failed" for r in failed["queries"]))
+                self.assertTrue(all(set(r["methods"]) == {"bm25"} for r in failed["queries"]))
+            finally:
+                QueryEmbedding.failing = False
+                server.shutdown()
+                thread.join()
+                server.server_close()
+
+    def test_date_policy_keeps_live_evaluation_lexical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            case = gold["intents"][0]
+            case["intent"] = "historical"
+            case["queries"] = {"en": "Archive 2025-02-14", "it": "Archivio 2025-02-14"}
+            with patch.object(E.CHUNKS, "model_digest", return_value=None), patch.object(E.CHUNKS, "embeddings", side_effect=AssertionError("date inference")):
+                report = E.evaluate(vault, gold, live=True)
+            self.assertTrue(all(r["semanticStatus"] == "lexical-date-policy" for r in report["queries"]))
+            self.assertTrue(all(set(r["methods"]) == {"bm25"} for r in report["queries"]))
+
+    def test_fixed_fusion_matches_production(self):
+        lexical = [("wiki/a.md", 2), ("wiki/b.md", 1)]
+        semantic = [("wiki/b.md", .9, 0, {}), ("wiki/c.md", .8, 0, {})]
+        ranked, _ = E.R.fuse_ranks(lexical, semantic)
+        self.assertEqual(ranked, ["wiki/b.md", "wiki/a.md", "wiki/c.md"])
+        self.assertEqual(E.R.fuse_ranks(lexical, semantic), E.R.fuse_ranks(lexical, semantic))
+
+    def test_bootstrap_resamples_intents_not_translations(self):
+        rows = [{"id": "a", "language": lang, "difference": 1} for lang in ["en", "it"]]
+        rows += [{"id": "b", "language": lang, "difference": -1} for lang in ["en", "it"]]
+        result = E.paired_interval(rows, samples=100)
+        self.assertEqual(result["intents"], 2)
+        self.assertEqual(result["mean"], 0)
+        self.assertEqual(result["interval95"], [-1, 1])
+
+
+if __name__ == "__main__":
+    unittest.main()

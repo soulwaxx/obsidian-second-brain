@@ -52,7 +52,15 @@ the package-relative launcher procedure above, replacing `doctor --json` with
 The CLI resolves the same selected vault as the integration. Use `--vault
 <absolute-vault-root>` only when an invocation-specific explicit selection is
 needed. Search is read-only and reports fallback/freshness; it does not build an
-index. If unavailable or no useful results appear, follow the entry point and
+index. Distinguish `pending-content` from a published batch's `pending-refresh`;
+failed BM25 maintenance retains a durable retrieval-only retry. Do not silently
+repair caches during a query/health check, or assume external edits were indexed.
+Current retrieval masks only clear nonliteral strikethrough; source hashes are
+not factual currency. Read the actual exposed evidence and temporal context,
+including unmarked contradictions. ISO-date queries retain historical lexical
+access; date-free historical intent is not guessed. Semantic document builds
+are manual, input-incremental and separate from explicit query inference.
+If unavailable or no useful results appear, follow the entry point and
 generated `index.md` hierarchy in [authoring standards](authoring-standards.md),
 then read candidate pages directly. Do not write unless asked to file an
 answer or insight.

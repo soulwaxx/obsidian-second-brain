@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Build a deterministic BM25 index over Markdown pages under wiki/."""
+"""Explicitly build current/historical BM25 views with original source hashes."""
 import argparse
+import hashlib
 import json
 import math
 import os
 import re
 from pathlib import Path
+
+import retrieval_projection as projection
 
 TOKEN = re.compile(r"[\w]+", re.UNICODE)
 HEADING = re.compile(r"(?m)^#\s+(.+?)\s*#*\s*$")
@@ -82,11 +85,31 @@ def tokens(text):
     return [word.casefold() for word in TOKEN.findall(text)]
 
 
+def source_manifest(root):
+    """Hashes of all eligible original Markdown sources, including empty pages."""
+    root = Path(root).resolve()
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((root / "wiki").rglob("*"))
+            if path.name.casefold().endswith(".md") and eligible(path, root)}
+
+
+def output_identity(output):
+    try:
+        info = output.lstat()
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    except FileNotFoundError:
+        return None
+
+
 def build(root=Path("."), output=None):
     root = Path(root).resolve()
     output = safe_output(root, output if output is not None else DEFAULT_INDEX)
+    initial_identity = output_identity(output)
+    source_hashes = source_manifest(root)
     documents = {}
+    history = {}
     titles = {}
+    historical_titles = {}
     wiki = root / "wiki"
     if wiki.is_symlink() or not wiki.is_dir():
         raise FileNotFoundError(f"wiki directory is missing or symlinked: {wiki}")
@@ -95,13 +118,32 @@ def build(root=Path("."), output=None):
         if not eligible(path, root):
             continue
         rel = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8", errors="replace")
-        words = tokens(text)
-        if words:
-            documents[rel] = words
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != source_hashes.get(rel):
+            raise ValueError("index source changed while reading")
+        text = raw.decode("utf-8", errors="replace")
+        historical_words = tokens(text)
+        if historical_words:
+            history[rel] = historical_words
             heading = HEADING.search(text)
             if heading:
+                historical_titles[rel] = tokens(heading.group(1))
+        projected = projection.current(text)
+        words = tokens(projected)
+        if words:
+            documents[rel] = words
+            heading = HEADING.search(projected)
+            if heading:
                 titles[rel] = tokens(heading.group(1))
+    lengths, postings = document_postings(documents)
+    historical_lengths, historical_postings = document_postings(history)
+    data = {"version": 1, "documents": len(documents), "lengths": lengths, "terms": postings, "titles": titles,
+            "sourceHashes": source_hashes, "projectionScheme": projection.SCHEME,
+            "historicalLengths": historical_lengths, "historicalTerms": historical_postings, "historicalTitles": historical_titles}
+    return publish_index(root, output, data, source_hashes, initial_identity)
+
+
+def document_postings(documents):
     postings = {}
     lengths = {}
     for page, words in documents.items():
@@ -111,7 +153,10 @@ def build(root=Path("."), output=None):
             frequencies[word] = frequencies.get(word, 0) + 1
         for word, count in frequencies.items():
             postings.setdefault(word, {})[page] = count
-    data = {"version": 1, "documents": len(documents), "lengths": lengths, "terms": postings, "titles": titles}
+    return lengths, postings
+
+
+def publish_index(root, output, data, source_hashes, initial_identity):
     temp_name = output.name + ".tmp"
     output_name = output.name
     if output.is_symlink() or output.with_name(temp_name).is_symlink():
@@ -121,11 +166,6 @@ def build(root=Path("."), output=None):
     temp_created = False
     temp_identity = None
     try:
-        try:
-            initial_output = os.stat(output_name, dir_fd=parent_fd, follow_symlinks=False)
-            output_identity = (initial_output.st_dev, initial_output.st_ino)
-        except FileNotFoundError:
-            output_identity = None
         # Recheck through the pinned directory, then ensure the path still names it.
         actual = os.stat(parent_path, follow_symlinks=False)
         opened = os.fstat(parent_fd)
@@ -137,18 +177,23 @@ def build(root=Path("."), output=None):
         temp_identity = (temp_stat.st_dev, temp_stat.st_ino)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
         actual = os.stat(parent_path, follow_symlinks=False)
         opened = os.fstat(parent_fd)
         if (actual.st_dev, actual.st_ino) != (opened.st_dev, opened.st_ino):
             raise ValueError(f"index parent changed during build: {parent_path}")
         try:
             current_output = os.stat(output_name, dir_fd=parent_fd, follow_symlinks=False)
-            current_identity = (current_output.st_dev, current_output.st_ino)
+            current_identity = (current_output.st_dev, current_output.st_ino, current_output.st_size, current_output.st_mtime_ns)
         except FileNotFoundError:
             current_identity = None
-        if current_identity != output_identity:
+        if current_identity != initial_identity:
             raise ValueError("index output changed during build; refusing to replace concurrent update")
+        if source_manifest(root) != source_hashes:
+            raise ValueError("index source changed during build; refusing stale publication")
         os.replace(temp_name, output_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
     except BaseException:
         if temp_created:
             try:
@@ -160,7 +205,7 @@ def build(root=Path("."), output=None):
         raise
     finally:
         os.close(parent_fd)
-    return len(documents)
+    return data["documents"]
 
 
 def load_index(path):
@@ -175,6 +220,26 @@ def load_index(path):
     for word, entries in terms.items():
         if not isinstance(word, str) or not isinstance(entries, dict) or any(p not in lengths or type(n) is not int or n <= 0 or n > MAX_COUNT for p, n in entries.items()):
             raise ValueError("malformed postings")
+    if "projectionScheme" in data:
+        if data["projectionScheme"] != projection.SCHEME:
+            raise ValueError("unsupported retrieval projection")
+        history_lengths, history_terms = data.get("historicalLengths"), data.get("historicalTerms")
+        history_titles = data.get("historicalTitles", {})
+        if (not isinstance(history_lengths, dict) or not isinstance(history_titles, dict) or any(page not in history_lengths or not isinstance(words, list)
+                or any(not isinstance(word, str) for word in words) for page, words in history_titles.items())):
+            raise ValueError("malformed historical titles")
+        if (not isinstance(history_lengths, dict) or not isinstance(history_terms, dict)
+                or any(type(n) is not int or not 0 < n <= MAX_COUNT for n in history_lengths.values())
+                or any(not isinstance(word, str) or not isinstance(entries, dict)
+                       or any(p not in history_lengths or type(n) is not int or not 0 < n <= MAX_COUNT for p, n in entries.items())
+                       for word, entries in history_terms.items())):
+            raise ValueError("malformed historical postings")
+    source_hashes = data.get("sourceHashes")
+    if source_hashes is not None and (not isinstance(source_hashes, dict)
+            or any(not isinstance(page, str) or not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                   for page, value in source_hashes.items())
+            or not set(lengths) <= set(source_hashes)):
+        raise ValueError("malformed source hashes")
     titles = data.get("titles", {})
     if not isinstance(titles, dict) or any(page not in lengths or not isinstance(words, list) or any(not isinstance(word, str) for word in words) for page, words in titles.items()):
         raise ValueError("malformed titles")
@@ -185,8 +250,10 @@ def query(data, text):
     terms = tokens(text)
     if not terms:
         return []
-    lengths, postings = data["lengths"], data["terms"]
-    titles = data.get("titles", {})
+    historical = bool(projection.ISO_DATE.search(text)) and "historicalLengths" in data
+    lengths = data["historicalLengths"] if historical else data["lengths"]
+    postings = data["historicalTerms"] if historical else data["terms"]
+    titles = data.get("historicalTitles", {}) if historical else data.get("titles", {})
     avg = sum(lengths.values()) / max(len(lengths), 1)
     scores = {}
     k1, b = 1.5, 0.75
@@ -219,7 +286,12 @@ def main():
     parser.add_argument("--chunk-target-chars", type=int, default=1000, help="target source characters per semantic chunk")
     args = parser.parse_args()
     try:
-        count = build(args.vault, args.index)
+        root = args.vault.resolve()
+        from wiki_lifecycle import retrieval_status, acknowledge_retrieval
+        token = retrieval_status(root).get("token")
+        count = build(root, args.index)
+        if token and safe_output(root, args.index or DEFAULT_INDEX) == root / DEFAULT_INDEX:
+            acknowledge_retrieval(root, token)
     except (OSError, UnicodeError, ValueError) as exc:
         parser.exit(1, f"bm25-index: {exc}\n")
     print(f"Indexed {count} Markdown pages")
@@ -230,7 +302,9 @@ def main():
             result = module.build(args.vault, args.ollama_url, args.ollama_model,
                                   timeout=args.timeout, max_chars=args.chunk_max_chars,
                                   target_chars=args.chunk_target_chars)
-            print(f"Semantic chunks: indexed {result['indexed']}, reused {result['reused']}, deferred {len(result['deferred'])}")
+            print(f"Semantic chunks: indexed {result['indexed']}, reused {result['reused']}, deferred {len(result['deferred'])}; "
+                  f"embedded {result['embeddedInputs']} inputs/{result['embeddedChars']} chars, reused {result['reusedInputs']} inputs; "
+                  f"{result['buildSeconds']:.3f}s, {result['cacheBytes']} cache bytes")
         except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
             print(f"Semantic chunks unavailable ({exc}); page-level BM25 remains available", file=__import__("sys").stderr)
 

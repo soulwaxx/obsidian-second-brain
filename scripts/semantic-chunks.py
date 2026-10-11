@@ -4,8 +4,11 @@
 API for retrieval consumers: ``build(vault, endpoint, model, ...)`` writes
 ``.vault-meta/retrieval/chunks.json``. Cache schema v1 has a ``pages`` map keyed
 by vault-relative Markdown path. Entries contain page ``contentHash``, model
-name/digest, algorithm/settings, and ordered chunks. Each chunk contains
-context-prefixed ``text``, original-page ``start``/``end`` character offsets,
+name/digest, algorithm/settings, exact input hashes/scheme, and ordered chunks.
+The optional ``inputVectors`` namespace stores verified exact projected raw-unit
+vectors separately from their pooled chunks; legacy pooled caches require an
+explicit population build. Only reachable inputs survive manual maintenance.
+Each chunk contains context-prefixed ``text``, original-page ``start``/``end`` character offsets,
 ``sourceHash``, and an embedding vector. A missing entry means no current
 semantic evidence; callers must fall back to page BM25. Builds are explicit and
 never install/download models. ``text_units``, ``semantic_chunks`` and
@@ -17,14 +20,18 @@ import json
 import math
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 from module_loading import load_source
+import retrieval_projection as projection
 
 _INDEX = load_source("bm25_index_for_chunks", str(Path(__file__).with_name("bm25-index.py")))
 CACHE_VERSION = 1
+INPUT_SCHEME = "current-strike-mask-raw-unit-pooled-v1"
+_UNSET = object()
 ALGORITHM = "semantic-adjacent-cosine-v1"
 DEFAULT_CACHE = Path(".vault-meta/retrieval/chunks.json")
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -378,9 +385,11 @@ def _load_cache(path):
     return data
 
 
-def publish_cache(vault, data, output=DEFAULT_CACHE):
+def publish_cache(vault, data, output=DEFAULT_CACHE, *, expected_identity=_UNSET, verify_sources=False):
     vault = Path(vault).resolve()
     output = _INDEX.safe_output(vault, output)
+    if expected_identity is _UNSET:
+        expected_identity = _INDEX.output_identity(output)
     temp_name = output.name + ".tmp"
     if output.is_symlink() or output.with_name(temp_name).is_symlink():
         raise ValueError("refusing symlinked semantic cache or temporary output")
@@ -389,29 +398,33 @@ def publish_cache(vault, data, output=DEFAULT_CACHE):
     made_temp = False
     identity = None
     try:
-        try:
-            original = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
-            original_identity = (original.st_dev, original.st_ino)
-        except FileNotFoundError:
-            original_identity = None
         fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666, dir_fd=parent_fd)
         made_temp = True
         stat = os.fstat(fd)
         identity = (stat.st_dev, stat.st_ino)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
         actual = os.stat(parent_path, follow_symlinks=False)
         opened = os.fstat(parent_fd)
         if (actual.st_dev, actual.st_ino) != (opened.st_dev, opened.st_ino):
             raise ValueError("semantic cache parent changed during build")
         try:
             current = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
-            current_identity = (current.st_dev, current.st_ino)
+            current_identity = (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
         except FileNotFoundError:
             current_identity = None
-        if current_identity != original_identity:
+        if current_identity != expected_identity:
             raise ValueError("semantic cache changed during build; refusing concurrent replacement")
+        if verify_sources:
+            for relative, entry in data["pages"].items():
+                source = vault / relative
+                if (not _INDEX.eligible(source, vault)
+                        or sha256(projection.read_source(source)) != entry["contentHash"]):
+                    raise ValueError("semantic source changed before publication")
         os.replace(temp_name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
     except BaseException:
         if made_temp:
             try:
@@ -425,6 +438,34 @@ def publish_cache(vault, data, output=DEFAULT_CACHE):
         os.close(parent_fd)
 
 
+def document_chunks(rel, source, vectors, max_chars, target_chars):
+    """Group projected inputs, but bind evidence to original source characters."""
+    items = semantic_chunks(rel, projection.current(source), vectors, max_chars, target_chars)
+    for item in items:
+        item["sourceHash"] = sha256(source[item["start"]:item["end"]])
+    return items
+
+
+def valid_vector(vector, dimension=None):
+    return (isinstance(vector, list) and 0 < len(vector) <= 16384
+            and (dimension is None or len(vector) == dimension)
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in vector))
+
+
+def input_vector_cache(cache):
+    """Validate the whole exact-input namespace before considering any reuse."""
+    entry = cache.get("inputVectors", {})
+    if (not isinstance(entry, dict) or entry.get("version") != 1
+            or not isinstance(entry.get("modelDigest"), str) or not entry["modelDigest"]
+            or type(entry.get("dimension")) is not int or not 0 < entry["dimension"] <= 16384
+            or not isinstance(entry.get("vectors"), dict)):
+        return {}
+    if any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key)
+           or not valid_vector(vector, entry["dimension"]) for key, vector in entry["vectors"].items()):
+        return {}
+    return entry
+
+
 def build(vault, endpoint, model, timeout=8.0, max_chars=1800, target_chars=1000,
           output=DEFAULT_CACHE):
     """Build explicitly; missing service removes stale changed entries and defers them."""
@@ -435,12 +476,22 @@ def build(vault, endpoint, model, timeout=8.0, max_chars=1800, target_chars=1000
     if max_chars < 64 or target_chars < 1 or target_chars > max_chars:
         raise ValueError("invalid chunk size settings")
     output = _INDEX.safe_output(vault, output)
+    started = time.perf_counter()
+    initial_identity = _INDEX.output_identity(output)
     old = _load_cache(output)
     settings = _settings(max_chars, target_chars)
     try:
         digest = model_digest(endpoint, model, timeout)
     except Exception:
         digest = None
+    previous_inputs = input_vector_cache(old)
+    compatible = bool(digest and previous_inputs.get("model") == model
+                      and previous_inputs.get("modelDigest") == digest
+                      and previous_inputs.get("scheme") == INPUT_SCHEME
+                      and previous_inputs.get("options") == {})
+    pool = dict(previous_inputs["vectors"]) if compatible else {}
+    dimension = previous_inputs["dimension"] if compatible else None
+    embedded_inputs = embedded_chars = reused_inputs = 0
     existing = old["pages"]
     pages = {}
     changed = []
@@ -449,27 +500,57 @@ def build(vault, endpoint, model, timeout=8.0, max_chars=1800, target_chars=1000
     source_text = {}
     for path in _page_list(vault):
         rel = path.relative_to(vault).as_posix()
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = projection.read_source(path)
         source_text[rel] = text
         content_hash = sha256(text)
         prior = existing.get(rel)
-        identity_ok = isinstance(prior, dict) and prior.get("model") == model and (digest is None or prior.get("modelDigest") == digest)
-        if identity_ok and prior.get("contentHash") == content_hash and prior.get("settings") == settings:
-            pages[rel] = prior
+        identity_ok = (isinstance(prior, dict) and prior.get("model") == model
+                       and bool(prior.get("modelDigest")) and (digest is None or prior.get("modelDigest") == digest)
+                       and prior.get("inputScheme") == INPUT_SCHEME)
+        inputs = [unit["text"] for unit in text_units(projection.current(text), max_chars)]
+        hashes = [sha256(value) for value in inputs]
+        # Unknown installed identity permits retaining unchanged evidence on disk,
+        # not inference or compatible reuse. Search independently verifies digest.
+        populated = (compatible and isinstance(prior, dict) and prior.get("inputScheme") == INPUT_SCHEME
+                     and prior.get("inputHashes") == hashes and all(h in pool for h in hashes))
+        if (identity_ok and prior.get("contentHash") == content_hash and prior.get("settings") == settings
+                and (populated or digest is None)):
+            pages[rel] = ({**prior, "chunks": document_chunks(rel, text, [pool[h] for h in hashes], max_chars, target_chars)}
+                          if populated else prior)
             reused_pages.add(rel)
+            if populated:
+                reused_inputs += len(hashes)
         else:
             changed.append(rel)
     deferred = []
     for rel in changed:
         try:
-            units = text_units(source_text[rel], max_chars)
-            vectors = embeddings([unit["text"] for unit in units], endpoint, model, timeout)
-            items = semantic_chunks(rel, source_text[rel], vectors, max_chars, target_chars)
+            units = text_units(projection.current(source_text[rel]), max_chars)
+            inputs = [unit["text"] for unit in units]
+            hashes = [sha256(value) for value in inputs]
+            if not digest:
+                raise ValueError("installed model identity is unverified; no document inference")
+            missing = {sha256(value): value for value in inputs if sha256(value) not in pool}
+            reused_inputs += len(hashes) - len(missing)
+            if missing:
+                embedded_inputs += len(missing)
+                embedded_chars += sum(map(len, missing.values()))
+                new_vectors = embeddings(list(missing.values()), endpoint, model, timeout)
+                if len(new_vectors) != len(missing):
+                    raise ValueError("invalid embedding count")
+                if dimension is None and new_vectors:
+                    dimension = len(new_vectors[0])
+                if any(not valid_vector(v, dimension) for v in new_vectors):
+                    raise ValueError("incompatible embedding dimensions or values")
+                pool.update(zip(missing, new_vectors))
+            vectors = [pool[key] for key in hashes]
+            items = document_chunks(rel, source_text[rel], vectors, max_chars, target_chars)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             deferred.append(rel)
             continue
         pages[rel] = {"contentHash": sha256(source_text[rel]), "model": model,
-                      "modelDigest": digest, "settings": settings, "chunks": items}
+                      "modelDigest": digest, "settings": settings, "chunks": items,
+                      "inputScheme": INPUT_SCHEME, "inputHashes": hashes}
         indexed_pages.add(rel)
     # Recheck sources after service calls so edits during an embedding request cannot
     # publish stale vectors. Removed, retargeted, unreadable, or concurrently changed
@@ -480,16 +561,32 @@ def build(vault, endpoint, model, timeout=8.0, max_chars=1800, target_chars=1000
         try:
             if path is None or not _INDEX.eligible(path, vault):
                 raise OSError("source page is no longer eligible")
-            current_hash = sha256(path.read_text(encoding="utf-8", errors="replace"))
+            current_hash = sha256(projection.read_source(path))
             if current_hash != entry.get("contentHash"):
                 raise OSError("source page changed during semantic build")
         except OSError:
             pages.pop(rel, None)
             deferred.append(rel)
-    deferred = sorted(set(deferred))
+    deferred = sorted(set(deferred) | (set(current_paths) - set(source_text)))
     # Omitted pages are deleted; failed or racing changed pages are intentionally absent.
-    result = {"version": CACHE_VERSION, "pages": pages}
-    publish_cache(vault, result, output)
+    if digest and model_digest(endpoint, model, timeout) != digest:
+        raise ValueError("installed model identity changed during build; refusing publication")
+    if digest is None and previous_inputs.get("model") == model:
+        # Preserve its original identity, never relabel unavailable vectors.
+        pool = previous_inputs.get("vectors", {})
+        dimension = previous_inputs.get("dimension")
+    reachable = {key for entry in pages.values() for key in entry.get("inputHashes", [])}
+    vector_cache = {"version": 1, "model": model,
+                    "modelDigest": digest or previous_inputs.get("modelDigest"),
+                    "scheme": INPUT_SCHEME if digest else previous_inputs.get("scheme"),
+                    "options": {}, "dimension": dimension,
+                    "vectors": {key: pool[key] for key in sorted(reachable) if key in pool}}
+    stats = {"embeddedInputs": embedded_inputs, "embeddedChars": embedded_chars,
+             "reusedInputs": reused_inputs, "prepublishSeconds": time.perf_counter() - started}
+    result = {"version": CACHE_VERSION, "pages": pages, "inputScheme": INPUT_SCHEME,
+              "inputVectors": vector_cache, "settings": settings, "buildStats": stats}
+    publish_cache(vault, result, output, expected_identity=initial_identity, verify_sources=True)
     surviving_pages = set(pages)
     return {"indexed": len(indexed_pages & surviving_pages), "reused": len(reused_pages & surviving_pages),
-            "deferred": deferred, "modelDigest": digest, "cache": output}
+            "deferred": deferred, "modelDigest": digest, "cache": output, "cacheBytes": output.stat().st_size,
+            "buildSeconds": time.perf_counter() - started, **stats}

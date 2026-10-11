@@ -16,6 +16,7 @@ from module_loading import load_source
 RETRIEVE = ROOT / "scripts/retrieve.py"
 CLI = ROOT / "scripts/obsidian-second-brain.py"
 INDEXER = ROOT / "scripts/bm25-index.py"
+CHUNKS = load_source("hybrid_fixture_chunks", str(ROOT / "scripts/semantic-chunks.py"))
 
 
 class DelayedTagsHandler(BaseHTTPRequestHandler):
@@ -136,9 +137,9 @@ class HybridRetrievalTests(unittest.TestCase):
         settings = {"algorithm": "semantic-adjacent-cosine-v1", "maxChars": 1800, "targetChars": 1000}
         cache = {"version": 1, "pages": {
             "wiki/semantic-target.md": {"contentHash": hashlib.sha256(text.encode()).hexdigest(), "model": "fixture",
-                "modelDigest": "digest", "settings": settings, "chunks": [chunk]},
+                "modelDigest": "digest", "settings": settings, "chunks": [chunk], "inputScheme": CHUNKS.INPUT_SCHEME},
             "wiki/lexical.md": {"contentHash": hashlib.sha256(lexical_text.encode()).hexdigest(), "model": "fixture",
-                "modelDigest": "digest", "settings": settings, "chunks": [lexical_chunk]}}}
+                "modelDigest": "digest", "settings": settings, "chunks": [lexical_chunk], "inputScheme": CHUNKS.INPUT_SCHEME}}}
         path = self.vault / ".vault-meta/retrieval/chunks.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(cache), encoding="utf-8")
@@ -366,6 +367,9 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertTrue((self.vault / ".vault-meta/retrieval/chunks.json").is_file())
 
     def test_shared_cli_reports_reused_and_deferred_counts_without_negative_values(self):
+        # Explicitly populate unit vectors: legacy pooled caches cannot supply them.
+        module = load_source("hybrid_incremental_chunks", str(ROOT / "scripts/semantic-chunks.py"))
+        module.build(self.vault, self.url, "fixture")
         target = self.vault / "wiki/semantic-target.md"
         target.write_text("# Updated Target\nnew changed content", encoding="utf-8")
         QueryEmbedding.failing = True

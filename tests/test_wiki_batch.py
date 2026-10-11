@@ -329,7 +329,7 @@ class WikiBatchTests(unittest.TestCase):
                                               cwd=temp, env=env, text=True, capture_output=True)
                     self.assertEqual(searched.returncode, 0, searched.stderr)
                     response = json.loads(searched.stdout)
-                    self.assertEqual(response["freshness"], "current-by-mtime")
+                    self.assertEqual(response["freshness"], "current-by-hash")
                     self.assertTrue(any(item["path"] == "wiki/new.md" for item in response["results"]))
                 else:
                     self.assertEqual(refreshed, before)
