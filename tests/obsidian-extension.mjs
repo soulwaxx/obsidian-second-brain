@@ -17,7 +17,7 @@ try {
   fs.mkdirSync(path.join(tmp, "hooks"), { recursive: true });
   fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
   fs.copyFileSync(hook, path.join(tmp, "hooks", "obsidian-session.sh"));
-  for (const script of ["config_contract.py", "wiki_lifecycle.py", "bm25-index.py"]) {
+  for (const script of ["config_contract.py", "module_loading.py", "retrieval_projection.py", "wiki_lifecycle.py", "bm25-index.py"]) {
     fs.copyFileSync(path.resolve(path.dirname(source), `../scripts/${script}`), path.join(tmp, "scripts", script));
   }
   process.env.OBSIDIAN_AGENT_CONFIG = path.join(tmp, "properties.json");
@@ -599,6 +599,36 @@ try {
   assert.deepEqual(settledState.pending, {}, "non-Markdown tool results do not enter lifecycle pending state");
   assert.equal(fs.readFileSync(topicIndex, "utf8").includes("attachment.bin"), false,
     "non-Markdown tool results do not alter wiki navigation");
+  // Retrieval failure publishes content but retains a separately diagnosed retry.
+  const refreshVault = path.join(tmp, "refresh-vault");
+  fs.mkdirSync(path.join(refreshVault, "wiki"), { recursive: true });
+  fs.mkdirSync(path.join(refreshVault, ".vault-meta/retrieval"), { recursive: true });
+  const occupiedTemp = path.join(refreshVault, ".vault-meta/retrieval/bm25.json.tmp");
+  fs.writeFileSync(occupiedTemp, "another build owns this file");
+  process.env.OBSIDIAN_VAULT_PATH = refreshVault;
+  fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: refreshVault }));
+  const refreshHandlers = new Map();
+  featureExtension({ on: (event, handler) => refreshHandlers.set(event, handler) });
+  const refreshWarnings = [];
+  const refreshCtx = { ...ctx, ui: { notify: (message) => refreshWarnings.push(message) } };
+  await refreshHandlers.get("session_start")({}, refreshCtx);
+  const refreshWrite = { toolCallId: "refresh-write", toolName: "write", input: { path: path.join(refreshVault, "wiki/current.md") } };
+  assert.equal(await refreshHandlers.get("tool_call")(refreshWrite, refreshCtx), undefined);
+  fs.writeFileSync(refreshWrite.input.path, pageContent("Current Fact"));
+  await refreshHandlers.get("tool_result")({ ...refreshWrite, isError: false }, refreshCtx);
+  await refreshHandlers.get("turn_end")({}, refreshCtx);
+  const refreshState = path.join(refreshVault, ".vault-meta/lifecycle/state.json");
+  assert.deepEqual(JSON.parse(fs.readFileSync(refreshState, "utf8")).pending, {});
+  assert.ok(JSON.parse(fs.readFileSync(refreshState, "utf8")).retrieval);
+  assert.ok(refreshWarnings.some((message) => /were published.*BM25 refresh remains pending/.test(message)));
+  const refreshDiagnostic = await refreshHandlers.get("agent_before_settle")({ entries: [] }, refreshCtx);
+  assert.match(refreshDiagnostic.entries.at(-1).content, /content\/navigation\/log were published/);
+  const refreshLog = path.join(refreshVault, "wiki/log.md");
+  const refreshLogBefore = fs.statSync(refreshLog).mtimeMs;
+  fs.unlinkSync(occupiedTemp);
+  assert.equal(await refreshHandlers.get("tool_call")({ toolName: "read", input: { path: path.join(refreshVault, "wiki/index.md") } }, refreshCtx), undefined);
+  assert.equal(JSON.parse(fs.readFileSync(refreshState, "utf8")).retrieval, undefined);
+  assert.equal(fs.statSync(refreshLog).mtimeMs, refreshLogBefore);
   console.log("pi Obsidian lifecycle checks PASS");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -141,8 +141,13 @@ Page-level BM25 is the default and works without an embedding service. Optional
 semantic chunking requires an explicit build with an already-installed local
 model; hybrid search is separately opt-in and fuses current chunk candidates
 with BM25. Stale chunks are not evidence. If the installed model identity
-cannot be verified, cached vectors are retained but not used, and page-level
-BM25 remains available. ISO-date queries stay lexical:
+cannot be verified, compatible unchanged vectors may be retained on disk but
+not used, and page-level BM25 remains available. Document builds are manual and
+reuse exact compatible projected raw-unit inputs across edits/moves/duplicates;
+chunk grouping/source mappings are recomputed and real input costs are reported.
+A projection/input-scheme change or legacy pooled cache requires an explicit
+compatible build, never silent vector relabeling. Cached searches embed only the
+query, not documents or the legacy page-head shortlist. ISO-date queries stay lexical:
 
 ```sh
 python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \\
@@ -166,6 +171,16 @@ untracking step.
 `provision-retrieval.py` remains a legacy preview/apply workflow for vault-local
 helper copies. It refuses overwrites; existing helpers and journals are never
 automatically deleted or migrated. New setup uses package-owned scripts.
+
+Current BM25/semantic inputs and exposed excerpts conservatively mask clear
+single-line strikethrough outside literal/code/link contexts. Original notes,
+source hashes and character offsets are preserved; ISO-date queries retain raw
+historical lexical access. Unmarked old tables or contradictory prose are not
+resolved by projection: read temporal context and request consolidation rather
+than claiming current facts from page recall or metadata alone. Date-free
+historical intent is not inferred. Search/doctor report old-projection caches as
+stale and never rebuild them. The [private evaluation workflow](../../docs/retrieval-evaluation.md)
+is separate from the deterministic boundary benchmark and normal CI.
 
 BM25 indexes Markdown directly; `contextual-prefix.py` is a hook-compatible
 no-op, not contextual or model-augmented indexing. Embedding reranking is
@@ -417,9 +432,14 @@ strategically, not exhaustively:
    search is unavailable (see Entry Point & Documentation Layout in
    `references/authoring-standards.md`). Direct package retrieval scripts remain
    available for maintenance and lower-level retrieval.
-   Retrieval refresh follows finalized writing batches when enabled. Read a
-   page by its resolved path while its batch is still pending rather than
-   expecting search to find it. Date queries remain lexical: matching dated
+   One BM25 refresh follows each validated finalized changed batch when enabled.
+   A failed refresh retains a durable retrieval-only retry; do not confuse
+   published content/navigation/log with current search. A permitted writer
+   finalization or explicit build settles retries without duplicate logging.
+   Disabled refresh performs no automatic builds; outside-lifecycle edits remain
+   explicit-maintenance work. Search/doctor are always read-only. Read a page by
+   its resolved path while its content batch or retrieval refresh is pending
+   rather than expecting search to find it. Date queries remain lexical: matching dated
    notes rank first, then relevant dated sections in canonical pages. Query
    qualifiers refine section relevance rather than disabling date priority.
    For an exact known string rather than a topic, `obsidian-cli search` is

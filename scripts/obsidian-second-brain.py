@@ -129,15 +129,33 @@ def doctor(config_file: Path, config: dict[str, Any] | None, config_error: str |
                  "index": str(index), "reason": reason}
     if index_valid:
         retrieval["freshness"] = freshness(index, list(INDEX_MODULE.load_index(index)["lengths"]), vault)
-        if retrieval["freshness"] == "stale":
+        if retrieval["freshness"] in {"stale", "stale-projection", "pending-content", "pending-refresh", "unknown"}:
             retrieval.update({"ready": False, "reason": "index is stale; use the reviewed index-build workflow"})
+    retry = LIFECYCLE_MODULE.retrieval_status(vault)
+    retrieval["retry"] = retry
+    retrieval["automaticRefreshEnabled"] = ((config or {}).get("features") or {}).get("retrievalRefresh") is not False
+    if retry.get("pending") or retry.get("error"):
+        retrieval.update({"ready": False, "reason": "published wiki batch has a pending retrieval refresh" if retry.get("pending") else retry["error"]})
     checks["retrieval"] = retrieval
     return checks
 
 
 def freshness(index: Path, pages: list[str], vault: Path) -> str:
-    """Conservative page-set/mtime freshness; index format has no content digest."""
+    """Prefer source hashes; retain conservative mtime checks for old caches."""
     try:
+        retry = LIFECYCLE_MODULE.retrieval_status(vault)
+        if retry.get("error"):
+            return "unknown"
+        if retry.get("pending"):
+            return "pending-refresh"
+        _, state_path, _ = LIFECYCLE_MODULE.layout(vault, False)
+        if state_path.exists() and LIFECYCLE_MODULE.load_state(state_path, vault)["pending"]:
+            return "pending-content"
+        data = INDEX_MODULE.load_index(index)
+        if data.get("projectionScheme") != INDEX_MODULE.projection.SCHEME:
+            return "stale-projection"
+        if "sourceHashes" in data:
+            return "current-by-hash" if data["sourceHashes"] == INDEX_MODULE.source_manifest(vault) else "stale"
         wiki = vault / "wiki"
         indexed = set(pages)
         current = set()
@@ -159,19 +177,13 @@ def freshness(index: Path, pages: list[str], vault: Path) -> str:
             return "stale"
         index_time = index.stat(follow_symlinks=False).st_mtime_ns
         return "stale" if latest_page > index_time else "current-by-mtime"
-    except OSError:
+    except (OSError, ValueError, KeyError, TypeError, LIFECYCLE_MODULE.LifecycleError):
         return "unknown"
 
 
-def excerpt_for(path: Path, terms: list[str]) -> tuple[str, int, int]:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    lines = text.splitlines() or [""]
-    folded = [term.casefold() for term in terms if term]
-    selected = next((i for i, line in enumerate(lines) if any(term in line.casefold() for term in folded)), 0)
-    value = " ".join(lines[selected:selected + 3]).strip()
-    if len(value) > MAX_EXCERPT:
-        value = value[:MAX_EXCERPT - 1].rstrip() + "…"
-    return value, selected + 1, min(len(lines), selected + 3)
+def excerpt_for(path: Path, terms: list[str], historical: bool = False, iso_date: str | None = None) -> tuple[str, int, int]:
+    text = INDEX_MODULE.projection.read_source(path)
+    return INDEX_MODULE.projection.excerpt(text, terms, historical=historical, iso_date=iso_date, max_chars=MAX_EXCERPT)
 
 
 def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
@@ -184,6 +196,9 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
     if len(query) > RETRIEVAL_MODULE.MAX_QUERY_CHARS:
         response["reason"] = f"query exceeds {RETRIEVAL_MODULE.MAX_QUERY_CHARS} characters"
         return response
+    retry = LIFECYCLE_MODULE.retrieval_status(vault)
+    response["retrievalPending"] = retry.get("pending")
+    response["retrievalRetry"] = retry
     index = vault / DEFAULT_INDEX
     response["index"] = str(index)
     try:
@@ -204,29 +219,27 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
             exact, canonical = RETRIEVAL_MODULE.dated_matches(data, candidates, query, date_match, vault)
             candidates.sort(key=lambda item: (0 if item[0] in exact else 1 if item[0] in canonical else 2, -item[1], item[0]))
         freshness_state = freshness(index, list(data["lengths"]), vault)
+        response["projection"] = data.get("projectionScheme", "legacy-unprojected")
+        response["view"] = "historical" if date_match else "current"
         semantic = []
         semantic_error = None
         if hybrid and not date_match:
             try:
                 semantic = RETRIEVAL_MODULE.semantic_candidates(query, vault, ollama_url, ollama_model, timeout)
+                if not semantic:
+                    semantic_error = "no current compatible semantic evidence (missing/stale cache or unverified installed model identity)"
             except Exception as exc:
                 semantic_error = str(exc)
         safe = []
         if semantic and hybrid and not date_match:
             lexical_rank = {page: rank for rank, (page, _) in enumerate(candidates, 1)}
-            semantic_rank = {}
             semantic_page_data = {}
-            for rank, (page, score, _chunk_index, chunk) in enumerate(semantic, 1):
-                if page not in semantic_rank:
-                    semantic_rank[page] = rank
+            for page, score, _chunk_index, chunk in semantic:
+                if page not in semantic_page_data:
                     semantic_page_data[page] = (score, chunk)
-            fused = {}
-            for page in set(lexical_rank) | set(semantic_rank):
-                fused[page] = ((1 / (RETRIEVAL_MODULE.RRF_K + lexical_rank[page]) if page in lexical_rank else 0.0)
-                               + (1 / (RETRIEVAL_MODULE.RRF_K + semantic_rank[page]) if page in semantic_rank else 0.0))
-            ranked_pages = sorted(fused, key=lambda page: (
-                -fused[page], semantic_rank.get(page, RETRIEVAL_MODULE.MAX_SEMANTIC_CANDIDATES + 1),
-                lexical_rank.get(page, RETRIEVAL_MODULE.MAX_SEMANTIC_CANDIDATES + 1), page))[:max(0, min(limit, 100))]
+            ranked_pages, fused_data = RETRIEVAL_MODULE.fuse_ranks(candidates, semantic)
+            fused = {page: value[0] for page, value in fused_data.items()}
+            ranked_pages = ranked_pages[:max(0, min(limit, 100))]
             for page in ranked_pages:
                 rel = Path(page)
                 source = vault / rel
@@ -237,7 +250,7 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
                     similarity, chunk = semantic_data
                     source_text = chunk["source"]
                     start, end = chunk["start"], chunk["end"]
-                    excerpt = " ".join(source_text[start:end].split())
+                    excerpt = " ".join(chunk.get("displaySource", source_text)[start:end].split())
                     if len(excerpt) > MAX_EXCERPT:
                         excerpt = excerpt[:MAX_EXCERPT - 1].rstrip() + "…"
                     line_start = source_text.count("\n", 0, start) + 1
@@ -260,7 +273,7 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
             source = vault / rel
             if not INDEX_MODULE.eligible(source, vault):
                 continue
-            excerpt, line_start, line_end = excerpt_for(source, [x.casefold() for x in INDEX_MODULE.tokens(query)])
+            excerpt, line_start, line_end = excerpt_for(source, [x.casefold() for x in INDEX_MODULE.tokens(query)], historical=bool(date_match), iso_date=date_match.group() if date_match else None)
             match_type = "exact-date" if page in exact else "canonical-date-section" if page in canonical else "bm25"
             safe.append({"path": rel.as_posix(), "score": score, "match": match_type,
                          "lineStart": line_start, "lineEnd": line_end, "excerpt": excerpt})
@@ -282,7 +295,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--limit", type=int, default=10, help="maximum search results (0–100)")
     parser.add_argument("--hybrid", action="store_true", help="opt in to cached semantic chunk + BM25 rank fusion")
-    parser.add_argument("--semantic-chunks", action="store_true", help="explicitly build/reuse local semantic chunk cache; requires build")
+    parser.add_argument("--semantic-chunks", action="store_true", help="manual input-incremental semantic document build; never installs a model; requires build")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="loopback Ollama URL (semantic operations only)")
     parser.add_argument("--ollama-model", default="qwen3-embedding:4b", help="already-installed embedding model; no download is attempted")
     parser.add_argument("--timeout", type=float, default=8.0, help="embedding request timeout in seconds")
@@ -376,7 +389,10 @@ def main() -> int:
             status = 1
         else:
             try:
+                retry_token = LIFECYCLE_MODULE.retrieval_status(vault).get("token")
                 count = INDEX_MODULE.build(vault)
+                if retry_token:
+                    LIFECYCLE_MODULE.acknowledge_retrieval(vault, retry_token)
             except (OSError, UnicodeError, ValueError) as exc:
                 output = {"vault": str(vault), "indexed": 0, "semantic": None, "error": str(exc)}
                 status = 1
@@ -387,7 +403,7 @@ def main() -> int:
                     try:
                         chunk_module = load_source("obsidian_cli_semantic_chunks", str(Path(__file__).with_name("semantic-chunks.py")))
                         semantic = chunk_module.build(vault, args.ollama_url, args.ollama_model, timeout=args.timeout)
-                        output["semantic"] = {"indexed": semantic["indexed"], "reused": semantic["reused"], "deferred": semantic["deferred"]}
+                        output["semantic"] = {key: semantic[key] for key in ("indexed", "reused", "deferred", "embeddedInputs", "embeddedChars", "reusedInputs", "buildSeconds", "cacheBytes")}
                     except Exception as exc:
                         output["semantic"] = {"error": str(exc), "deferred": []}
                         output["semanticFallback"] = "page-level BM25 remains available"

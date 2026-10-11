@@ -128,7 +128,7 @@ function touchedWikiPath(rawPath: unknown, cwd: string): string | null {
 	return target;
 }
 
-async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverride = knownVault): Promise<{ output: string; error?: string }> {
+async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverride = knownVault): Promise<{ output: string; error?: string; retrievalPending?: boolean }> {
 	if (!HOOK) return { output: "", error: "hook is not configured" };
 	if (!fs.existsSync(HOOK)) return { output: "", error: `hook is missing at ${HOOK}` };
 	try {
@@ -138,7 +138,10 @@ async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverr
 			encoding: "utf8",
 			timeout: 15000,
 		});
-		return { output: stdout.trim() };
+		const output = stdout.trim();
+		return output === "synced-retrieval-pending"
+			? { output: "synced", retrievalPending: true }
+			: { output };
 	} catch (err: unknown) {
 		const result = err as { stdout?: unknown; stderr?: unknown; message?: unknown };
 		const detail = [result.stdout, result.stderr].filter((v): v is string => typeof v === "string" && v.trim() !== "").join(" ").trim();
@@ -153,6 +156,11 @@ export default function (pi: ExtensionAPI) {
 	let toc = "";
 	let locatorVault: string | null = null;
 	const injectedLocators = new Map<string, string>();
+	function reportRetrievalPending(ctx: { ui: { notify(message: string, type: "warning"): void } }, key: string) {
+		const message = "Wiki content/navigation/log were published, but BM25 refresh remains pending. A durable retrieval-only retry is retained; do not claim search freshness. Manual semantic builds remain separate.";
+		pendingModelDiagnostics.set(key, message);
+		ctx.ui.notify(message, "warning");
+	}
 	const touchedByVault = new Map<string, Set<string>>();
 	const pendingWikiWrites = new Map<string, { owner: string; toolId: string; vault: string; path: string }>();
 	const ownedVaultsBySession = new Map<string, Set<string>>();
@@ -253,6 +261,7 @@ export default function (pi: ExtensionAPI) {
 			const diagnosticKey = ownerVaultKey(owner, eventVault);
 			pendingModelDiagnostics.delete(diagnosticKey);
 			diagnosticContinuations.delete(diagnosticKey);
+			if (finalized.retrievalPending) reportRetrievalPending(ctx, diagnosticKey);
 		}
 		if (isWrite && eventVault) {
 			candidate = wikiWriteCandidate(event.input.path, ctx.cwd);
@@ -397,6 +406,7 @@ export default function (pi: ExtensionAPI) {
 		const diagnosticKey = ownerVaultKey(owner, knownVault);
 		pendingModelDiagnostics.delete(diagnosticKey);
 		diagnosticContinuations.delete(diagnosticKey);
+		if (result.retrievalPending) reportRetrievalPending(ctx, diagnosticKey);
 		for (const touchedPath of pending) touched.delete(touchedPath);
 		if (touched.size === 0) touchedByVault.delete(knownVault);
 	});
@@ -415,7 +425,7 @@ export default function (pi: ExtensionAPI) {
 			entries: [...event.entries, {
 				type: "custom_message",
 				customType: "obsidian-finalization-diagnostic",
-				content: `Action required before considering wiki work complete: ${diagnostic}. Inspect/repair the retained page or explain the unresolved failure; do not claim successful finalization.`,
+				content: `Action required before considering wiki work complete: ${diagnostic}. Inspect/repair the retained page when needed, or explain the unresolved retrieval degradation. Report content publication and retrieval freshness separately.`,
 				display: false,
 			}],
 			...(shouldContinue ? { continue: true } : {}),
@@ -449,6 +459,7 @@ export default function (pi: ExtensionAPI) {
 				const diagnosticKey = ownerVaultKey(owner, vault);
 				pendingModelDiagnostics.delete(diagnosticKey);
 				diagnosticContinuations.delete(diagnosticKey);
+				if (result.retrievalPending) reportRetrievalPending(ctx, diagnosticKey);
 				touchedByVault.delete(vault);
 			}
 		}
@@ -478,6 +489,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`obsidian shutdown with ${unsettled} unsettled touched path(s)`, "warning");
 			}
 			const result = await runHook("stop", ctx.cwd, ["--recover-owner", owner], vault);
+			if (result.retrievalPending) reportRetrievalPending(ctx, ownerVaultKey(owner, vault));
 			if (result.error) ctx.ui.notify(`obsidian convergence check failed: ${result.error}`, "warning");
 		}
 		ownedVaultsBySession.delete(owner);

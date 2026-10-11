@@ -102,8 +102,13 @@ def load_state(path: Path, vault: Path) -> dict:
         raise LifecycleError(f"cannot read lifecycle state safely: {exc}") from exc
     finally:
         os.close(parent)
-    if state.get("version") != 1 or state.get("vault") != str(vault) or not isinstance(state.get("pending"), dict):
+    if not isinstance(state, dict) or state.get("version") != 1 or state.get("vault") != str(vault) or not isinstance(state.get("pending"), dict):
         raise LifecycleError("lifecycle state has an incompatible or changed vault boundary")
+    if "retrieval" in state:
+        obligation = state["retrieval"]
+        if (not isinstance(obligation, dict) or not isinstance(obligation.get("owner"), str)
+                or not isinstance(obligation.get("token"), str) or not obligation["token"]):
+            raise LifecycleError("lifecycle retrieval obligation is malformed")
     return state
 
 
@@ -395,6 +400,67 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
         os.close(parent_fd)
 
 
+def retrieval_status(vault: Path) -> dict:
+    """Read-only retry diagnostics; never creates a lock or state directory."""
+    try:
+        _, state_path, _ = layout(vault, False)
+        if not state_path.exists() and not state_path.is_symlink():
+            return {"pending": False}
+        state = load_state(state_path, vault)
+        obligation = state.get("retrieval")
+        return {"pending": bool(obligation), **(obligation or {})}
+    except (OSError, ValueError, LifecycleError) as exc:
+        return {"pending": None, "error": str(exc)}
+
+
+def acknowledge_retrieval(vault: Path, token: str) -> bool:
+    """Acknowledge only this published generation, with current source proof."""
+    from module_loading import load_source
+    indexer = load_source("lifecycle_bm25", str(Path(__file__).with_name("bm25-index.py")))
+    _, state_path, lock_path = layout(vault, False)
+    if not state_path.exists():
+        return False
+    with locked(lock_path):
+        state = load_state(state_path, vault)
+        if state["pending"] or state.get("retrieval", {}).get("token") != token:
+            return False
+        try:
+            index_path = indexer.safe_output(vault, indexer.DEFAULT_INDEX)
+            data = indexer.load_index(index_path)
+            if (data.get("projectionScheme") != indexer.projection.SCHEME
+                    or data.get("sourceHashes") != indexer.source_manifest(vault)):
+                return False
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        state.pop("retrieval", None)
+        atomic_json(state_path, state)
+        return True
+
+
+def refresh_retrieval(vault: Path, script: str, token: str) -> bool:
+    error = None
+    try:
+        retrieval = Path(script).resolve(strict=True)
+        result = subprocess.run([sys.executable, str(retrieval), "build", "--vault", str(vault)],
+                                text=True, capture_output=True, timeout=10)
+        if result.returncode:
+            error = "build failed"
+        else:
+            acknowledge_retrieval(vault, token)
+    except (OSError, ValueError, subprocess.TimeoutExpired, LifecycleError) as exc:
+        error = str(exc)
+    _, state_path, lock_path = layout(vault, False)
+    with locked(lock_path):
+        state = load_state(state_path, vault)
+        obligation = state.get("retrieval")
+        if obligation:
+            if obligation.get("token") == token:
+                obligation["lastError"] = error or "build not acknowledged: source/cache changed or active capture"
+                atomic_json(state_path, state)
+            return False
+    return True
+
+
 def finalize(args: argparse.Namespace) -> None:
     vault = Path(args.vault).resolve(strict=True)
     life, state_path, lock_path = layout(vault, False)
@@ -410,8 +476,21 @@ def finalize(args: argparse.Namespace) -> None:
         state = load_state(state_path, vault)
         all_pending = state["pending"]
         if not all_pending:
-            print("clean")
-            return
+            obligation = state.get("retrieval")
+            # An unrelated read-only session must not turn shutdown into repair.
+            retry_token = (obligation.get("token") if obligation and args.retrieval_script
+                           and (owner == "manual" or owner == obligation.get("owner")) else None)
+            if not retry_token:
+                print("clean")
+                return
+        else:
+            retry_token = None
+    if retry_token:
+        print("synced" if refresh_retrieval(vault, args.retrieval_script, retry_token) else "synced-retrieval-pending")
+        return
+    with locked(lock_path):
+        state = load_state(state_path, vault)
+        all_pending = state["pending"]
 
         def captures_for(entry: dict) -> dict[str, dict[str, str]]:
             captures = entry.get("captures")
@@ -462,9 +541,9 @@ def finalize(args: argparse.Namespace) -> None:
                 reconciled = True
         if reconciled:
             atomic_json(state_path, state)
-        pending = {k: v for k, v in owned.items() if v.get("changed")}
+        pending = {k: v for k, v in owned.items() if k in state["pending"] and v.get("changed")}
         if not pending:
-            print("clean")
+            print("synced-retrieval-pending" if args.retrieval_script and state.get("retrieval") else "clean")
             return
         problems = []
         for raw, entry in pending.items():
@@ -513,15 +592,21 @@ def finalize(args: argparse.Namespace) -> None:
         result = subprocess.run([sys.executable, str(sync), str(vault), "--json"], text=True, capture_output=True)
         if result.returncode:
             raise LifecycleError("index sync after log update failed; batch retained:\n" + (result.stdout + result.stderr))
+        for raw, entry in pending.items():
+            if digest(Path(raw)) != entry.get("after"):
+                raise LifecycleError("changed page changed during finalization; batch retained for validation")
+        # One atomic transition retains the refresh obligation before removing
+        # the last changed-page record. A crash now retries only retrieval.
+        token = os.urandom(16).hex()
+        if args.retrieval_script or state.get("retrieval"):
+            state["retrieval"] = {"token": token, "owner": owner}
         for key in pending:
             state["pending"].pop(key, None)
         atomic_json(state_path, state)
-    if args.retrieval_script:
-        retrieval = Path(args.retrieval_script).resolve(strict=True)
-        result = subprocess.run([sys.executable, str(retrieval), "build", "--vault", str(vault)], text=True, capture_output=True)
-        if result.returncode:
-            print("obsidian lifecycle: warning: retrieval index refresh failed; wiki index navigation remains available", file=sys.stderr)
-    print("synced")
+    if args.retrieval_script and not refresh_retrieval(vault, args.retrieval_script, token):
+        print("synced-retrieval-pending")
+    else:
+        print("synced")
 
 
 def _git_ignore_record(vault: Path, path: str) -> tuple[bytes, bytes, bytes] | None:
