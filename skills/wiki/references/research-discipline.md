@@ -35,11 +35,59 @@ Investigate one bounded area at a time:
 ## Provenance Discipline
 
 Wiki-First Answering makes the wiki authoritative, which is exactly what makes
-an untraceable claim expensive later. Four rules:
+an untraceable claim expensive later. Apply these authoring rules:
 
 - `unsupported` is a legitimate and preferred outcome. A grounded refusal beats
   a confident invention.
 - Preserve contradictory evidence on the page. Do not silently pick a winner.
 - Never fabricate quotations, dates, page numbers, or evidence locators.
-- A `type: source` page must carry a resolvable `source_url` and the date it
-  was retrieved.
+
+For a new `type: source` page, record traceable evidence and known access dates
+using the [frontmatter conventions](frontmatter.md#source-dates). This is an
+authoring-quality contract: OKF requires only `type`, not provenance metadata.
+
+### Source identity
+
+- For a singleton source, use canonical `resource` for the underlying asset.
+  An external URL is appropriate only for an external source.
+- For a bundle, use structured `sources` entries with stable `id` values and
+  known `resource` locators. Attribute claims to the relevant IDs with Markdown
+  footnotes; do not invent one URL to stand for the whole bundle.
+- For local artifacts, use a portable file or bundle path and enough context
+  to identify the inspected version, such as a known commit or content hash.
+  A local source does not need an external URL or an optional raw capture.
+- For session anchors, use an identifier supplied by the client or user, with
+  the selected turn/excerpt and speaker attribution. If no durable anchor is
+  available, describe the selected evidence and its access limitation in prose;
+  do not invent a session ID. The conversation is not an independent external
+  source; distinguish user statements from assistant synthesis.
+
+Accept legacy `source_url` and legacy scalar/string-list `sources` as migration
+inputs. Do not add redundant legacy metadata to a canonical page or rewrite
+unrelated existing pages. Preserve unknown producer fields; if old and canonical
+locators conflict, flag the conflict rather than silently choosing one.
+
+### Dates and incomplete evidence
+
+Use `retrieved` / `fetched` only for actual source access, and `ingested` for
+entry into the wiki workflow. Record historical ingest dates only when supported
+by evidence; an ingest today does not establish an original retrieval date.
+For a bundle, keep distinct access dates on the relevant source entries.
+
+Observation dates, publication dates, source creation dates, and wiki page
+creation/update dates describe different events. Never substitute them for a
+missing retrieval date; the [date definitions and examples](frontmatter.md#source-dates)
+show how to retain each meaning.
+
+If an original access date is unknown, omit it and record
+`retrieval_status: unknown` with the limitation in prose. If a source cannot be
+accessed, retain its known locator or identity, record
+`retrieval_status: unavailable`, and explain what could not be checked.
+
+A fresh access can establish a new access date, never a reconstructed old one.
+Missing dates, broken locators, and non-replayable session anchors are
+source-quality debt, not a validator failure. Keep supported historical evidence
+with its limits; do not claim inaccessible material was inspected or use it to
+verify new claims.
+
+Missing `type` or malformed known fields remain structural validation errors.

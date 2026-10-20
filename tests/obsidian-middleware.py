@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,31 @@ with tempfile.TemporaryDirectory() as temp:
     invalid.write_text("---\ntype: note\n---not-a-delimiter\n")
     run(validator, invalid, ok=False)
     invalid.unlink()
+
+    source_forms = {
+        "minimal": "type: source\n",
+        "canonical": "type: source\nresource: https://example.test/reference\nretrieved: 2026-01-01\n",
+        "bundle": "type: source\nsources:\n  - id: first\n    resource: https://example.test/a\n"
+                  "  - id: second\n    resource: .raw/example.txt\ningested: 2026-01-02\n",
+        "unknown": "type: source\nresource: https://example.test/history\nretrieval_status: unknown\n",
+        "unavailable": "type: source\nsources:\n  - id: unavailable-original\nretrieval_status: unavailable\n",
+        "local": "type: source\nresource: .raw/example.txt\nproducer_specific: {state: partial}\n",
+        "session": "type: source\nsources:\n  - id: selected-session-turn\nobserved: 2026-01-01\n",
+        "legacy-url": "type: source\nsource_url: https://example.test/legacy\n",
+        "legacy-scalar": "type: source\nsources: https://example.test/legacy\n",
+        "legacy-list": "type: source\nsources: [legacy-a, legacy-b]\n",
+    }
+    fixture = wiki / "source-fixture.md"
+    for name, fields in source_forms.items():
+        content = f"---\n{fields}---\nSynthetic source: {name}.\n"
+        fixture.write_text(content)
+        run(validator, fixture)
+        assert fixture.read_text() == content
+    for fields in ("resource: https://example.test/no-type\n", "type: source\nresource: []\n",
+                   "type: source\nsource_url: []\n", "type: source\nsources: [{}]\n"):
+        fixture.write_text(f"---\n{fields}---\nInvalid source metadata.\n")
+        run(validator, fixture, ok=False)
+    fixture.unlink()
 
     sync = middleware / "sync.py"
     for directory in ("../outside", "alias"):
@@ -603,5 +629,61 @@ with tempfile.TemporaryDirectory() as temp:
     assert {entry["reason"] for entry in report["dead_links"]} >= {
         "target-not-found", "heading-not-found"
     }, report["dead_links"]
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp) / "vault"
+    wiki = root / "wiki"
+    (wiki / "guides").mkdir(parents=True)
+    (wiki / "concepts").mkdir()
+    architecture = wiki / "concepts/architecture.md"
+    architecture.write_text(
+        "---\ntype: note\n---\n# Architecture\n\n"
+        "## Ownership Model\n\nFirst ownership section.\n\n"
+        "## Ownership Model\n\nRepeated ownership section.\n\n"
+        "## Café & Rôles\n\nUnicode heading.\n"
+    )
+    guide = middleware.parents[1] / "references/markdown-standards.md"
+    documented = re.search(r'\*\*Fragment to a heading:\*\* `([^`]+)`', guide.read_text())
+    assert documented, "The Markdown guide must retain a tested heading-link example"
+    caller = wiki / "guides/caller.md"
+    caller.write_text(f"---\ntype: note\n---\n# Caller\n\n{documented.group(1)}\n")
+    run(middleware / "sync.py", root)
+    report = json.loads(run(middleware / "lint.py", root).stdout)
+    assert not report["dead_links"], report["dead_links"]
+    assert not report["ambiguous_targets"], report["ambiguous_targets"]
+
+    caller.write_text(caller.read_text() +
+        "[exact text](../concepts/architecture.md#Ownership Model)\n"
+        "[encoded text](../concepts/architecture.md#Ownership%20Model)\n"
+        "[normalized case](../concepts/architecture.md#ownership%20model)\n"
+        "[Unicode](../concepts/architecture.md#Caf%C3%A9%20%26%20R%C3%B4les)\n"
+        "[slug is not heading text](../concepts/architecture.md#ownership-model)\n"
+        "[no numbered duplicate slug](../concepts/architecture.md#ownership-model-1)\n"
+    )
+    report = json.loads(run(middleware / "lint.py", root).stdout)
+    assert {entry["target"] for entry in report["dead_links"]} == {
+        "../concepts/architecture.md#ownership-model",
+        "../concepts/architecture.md#ownership-model-1",
+    }, report["dead_links"]
+    assert all(entry["reason"] == "heading-not-found" for entry in report["dead_links"])
+    assert not report["ambiguous_targets"], report["ambiguous_targets"]
+
+    architecture.write_text(architecture.read_text() + "\n## ownership-model\n\nLiteral hyphen.\n")
+    report = json.loads(run(middleware / "lint.py", root).stdout)
+    assert [entry["target"] for entry in report["dead_links"]] == [
+        "../concepts/architecture.md#ownership-model-1"
+    ], report["dead_links"]
+
+    (wiki / "other").mkdir()
+    (wiki / "other/architecture.md").write_text(architecture.read_text())
+    caller.write_text(caller.read_text() + "[[architecture#Ownership Model]]\n")
+    report = json.loads(run(middleware / "lint.py", root).stdout)
+    assert len(report["ambiguous_targets"]) == 1, report["ambiguous_targets"]
+    ambiguous = report["ambiguous_targets"][0]
+    assert ambiguous["target"] == "architecture#Ownership Model"
+    assert ambiguous["candidates"] == ["wiki/concepts/architecture.md", "wiki/other/architecture.md"]
+    assert [entry["target"] for entry in report["dead_links"]] == [
+        "../concepts/architecture.md#ownership-model-1"
+    ], report["dead_links"]
 
 print("wiki middleware boundary regressions PASS")
