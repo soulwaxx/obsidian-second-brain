@@ -568,12 +568,40 @@ try {
     assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending, {});
   }
 
-  // Error results can leave partial bytes; recovery must validate, not publish
-  // an invalid page or leave its active capture poisoning later repair writes.
+  // A terminal failed edit with no byte changes settles immediately, allowing
+  // a successful retry and navigation before agent_end.
+  const failedNoop = { toolCallId: "failed-noop", toolName: "edit", input: { path: path.join(vault, "wiki/topic/failed-noop.md") } };
+  fs.writeFileSync(failedNoop.input.path, pageContent("Failed Noop"));
+  assert.equal(await prepare(failedNoop), undefined);
+  await featureHandlers.get("tool_result")({ ...failedNoop, isError: true }, ctx);
+  assert.equal(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending[fs.realpathSync(failedNoop.input.path)], undefined,
+    "unchanged terminal failure settles its lifecycle capture");
+  const failedNoopWarnings = [];
+  const failedNoopCtx = { ...ctx, ui: { notify: (message) => failedNoopWarnings.push(message) } };
+  await featureHandlers.get("turn_end")({}, failedNoopCtx);
+  await featureHandlers.get("turn_end")({}, failedNoopCtx);
+  assert.deepEqual(failedNoopWarnings, [], "delivered no-byte failures do not repeat unsettled-capture warnings");
+  assert.equal(await prepare({ toolCallId: "failed-noop-nav", toolName: "read", input: { path: sharedIndex } }), undefined,
+    "unchanged terminal failure must not leave a navigation barrier");
+  const noopRetry = { ...failedNoop, toolCallId: "failed-noop-retry" };
+  assert.equal(await prepare(noopRetry), undefined);
+  fs.writeFileSync(noopRetry.input.path, pageContent("Failed Noop Repaired"));
+  await featureHandlers.get("tool_result")({ ...noopRetry, isError: false }, ctx);
+  await featureHandlers.get("turn_end")({}, ctx);
+  assert.match(fs.readFileSync(sharedIndex, "utf8"), /failed-noop\.md/,
+    "successful retry after terminal failure publishes navigation without waiting for agent_end");
+
+  // Error results can leave partial bytes; settle and validate them at result
+  // delivery, retaining invalid content as a repairable navigation barrier.
   const failed = { toolCallId: "failed-partial", toolName: "write", input: { path: path.join(vault, "wiki/topic/failed-partial.md") } };
   assert.equal(await prepare(failed), undefined);
   fs.writeFileSync(failed.input.path, "---\ntype: note\ntitle: Partial\n");
   await featureHandlers.get("tool_result")({ ...failed, isError: true }, ctx);
+  const partialFailureState = JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8"));
+  assert.equal(partialFailureState.pending[fs.realpathSync(failed.input.path)].captures["pi:pi-writer-session"][failed.toolCallId], "settled",
+    "delivered partial failure settles its original capture after validation");
+  assert.equal((await prepare({ toolCallId: "failed-partial-nav-before-end", toolName: "read", input: { path: sharedIndex } }))?.block, true,
+    "invalid partial bytes remain navigation-blocked before agent_end");
   const indexBeforeFailure = fs.readFileSync(sharedIndex, "utf8");
   await featureHandlers.get("agent_end")({}, ctx);
   assert.equal(fs.readFileSync(sharedIndex, "utf8"), indexBeforeFailure);
@@ -587,6 +615,22 @@ try {
   await featureHandlers.get("turn_end")({}, ctx);
   assert.equal(await prepare({ toolCallId: "repaired-nav", toolName: "read", input: { path: sharedIndex } }), undefined);
   assert.deepEqual(JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8")).pending, {});
+
+  // A valid partial write from a terminal error is still validated and can be
+  // finalized; replacement callback context must not change capture ownership.
+  const validFailed = { toolCallId: "failed-valid-partial", toolName: "edit", input: { path: path.join(vault, "wiki/topic/failed-valid-partial.md") } };
+  assert.equal(await prepare(validFailed), undefined);
+  fs.writeFileSync(validFailed.input.path, pageContent("Valid Failed Partial"));
+  await featureHandlers.get("tool_result")({ ...validFailed, isError: true }, readerCtx);
+  const validFailedState = JSON.parse(fs.readFileSync(lifecycleStatePath, "utf8"));
+  const validFailedCapture = validFailedState.pending[fs.realpathSync(validFailed.input.path)].captures;
+  assert.equal(validFailedCapture["pi:pi-writer-session"][validFailed.toolCallId], "settled",
+    "terminal failed result settles using the original captured writer despite replacement context");
+  assert.equal(validFailedCapture["pi:pi-reader-session"], undefined,
+    "replacement result context does not receive ownership of the capture");
+  await featureHandlers.get("turn_end")({}, ctx);
+  assert.match(fs.readFileSync(sharedIndex, "utf8"), /failed-valid-partial\.md/,
+    "valid partial bytes from a failed result are finalized into navigation");
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, featureConfig);
 
   const binary = path.join(vault, "wiki/topic/attachment.bin");

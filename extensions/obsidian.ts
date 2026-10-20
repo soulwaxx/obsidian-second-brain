@@ -325,10 +325,11 @@ export default function (pi: ExtensionAPI) {
 		const pendingId = captured.length === 1 ? captured[0][0] : pendingKey(currentOwner, event.toolCallId);
 		const pending = pendingWikiWrites.get(pendingId);
 		const eventVault = pending?.vault ?? knownVault;
-		// A failed tool may have written partial bytes. Retain its capture until
-		// agent_end can safely recover and validate it after all tools settle.
-		if (event.isError && pending) return;
-		if (event.isError || (event.toolName !== "write" && event.toolName !== "edit") || !eventVault) {
+		if (event.isError && !pending) return;
+		// A delivered result is terminal, even when the tool reports failure. Run
+		// it through postwrite with its captured identity so partial bytes are
+		// validated and unchanged failures settle as no-ops.
+		if ((event.toolName !== "write" && event.toolName !== "edit") || !eventVault) {
 			if (pending) pendingWikiWrites.delete(pendingId);
 			return;
 		}
