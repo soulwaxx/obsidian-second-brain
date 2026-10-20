@@ -3,6 +3,9 @@
 
 from pathlib import Path
 import re
+import subprocess
+import sys
+import tempfile
 
 import yaml
 
@@ -72,4 +75,48 @@ for document in ('README.md', 'docs/setup.md', 'skills/wiki/SKILL.md'):
 entry = (ROOT / 'skills/wiki/SKILL.md').read_text().lower()
 assert 'general `/wiki` entry point' in entry
 assert 'one agent that handles the whole lifecycle' not in entry
+research_path = ROOT / 'skills/wiki/references/research-discipline.md'
+frontmatter_path = ROOT / 'skills/wiki/references/frontmatter.md'
+research = ' '.join(research_path.read_text().lower().split())
+frontmatter = ' '.join(frontmatter_path.read_text().lower().split())
+assert 'must carry a resolvable `source_url`' not in research
+for boundary in ('canonical `resource`', 'legacy `source_url`', 'structured `sources`',
+                 'local artifacts', 'session anchors', 'source-quality debt',
+                 'not a validator failure', 'never fabricate',
+                 'conversation is not an independent external source'):
+    assert boundary in research, boundary
+assert '(frontmatter.md#source-dates)' in research
+assert '(research-discipline.md#provenance-discipline)' in frontmatter
+for boundary in ('only required field', 'unrecognized fields', 'legacy scalar',
+                 'string-list', 'producer-defined', '`retrieved` / `fetched`',
+                 '`ingested`', '`observed`', '`published`', '`source_created`',
+                 'not substitutes for retrieval dates', '`retrieval_status: unknown`',
+                 '`retrieval_status: unavailable`'):
+    assert boundary in frontmatter, boundary
+
+source_examples = [yaml.safe_load(block) for block in
+                   re.findall(r'^```yaml\n(.*?)\n```$', frontmatter_path.read_text(), re.S | re.M)
+                   if block.startswith('type: source\n')]
+assert len(source_examples) == 5, 'Keep external, bundle, local, session, and unknown examples'
+external = next(item for item in source_examples if 'retrieved' in item)
+assert external['resource'].startswith('https://')
+bundle = next(item for item in source_examples if 'ingested' in item)
+assert len(bundle['sources']) == 2
+assert all(entry['id'] and entry['resource'] for entry in bundle['sources'])
+assert any(item.get('resource', '').startswith('.raw/') for item in source_examples)
+session = next(item for item in source_examples if 'observed' in item)
+assert session['sources'][0]['id'] and 'resource' not in session['sources'][0]
+unknown = next(item for item in source_examples
+               if item.get('retrieval_status') == 'unknown'
+               and item.get('resource', '').startswith('https://'))
+assert not {'retrieved', 'fetched', 'ingested'} & unknown.keys()
+assert all('source_url' not in item for item in source_examples)
+with tempfile.TemporaryDirectory() as temp:
+    validator = ROOT / 'skills/wiki/scripts/okf_mw/validate.py'
+    for number, example in enumerate(source_examples):
+        page = Path(temp) / f'source-{number}.md'
+        page.write_text('---\n' + yaml.safe_dump(example) + '---\nSynthetic source.\n')
+        result = subprocess.run([sys.executable, str(validator), str(page)],
+                                text=True, capture_output=True)
+        assert result.returncode == 0, (example, result.stderr)
 print('Focused wiki skill contracts PASS')

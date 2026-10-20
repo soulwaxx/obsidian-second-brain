@@ -19,7 +19,21 @@ folders. Percent-encode spaces and special characters in each path component:
   `[Space notes](./space%20notes.md)`.
 - For special characters, for example:
   `[Research](../concepts/research%20%5B2025%5D.md)`.
-- **Fragment to a heading:** `[ownership model](../concepts/architecture.md#ownership-model)`.
+- **Fragment to a heading:** `[ownership model](../concepts/architecture.md#Ownership%20Model)`.
+
+Heading fragments in authored wiki links follow
+[Obsidian's heading-text convention](https://help.obsidian.md/links): use the
+heading text after `#`, percent-encoding spaces and special characters.
+For `## Ownership Model`, use `#Ownership%20Model`, not `#ownership-model`.
+GitHub-style renderer slugs are a different convention; CommonMark does not
+define a generated heading-ID algorithm.
+
+The linter decodes heading text and normalizes formatting, whitespace, and case;
+it does not generate hyphenated slugs or numbered suffixes for repeated headings.
+A literal `## ownership-model` can match `#ownership-model`, but
+`## Ownership Model` cannot. Repeated identical headings pass the presence check
+without identifying a particular occurrence; use distinct headings when that
+choice matters, and qualify the note path when filenames are ambiguous.
 
 Existing OKF bundle-root-relative links such as
 `[Retrieval](/concepts/retrieval.md)` remain valid for OKF reading and
