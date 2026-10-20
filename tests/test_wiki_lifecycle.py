@@ -12,13 +12,18 @@ import tempfile
 from urllib.parse import quote, unquote
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OSB_TEST_PACKAGE_ROOT", SOURCE_ROOT)).resolve(strict=True)
 HELPER = ROOT / "scripts/wiki_lifecycle.py"
 MIDDLEWARE = ROOT / "skills/wiki/scripts/okf_mw"
 BM25 = ROOT / "scripts/bm25-index.py"
 RETRIEVE = ROOT / "scripts/retrieve.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 import wiki_lifecycle
+
+assert Path(wiki_lifecycle.__file__).resolve() == HELPER.resolve(), (
+    f"lifecycle import escaped selected package root: {wiki_lifecycle.__file__}"
+)
 
 
 def run(*args: object, ok: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -54,7 +59,7 @@ def setup(root: Path, ignored: bool = True) -> tuple[Path, Path]:
     subprocess.run(["git", "-C", str(vault), "config", "user.name", "fixture"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "user.email", "fixture@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "core.excludesFile", os.devnull], check=True)
-    run(ROOT / "skills/wiki/scripts/okf_mw/sync.py", vault)
+    run(MIDDLEWARE / "sync.py", vault)
     subprocess.run(["git", "-C", str(vault), "add", "wiki"] + ([".gitignore"] if (vault / ".gitignore").exists() else []), check=True)
     subprocess.run(["git", "-C", str(vault), "commit", "-qm", "baseline"], check=True)
     return vault, caller
@@ -123,6 +128,42 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     finalize(vault)
     assert (vault / "wiki/log.md").read_text().count("(./brand-new.md)") == 1
     assert subprocess.check_output(["git", "-C", str(vault), "rev-parse", "HEAD"], text=True).strip() == head
+
+    # A real deletion is logged without a missing-target link. The old creation
+    # link remains as historical evidence and is the sole allowed dangling link.
+    removed = vault / "wiki/deletion-history.md"
+    capture(vault, caller, removed)
+    removed.write_text(page("Deletion History"))
+    record(vault, caller, removed)
+    finalize(vault)
+    created_history = (vault / "wiki/log.md").read_text()
+    assert "**Creation**" in created_history and "(./deletion-history.md)" in created_history
+    capture(vault, caller, removed)
+    removed.unlink()
+    assert record(vault, caller, removed).stdout.strip() == "pending"
+    finalize(vault)
+    deletion_log = (vault / "wiki/log.md").read_text()
+    assert "**Deletion**: Removed `deletion-history.md`." in deletion_log
+    assert "**Update**: Revised [deletion-history.md](./deletion-history.md)" not in deletion_log
+    assert deletion_log.count("(./deletion-history.md)") == 1
+    assert "deletion-history.md" not in (vault / "wiki/index.md").read_text()
+    state = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())
+    assert not state["pending"]
+    lint = json.loads(run(MIDDLEWARE / "lint.py", vault, "--format", "json").stdout)
+    historical_dead = [item for item in lint["dead_links"] if item["source"] == "wiki/log.md"]
+    assert len(historical_dead) == 1, historical_dead
+    assert historical_dead[0]["target"] == "./deletion-history.md"
+    log_after_delete = (vault / "wiki/log.md").read_bytes()
+    finalize(vault)
+    assert (vault / "wiki/log.md").read_bytes() == log_after_delete
+    assert (vault / "wiki/log.md").read_text().count("**Deletion**") == 1
+
+    # Deleting a path absent at both snapshots is a no-op.
+    absent = vault / "wiki/never-created.md"
+    capture(vault, caller, absent)
+    assert record(vault, caller, absent).stdout.strip() == "clean"
+    finalize(vault)
+    assert "never-created.md" not in (vault / "wiki/log.md").read_text()
 
     # Existing content produces Update; a no-op write produces no pending/log entry.
     existing = vault / "wiki/base.md"

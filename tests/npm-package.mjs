@@ -102,6 +102,9 @@ try {
   assert.match(evaluatorHelp, /--vault/);
   assert.match(evaluatorHelp, /--gold/);
   run("python3", ["tests/test_retrieval_evaluation.py"], { env: { ...env, OSB_EVALUATOR_PATH: path.join(installed, "scripts/evaluate-retrieval.py") }, stdio: "inherit" });
+  run("python3", ["tests/test_wiki_lifecycle.py"], {
+    env: { ...env, OSB_TEST_PACKAGE_ROOT: installed }, stdio: "inherit",
+  });
 
   const captureVault = path.join(work, "capture-vault");
   fs.mkdirSync(path.join(captureVault, "wiki"), { recursive: true });

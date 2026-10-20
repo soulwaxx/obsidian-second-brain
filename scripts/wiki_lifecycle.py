@@ -319,7 +319,7 @@ def cleanup_temp_at(parent_fd: int, name: str | None, identity: tuple[int, int] 
 
 def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> None:
     title = "# Directory Update Log"
-    prose = {"Creation": "Added", "Update": "Revised"}
+    prose = {"Creation": "Added", "Update": "Revised", "Deletion": "Removed"}
     bullets = []
     legacy_bullets = []
     from urllib.parse import quote
@@ -327,8 +327,17 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
         # wiki/log.md lives at the wiki root, so page paths are relative to it.
         href = "./" + quote(rel, safe="/")
         label = "".join(("\\n" if ch == "\n" else "\\r" if ch == "\r" else "\\" + ch if ch in string.punctuation else ch) for ch in rel)
-        bullets.append(f"* **{verb}**: {prose[verb]} [{label}]({href}).")
-        legacy_bullets.append(f"* **{verb}**: {prose[verb]} [{label}](/{quote(rel)}).")
+        if verb == "Deletion":
+            # Deletions describe the event without adding a link to a missing target.
+            fence = "`"
+            while fence in rel:
+                fence += "`"
+            path_label = f"{fence}{rel}{fence}"
+            bullets.append(f"* **Deletion**: Removed {path_label}.")
+            legacy_bullets.append(bullets[-1])
+        else:
+            bullets.append(f"* **{verb}**: {prose[verb]} [{label}]({href}).")
+            legacy_bullets.append(f"* **{verb}**: {prose[verb]} [{label}](/{quote(rel)}).")
     parent_path = log.parent
     try:
         parent_fd = secure_dir(parent_path)
@@ -571,7 +580,7 @@ def finalize(args: argparse.Namespace) -> None:
             current = digest(page)
             if current is None:
                 if entry.get("existed"):
-                    log_item = ("Update", rel)
+                    log_item = ("Deletion", rel)
                 else:
                     log_item = None
             elif current != entry.get("before"):
