@@ -69,13 +69,16 @@ def secure_wiki(vault: Path) -> int:
     return LIFE.secure_dir(vault / "wiki")
 
 
+def check_root_log_name(parent: int) -> None:
+    names = os.listdir(parent)
+    if "log.md" not in names or any(n.casefold() == "log.md" and n != "log.md" for n in names):
+        raise HistoryError("root wiki/log.md missing or case-colliding")
+
+
 def plan(vault: Path, config_id: dict) -> dict:
-    wiki = vault / "wiki"
     try:
         parent = secure_wiki(vault)
-        names = os.listdir(parent)
-        if "log.md" not in names or any(n.casefold() == "log.md" and n != "log.md" for n in names):
-            raise HistoryError("root wiki/log.md missing or case-colliding")
+        check_root_log_name(parent)
         before = read_bytes(parent)
     except (OSError, UnicodeError, LIFE.LifecycleError) as exc:
         raise HistoryError(f"cannot safely inspect root history: {exc}") from exc
@@ -115,14 +118,10 @@ def plan(vault: Path, config_id: dict) -> dict:
     return {**digest_basis, "operations": changes, "planHash": sha(canonical(digest_basis)), "_before": before, "_after": after}
 
 
-def check_case_collision(path: Path, create_parent: bool = False) -> None:
-    parent = LIFE.secure_dir(path.parent, create=create_parent)
-    try:
-        matches = [name for name in os.listdir(parent) if name.casefold() == path.name.casefold()]
-        if matches and matches != [path.name]:
-            raise HistoryError(f"case-colliding lifecycle path: {path.name}")
-    finally:
-        os.close(parent)
+def check_case_collision_at(parent: int, name: str) -> None:
+    matches = [item for item in os.listdir(parent) if item.casefold() == name.casefold()]
+    if matches and matches != [name]:
+        raise HistoryError(f"case-colliding lifecycle path: {name}")
 
 
 def journal_path(vault: Path, plan_hash: str) -> Path:
@@ -136,21 +135,17 @@ def config_still_matches(config_id: dict, vault: Path) -> None:
         raise HistoryError("selected config changed since preview; refusing migration")
 
 
-def load_journal(path: Path, vault: Path, config_id: dict, approval: str) -> tuple[dict, bytes, bytes]:
-    parent = LIFE.secure_dir(path.parent)
+def load_journal(path: Path, vault: Path, config_id: dict, approval: str, parent: int) -> tuple[dict, bytes, bytes]:
+    fd = os.open(path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
     try:
-        fd = os.open(path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise HistoryError("migration journal is not a regular file")
-            with os.fdopen(fd, "r", encoding="utf-8") as stream:
-                fd = -1
-                data = json.load(stream)
-        finally:
-            if fd >= 0:
-                os.close(fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise HistoryError("migration journal is not a regular file")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            fd = -1
+            data = json.load(stream)
     finally:
-        os.close(parent)
+        if fd >= 0:
+            os.close(fd)
     fields = {"version", "vault", "config", "planHash", "beforeHash", "afterHash", "beforeHex", "afterHex", "replacements"}
     if not isinstance(data, dict) or set(data) != fields:
         raise HistoryError("migration journal is malformed")
@@ -167,8 +162,7 @@ def load_journal(path: Path, vault: Path, config_id: dict, approval: str) -> tup
     return data, before, after
 
 
-def create_journal(path: Path, data: dict) -> None:
-    parent = LIFE.secure_dir(path.parent, create=True)
+def create_journal(path: Path, data: dict, parent: int) -> None:
     temp = f".history-{os.getpid()}-{os.urandom(8).hex()}"
     fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent)
     try:
@@ -181,7 +175,6 @@ def create_journal(path: Path, data: dict) -> None:
     finally:
         try: os.unlink(temp, dir_fd=parent)
         except FileNotFoundError: pass
-        os.close(parent)
 
 
 def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -> dict:
@@ -189,54 +182,78 @@ def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -
     for warning in LIFE.exclusion_diagnostic(vault):
         if "lifecycle derived-state scope" in warning or "lifecycle contains tracked Git state" in warning:
             raise HistoryError("migration journal state is not safely Git-excluded: " + warning)
-    _life, state_path, lock_path = LIFE.layout(vault, True)
-    with LIFE.locked(lock_path):
-        check_case_collision(state_path)
-        check_case_collision(journal, create_parent=True)
-        state = LIFE.load_state(state_path, vault)
-        if state.get("pending"):
-            raise HistoryError("pending lifecycle writer state; refusing history migration")
-        config_still_matches(config_id, vault)
-        if recovery:
-            data, before, after = load_journal(journal, vault, config_id, approval)
-            expected = data["beforeHash"]
-        else:
-            try:
-                data, before, after = load_journal(journal, vault, config_id, approval)
+    life, state_path, lock_path = LIFE.layout(vault, True)
+    life_fd = LIFE.secure_dir(life)
+    try:
+        with LIFE.locked(lock_path):
+            if not LIFE.same_public_parent(life, life_fd):
+                raise HistoryError("lifecycle directory mapping changed before migration")
+            check_case_collision_at(life_fd, state_path.name)
+            check_case_collision_at(life_fd, journal.name)
+            state = LIFE.load_state(state_path, vault)
+            if not LIFE.same_public_parent(life, life_fd):
+                raise HistoryError("lifecycle directory mapping changed while reading state")
+            if state.get("pending"):
+                raise HistoryError("pending lifecycle writer state; refusing history migration")
+            config_still_matches(config_id, vault)
+            if recovery:
+                data, before, after = load_journal(journal, vault, config_id, approval, life_fd)
                 expected = data["beforeHash"]
-            except FileNotFoundError:
-                current = plan(vault, config_id)
-                if current["planHash"] != approval:
-                    raise HistoryError("approval hash does not match current migration plan")
-                before, after, expected = current["_before"], current["_after"], current["beforeHash"]
-                data = {"version": 1, "vault": str(vault), "config": config_id, "planHash": approval,
-                        "beforeHash": expected, "afterHash": sha(after), "beforeHex": before.hex(), "afterHex": after.hex(),
-                        "replacements": current["operations"]}
-                create_journal(journal, data)
-        parent = secure_wiki(vault)
-        try:
-            current_bytes = read_bytes(parent)
-            if sha(current_bytes) == sha(after):
-                return {"planHash": approval, "applied": False, "alreadyApplied": True}
-            if current_bytes != before or sha(current_bytes) != expected:
-                raise HistoryError("root history changed since approval; preserving current bytes")
-            fd, temp = LIFE.create_log_temp(parent)
-            info = os.fstat(fd)
-            temp_identity = (info.st_dev, info.st_ino)
+            else:
+                try:
+                    data, before, after = load_journal(journal, vault, config_id, approval, life_fd)
+                    expected = data["beforeHash"]
+                except FileNotFoundError:
+                    current = plan(vault, config_id)
+                    if current["planHash"] != approval:
+                        raise HistoryError("approval hash does not match current migration plan")
+                    before, after, expected = current["_before"], current["_after"], current["beforeHash"]
+                    data = {"version": 1, "vault": str(vault), "config": config_id, "planHash": approval,
+                            "beforeHash": expected, "afterHash": sha(after), "beforeHex": before.hex(), "afterHex": after.hex(),
+                            "replacements": current["operations"]}
+                    if not LIFE.same_public_parent(life, life_fd):
+                        raise HistoryError("lifecycle directory mapping changed before journal creation")
+                    create_journal(journal, data, life_fd)
+                    if not LIFE.same_public_parent(life, life_fd):
+                        raise HistoryError("lifecycle directory changed during journal creation")
+            parent = secure_wiki(vault)
             try:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(after); stream.flush(); os.fsync(stream.fileno())
-                config_still_matches(config_id, vault)
-                if (not LIFE.same_public_parent(vault / "wiki", parent)
-                        or read_bytes(parent) != before):
-                    raise HistoryError("root history or wiki directory changed before publication")
-                os.replace(temp, "log.md", src_dir_fd=parent, dst_dir_fd=parent)
-                os.fsync(parent)
+                check_root_log_name(parent)
+                current_bytes = read_bytes(parent)
+                if sha(current_bytes) == sha(after):
+                    if (not LIFE.same_public_parent(life, life_fd)
+                            or not LIFE.same_public_parent(vault / "wiki", parent)):
+                        raise HistoryError("public lifecycle/wiki directory changed during migration retry")
+                    return {"planHash": approval, "applied": False, "alreadyApplied": True}
+                if current_bytes != before or sha(current_bytes) != expected:
+                    raise HistoryError("root history changed since approval; preserving current bytes")
+                fd, temp = LIFE.create_log_temp(parent)
+                info = os.fstat(fd)
+                temp_identity = (info.st_dev, info.st_ino)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(after); stream.flush(); os.fsync(stream.fileno())
+                    config_still_matches(config_id, vault)
+                    if (not LIFE.same_public_parent(life, life_fd)
+                            or not LIFE.same_public_parent(vault / "wiki", parent)
+                            or read_bytes(parent) != before):
+                        raise HistoryError("root history or lifecycle/wiki directory changed before publication")
+                    temp_info = os.stat(temp, dir_fd=parent, follow_symlinks=False)
+                    if (not stat.S_ISREG(temp_info.st_mode)
+                            or (temp_info.st_dev, temp_info.st_ino) != temp_identity):
+                        raise HistoryError("temporary history file changed before publication")
+                    os.replace(temp, "log.md", src_dir_fd=parent, dst_dir_fd=parent)
+                    os.fsync(parent)
+                    if (not LIFE.same_public_parent(life, life_fd)
+                            or not LIFE.same_public_parent(vault / "wiki", parent)):
+                        raise HistoryError("public lifecycle/wiki directory changed during publication; migration is recoverable")
+                finally:
+                    LIFE.cleanup_temp_at(parent, temp, temp_identity)
             finally:
-                LIFE.cleanup_temp_at(parent, temp, temp_identity)
-        finally:
-            os.close(parent)
-    return {"planHash": approval, "applied": True, "alreadyApplied": False}
+                os.close(parent)
+        return {"planHash": approval, "applied": True, "alreadyApplied": False}
+    finally:
+        os.close(life_fd)
 
 
 def main() -> int:

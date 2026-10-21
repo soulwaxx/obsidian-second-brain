@@ -127,6 +127,91 @@ class HistoryMigrationTests(unittest.TestCase):
                 wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
         self.assertIn(b"/target.md", self.log.read_bytes())
 
+    def test_temp_file_substitution_is_refused(self):
+        plan = self.preview()
+        original = wiki_history.config_still_matches
+        calls = 0
+        def replace_temp(config_id, vault):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                temp = next((p for p in (self.vault / "wiki").iterdir() if p.name.startswith(".log-")), None)
+                self.assertIsNotNone(temp)
+                temp.unlink()
+                temp.write_bytes(b"unreviewed replacement")
+            return original(config_id, vault)
+        with patch.object(wiki_history, "config_still_matches", side_effect=replace_temp):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertIn(b"/target.md", self.log.read_bytes())
+
+    def test_case_check_runs_on_journal_replay(self):
+        plan = self.preview()
+        real_replace = os.replace
+        def fail_log_replace(src, dst, **kwargs):
+            if dst == "log.md":
+                raise OSError("injected before publication")
+            return real_replace(src, dst, **kwargs)
+        with patch.object(wiki_history.os, "replace", side_effect=fail_log_replace):
+            with self.assertRaises(OSError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        real_listdir = os.listdir
+        wiki_info = (self.vault / "wiki").stat()
+        def collide_log_name(path):
+            names = real_listdir(path)
+            try:
+                info = os.fstat(path)
+            except (TypeError, OSError):
+                return names
+            if (info.st_dev, info.st_ino) == (wiki_info.st_dev, wiki_info.st_ino):
+                return ["LOG.md" if name == "log.md" else name for name in names]
+            return names
+        with patch.object(wiki_history.os, "listdir", side_effect=collide_log_name):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        with patch.object(wiki_history.os, "listdir", side_effect=collide_log_name):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+
+    def test_lifecycle_directory_replacement_during_journal_creation_refuses(self):
+        plan = self.preview()
+        lifecycle = self.vault.resolve() / ".vault-meta/lifecycle"
+        real_link = os.link
+        def replace_lifecycle(src, dst, **kwargs):
+            if str(dst).startswith("history-migration-"):
+                lifecycle.rename(lifecycle.with_name("lifecycle-detached"))
+                lifecycle.mkdir()
+            return real_link(src, dst, **kwargs)
+        with patch.object(wiki_history.os, "link", side_effect=replace_lifecycle):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertIn(b"/target.md", self.log.read_bytes())
+        self.assertFalse(wiki_history.journal_path(self.vault.resolve(), plan["planHash"]).exists())
+
+    def test_public_wiki_replacement_after_publish_reports_recoverable_conflict(self):
+        plan = self.preview()
+        wiki = self.vault.resolve() / "wiki"
+        original = self.log.read_bytes()
+        real_replace = os.replace
+        switched = False
+        def replace_then_switch(src, dst, **kwargs):
+            nonlocal switched
+            result = real_replace(src, dst, **kwargs)
+            if dst == "log.md" and not switched:
+                switched = True
+                wiki.rename(wiki.with_name("wiki-detached"))
+                wiki.mkdir()
+                (wiki / "target.md").write_bytes((self.vault / "wiki-detached/target.md").read_bytes())
+                (wiki / "log.md").write_bytes(original)
+            return result
+        with patch.object(wiki_history.os, "replace", side_effect=replace_then_switch):
+            with self.assertRaisesRegex(wiki_history.HistoryError, "recoverable"):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertEqual((wiki / "log.md").read_bytes(), original)
+        wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertEqual((wiki / "log.md").read_bytes(), original.replace(b"/target.md", b"./target.md"))
+
     def test_concurrent_log_edit_refuses_publication(self):
         plan = self.preview()
         original = wiki_history.LIFE.same_public_parent
