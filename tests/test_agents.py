@@ -2,6 +2,7 @@
 """Check packaged vault agent metadata without pinning a model."""
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,26 @@ pi = frontmatter(root / 'agents/pi/wiki-vault.md')
 assert claude['name'] == pi['name'] == 'wiki-vault'
 assert 'model' not in claude and 'effort' not in claude
 assert 'model' not in pi and 'thinking' not in pi
+preference = plugin['userConfig']['vault_agent_effort']
+assert preference['type'] == 'string'
+assert preference['default'] == 'inherit'
+assert preference['options'] == ['inherit', 'low', 'medium', 'high', 'xhigh', 'max']
+delegation_path = root / 'skills/wiki-agent/SKILL.md'
+assert frontmatter(delegation_path)['disable-model-invocation'] is True
+assert './skills/wiki-agent' not in manifest['pi']['skills']
+assert 'skills/wiki-agent/SKILL.md' in manifest['files']
+delegation = delegation_path.read_text()
+for boundary in ('${user_config.vault_agent_effort}', 'subagent_type: "obsidian-second-brain:wiki-vault"',
+                 'omit the `effort` parameter', '2.1.292', 'never silently',
+                 'Do not fork', 'CLAUDE_CODE_EFFORT_LEVEL', 'effective', 'unknown',
+                 'start a fresh invocation', 'Task: $ARGUMENTS'):
+    assert boundary in delegation, boundary
+setup = (root / 'docs/setup.md').read_text()
+examples = re.findall(r'```json\n(.*?)\n```', setup, re.S)
+override = next(json.loads(block)['subagents']['agentOverrides']['obsidian-second-brain.wiki-vault']
+                for block in examples if 'agentOverrides' in block)
+assert override == {'thinking': 'low'}
+assert '/obsidian-second-brain:wiki-agent' in setup
 assert {'Read', 'Edit', 'Write'}.issubset(set(claude['tools'].split(', ')))
 assert {'read', 'edit', 'write'}.issubset(set(pi['tools'].split(', ')))
 skill_names = ('wiki', 'wiki-query', 'wiki-save', 'wiki-ingest', 'wiki-research', 'wiki-health')

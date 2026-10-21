@@ -95,6 +95,14 @@ assert verify['permissions'] == {'contents': 'read', 'actions': 'read', 'pull-re
 assert 'release-source.mjs verify' in verify['steps'][-1]['run']
 job = release['jobs']['release']
 assert job['needs'] == ['verify']
+assert job['timeout-minutes'] == '30'
+for client_job in (checks['jobs']['test'], job):
+    cli = next(step for step in client_job['steps'] if 'CLAUDE_VERSION' in step.get('env', {}))
+    assert tuple(map(int, cli['env']['CLAUDE_VERSION'].split('.'))) >= (2, 1, 292)
+ci_steps = checks['jobs']['test']['steps']
+cli_index = next(index for index, step in enumerate(ci_steps) if 'CLAUDE_VERSION' in step.get('env', {}))
+assert any('node tests/claude-effort-contract.mjs' in step.get('run', '')
+           for step in ci_steps[cli_index + 1:])
 assert job['permissions'] == {'contents': 'write', 'pull-requests': 'read', 'id-token': 'write'}
 assert 'environment' not in job
 trusted_checkout, preserve, artifact_checkout = job['steps'][:3]

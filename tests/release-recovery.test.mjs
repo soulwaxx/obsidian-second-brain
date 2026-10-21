@@ -105,25 +105,26 @@ test("network/auth failure is not treated as a missing package", async () => {
   assert.deepEqual(state.calls, []);
 });
 
-test("publication visibility may take longer than the old one-minute window", async (t) => {
+test("publication visibility may take longer than the old five-minute window", async (t) => {
   t.mock.method(console, "log", () => {});
   let calls = 0, elapsed = 0;
   const npm = (command, spec, format) => {
     assert.deepEqual([command, spec, format], ["view", `${input.name}@2.0.1`, "--json"]);
-    return ++calls === 22 ? { version: "2.0.1", gitHead: input.sha } : undefined;
+    return ++calls === 32 ? { version: "2.0.1", gitHead: input.sha } : undefined;
   };
   await waitForNpmRelease(npm, input.name, "2.0.1", input.sha, async (ms) => { elapsed += ms; });
-  assert.equal(calls, 22);
-  assert.equal(elapsed, 210000);
+  assert.equal(calls, 32);
+  assert.equal(elapsed, 310000);
 });
 
-test("visibility polling stops after five minutes without an extra final sleep", async (t) => {
+test("visibility polling stops at exactly fifteen minutes without an extra final sleep", async (t) => {
   t.mock.method(console, "log", () => {});
-  let calls = 0, elapsed = 0;
+  let calls = 0, elapsed = 0, sleeps = 0;
   await assert.rejects(waitForNpmRelease(() => { calls++; }, input.name, "2.0.1", input.sha,
-    async (ms) => { elapsed += ms; }), /check registry visibility before tag recovery/);
-  assert.equal(calls, 31);
-  assert.equal(elapsed, 300000);
+    async (ms) => { sleeps++; elapsed += ms; }), /still not visible after fifteen minutes/);
+  assert.equal(calls, 91);
+  assert.equal(sleeps, 90);
+  assert.equal(elapsed, 900000);
 });
 
 test("visibility polling refuses a source mismatch immediately", async () => {

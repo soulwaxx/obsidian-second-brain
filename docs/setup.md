@@ -281,36 +281,73 @@ install `pi-subagents` and run
 `/run obsidian-second-brain.wiki-vault "your task"`. The runner is not required
 for the skill or lifecycle. Neither specialist pins a model or effort.
 
-Claude Code session-wide subagent settings can be selected at launch:
+### Claude Code
 
-```sh
-CLAUDE_CODE_SUBAGENT_MODEL=sonnet CLAUDE_CODE_EFFORT_LEVEL=high claude
+On Claude Code **2.1.292+**, select **Vault agent effort** in the plugin's
+`/config` settings, then invoke the explicit delegation entry point:
+
+```text
+/obsidian-second-brain:wiki-agent Summarize the selected wiki topic without edits
 ```
 
-The effort setting also affects the main session. For a local agent-specific
-choice, copy the packaged agent into the appropriate `.claude/agents/` directory,
-add model/effort fields, and replace the plugin-only skill path with an explicit
-Skill-tool invocation of `/obsidian-second-brain:wiki` (add `Skill` to its tools).
-The local copy will not automatically track package changes. Available models
-and effort levels depend on the client/account policy.
+The saved `vault_agent_effort` preference accepts `inherit` (the default), `low`,
+`medium`, `high`, `xhigh`, or `max`. Select `low` independently on each host to
+request a smaller specialist reasoning budget without changing the parent or
+other agents. Available levels depend on the selected model and account policy.
+The manifest's option picker requires Claude Code 2.1.271+ to load the plugin;
+scoped delegation requires 2.1.292+ for the native `Agent` effort parameter.
 
-For Pi, merge an override into user settings without replacing existing fields:
+The entry point reads the preference in its Markdown body and asks the parent
+to pass it as the packaged agent invocation's native `effort` parameter.
+`inherit` omits the parameter. This is prompt-directed delegation, not dynamic
+effort frontmatter or a forced package default. It preserves the packaged agent
+identity, instruction updates, and plugin hooks without creating a local copy.
+Direct `@agent-obsidian-second-brain:wiki-vault` mentions and other wiki skills
+bypass this entry point and do not apply its preference; ask explicitly for a
+native per-invocation effort when using those routes. A resumed agent retains
+its original effort, so start a fresh invocation after changing the preference.
+
+`CLAUDE_CODE_EFFORT_LEVEL` overrides both agent frontmatter and per-invocation
+effort and also affects the parent. It is not an agent-scoped configuration
+method. Policy caps and model limitations can change the applied level; do not
+change global settings or copy an agent to work around them. Older clients or
+an unavailable effort parameter must produce an explicit limitation instead of
+silently substituting session-wide settings.
+
+Requested effort is not proof of effective effort. Inspect the harness's task
+information, debug records, or captured request settings where available; report
+unknown when diagnostics do not expose it. Static package checks and a scripted
+local-provider contract do not prove a real model follows the delegation skill
+or that a paid provider accepts the requested level. Subscription-backed checks
+remain tracked in [issue #1](https://github.com/soulwaxx/obsidian-second-brain/issues/1).
+
+### Pi
+
+Merge an override into user settings without replacing existing fields:
 
 ```json
 {
   "subagents": {
     "agentOverrides": {
       "obsidian-second-brain.wiki-vault": {
-        "model": "your-provider/your-model",
-        "thinking": "high"
+        "thinking": "low"
       }
     }
   }
 }
 ```
 
-These settings affect the specialist, not the parent. Keep one wiki writer;
-multiple read-only agents can consult the vault concurrently.
+Use the exact canonical key `obsidian-second-brain.wiki-vault`. The native
+`pi-subagents` override affects the specialist, not the parent; it keeps the
+packaged instructions and does not require a model override. Remove `thinking`
+to restore inheritance. Pi's documented levels are `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`; support depends on the model/provider.
+Per-run selections and project settings can override a user preference, so
+inspect the child session's recorded `thinking_level_change` rather than relying
+on the runner summary or the model's self-report. An omitted summary value does
+not prove thinking is off. No package-owned Pi reasoning setting is added.
+
+Keep one wiki writer; multiple read-only agents can consult the vault concurrently.
 
 ## Check a problem
 
