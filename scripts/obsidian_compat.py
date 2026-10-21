@@ -25,83 +25,131 @@ sys.path.insert(0, str(MW))
 from okf_mw import lint  # noqa: E402
 
 
-def _frontmatter_links(text: str) -> tuple[list[tuple[str, int, int, str]], bool]:
-    """Read link strings in YAML-ish frontmatter while leaving unrelated metadata alone."""
+def _frontmatter_links(text: str) -> tuple[list[tuple[str, int, int, str, str]], bool]:
+    """Read only supported top-level link and authored description values."""
     fm = lint._parse_frontmatter(text)
     if not fm.present:
         return [], False
-    result = []
     lines = text[:fm.end_offset].splitlines(keepends=True)
+    starts = []
     offset = 0
-    link_key = False
-    for line_no, line in enumerate(lines, 1):
-        raw = line.rstrip("\r\n")
-        match = re.match(r"^\s*(links?|description|descriptions|navigation_description):\s*(.*)$", raw, re.I)
-        if match:
-            key, value = match.groups()
-            link_key = key.casefold() in {"link", "links"}
-            if value:
-                start = offset + raw.index(value)
-                result.extend(_markdown_links(value, line_no, start, "frontmatter"))
-            elif link_key:
-                # Block sequence continues until next top-level YAML key.
-                pass
-        elif link_key and re.match(r"^\s+-\s+", raw):
-            value_start = raw.index("-") + 1
-            value = raw[value_start:].strip().strip("\"'")
-            start = offset + raw.index(value) if value else offset
-            result.extend(_markdown_links(value, line_no, start, "frontmatter"))
-        elif raw and not raw[0].isspace():
-            link_key = False
+    for line in lines:
+        starts.append(offset)
         offset += len(line)
+    result = []
+    recognized = {"link", "links", "related", "description", "descriptions", "navigation_description"}
+    top_key = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]*(.*))?$")
+    for i, line in enumerate(lines):
+        raw = line.rstrip("\r\n")
+        match = top_key.match(raw)
+        if not match or match.group(1).casefold() not in recognized:
+            continue
+        key = match.group(1).casefold()
+        value = match.group(2) or ""
+        value_start = starts[i] + match.start(2) if match.group(2) is not None else starts[i] + len(raw)
+        if key in {"link", "links", "related"}:
+            if value.strip():
+                segment, segment_start, base_line = value, value_start, i + 1
+                result.extend(_metadata_markdown_links(segment, segment_start, base_line))
+            else:
+                for j in range(i + 1, len(lines)):
+                    child = lines[j].rstrip("\r\n")
+                    if top_key.match(child):
+                        break
+                    list_item = re.match(r"^[ \t]*-[ \t]+(.*)$", child)
+                    if list_item and list_item.group(1):
+                        start = starts[j] + list_item.start(1)
+                        result.extend(_metadata_markdown_links(list_item.group(1), start, j + 1))
+        elif value.strip() in {">", ">-", ">+", "|", "|-", "|+"}:
+            end = fm.end_offset
+            for j in range(i + 1, len(lines)):
+                if top_key.match(lines[j].rstrip("\r\n")):
+                    end = starts[j]
+                    break
+            start = starts[i] + len(line)
+            result.extend(_metadata_markdown_links(text[start:end], start, i + 2))
+        elif value.strip():
+            result.extend(_metadata_markdown_links(value, value_start, i + 1))
     return result, True
 
 
-def _markdown_links(text: str, line: int, offset: int, area: str) -> list[tuple[str, int, int, str]]:
-    """Parse inline Markdown links with balanced/escaped labels and destinations."""
-    masked = text
+def _metadata_markdown_links(value: str, offset: int, line: int) -> list[tuple[str, int, int, str, str]]:
+    masked = lint._mask_markdown_code(value)
+    return _markdown_links(masked, line, offset, "frontmatter")
+
+
+def _markdown_links(text: str, line: int, offset: int, area: str) -> list[tuple[str, int, int, str, str]]:
+    """Parse inline Markdown links with balanced labels/destinations and escapes."""
     found = []
     i = 0
-    while i < len(masked):
-        if masked[i] != "[" or (i and masked[i - 1] == "!"):
-            i += 1; continue
+    while i < len(text):
+        if text[i] != "[":
+            i += 1
+            continue
+        slash_count = 0
+        before = i - 1
+        while before >= 0 and text[before] == "\\":
+            slash_count += 1
+            before -= 1
+        if slash_count % 2:
+            i += 1
+            continue
+        embedded = i > 0 and text[i - 1] == "!"
         depth, j = 1, i + 1
-        while j < len(masked) and depth:
-            if masked[j] == "\\": j += 2; continue
-            if masked[j] == "[": depth += 1
-            elif masked[j] == "]": depth -= 1
+        while j < len(text) and depth:
+            if text[j] == "\\":
+                j += 2
+                continue
+            if text[j] == "[":
+                depth += 1
+            elif text[j] == "]":
+                depth -= 1
             j += 1
-        if depth or j >= len(masked) or masked[j] != "(":
-            i += 1; continue
+        if depth or j >= len(text) or text[j] != "(":
+            i += 1
+            continue
         k, parens = j + 1, 1
-        while k < len(masked) and parens:
-            if masked[k] == "\\": k += 2; continue
-            if masked[k] == "(": parens += 1
-            elif masked[k] == ")": parens -= 1
+        while k < len(text) and parens:
+            if text[k] == "\\":
+                k += 2
+                continue
+            if text[k] == "(":
+                parens += 1
+            elif text[k] == ")":
+                parens -= 1
             k += 1
         if parens:
-            i += 1; continue
+            i += 1
+            continue
         dest_start = j + 1
-        while dest_start < k - 1 and masked[dest_start].isspace(): dest_start += 1
-        dest_end = dest_start
-        if dest_start < k - 1 and masked[dest_start] == "<":
+        while dest_start < k - 1 and text[dest_start].isspace():
             dest_start += 1
-            dest_end = masked.find(">", dest_start, k - 1)
-            if dest_end < 0: i = k; continue
+        dest_end = dest_start
+        if dest_start < k - 1 and text[dest_start] == "<":
+            dest_start += 1
+            dest_end = text.find(">", dest_start, k - 1)
+            if dest_end < 0:
+                i = k
+                continue
         else:
             nested = 0
             while dest_end < k - 1:
-                c = masked[dest_end]
-                if c == "\\": dest_end += 2; continue
-                if c == "(": nested += 1
-                elif c == ")":
-                    if not nested: break
+                char = text[dest_end]
+                if char == "\\":
+                    dest_end += 2
+                    continue
+                if char == "(":
+                    nested += 1
+                elif char == ")":
+                    if not nested:
+                        break
                     nested -= 1
-                elif c.isspace() and not nested: break
+                elif char.isspace() and not nested:
+                    break
                 dest_end += 1
-        destination = masked[dest_start:dest_end]
+        destination = text[dest_start:dest_end]
         if destination and not re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)", destination):
-            found.append((destination, line, offset + dest_start, area))
+            found.append((destination, line + text.count("\n", 0, dest_start), offset + dest_start, area, "markdown-embed" if embedded else "markdown-link"))
         i = k
     return found
 
@@ -119,23 +167,28 @@ def _source_offset_map(path: Path) -> list[int]:
     return offsets
 
 
+def _markdown_resolver_link(page: lint._Page, destination: str, line: int, syntax: str) -> lint._Link:
+    raw_file, raw_fragment, fragment_kind = lint._split_fragment(destination)
+    file_part = urllib.parse.unquote(raw_file)
+    fragment = urllib.parse.unquote(raw_fragment) if raw_fragment is not None else None
+    target = file_part + (f"#{fragment}" if fragment is not None else "")
+    return lint._Link(page.path, line, target, file_part, fragment, fragment_kind, syntax, True)
+
+
 def _authored_links(page: lint._Page) -> tuple[list[dict[str, Any]], list[str]]:
     links, limitations = [], []
     fm_links, has_fm = _frontmatter_links(page.text)
-    # lint parser handles wikilinks/embeds, but markdown nested labels are covered here.
-    masked = page.masked
-    body_links = _markdown_links(masked, 1, 0, "body")
-    # Assign actual source line and don't reparse generated reserved content.
-    for dest, line, start, area in fm_links + body_links:
-        if area == "body":
-            line += masked.count("\n", 0, start)
-            start = start
-        links.append({"destination": dest, "line": line, "offset": start, "area": area, "syntax": "markdown"})
-    # Wikilinks are graph evidence, but not safely rewritable Markdown destinations.
+    body_links = _markdown_links(page.masked, 1, 0, "body")
     parsed = lint._parse_links(page)
+    embeds = [link for link in parsed if link.syntax == "markdown-embed"]
+    for dest, line, start, area, syntax in fm_links + body_links:
+        resolver_link = _markdown_resolver_link(page, dest, line, syntax)
+        if area == "body" and syntax == "markdown-embed":
+            resolver_link = next((link for link in embeds if link.line == line and link.target == resolver_link.target), resolver_link)
+        links.append({"destination": dest, "line": line, "offset": start, "area": area, "syntax": syntax, "resolver_link": resolver_link})
     for item in parsed:
-        if item.syntax.startswith("wiki") or item.syntax.endswith("embed"):
-            links.append({"destination": item.target, "line": item.line, "area": "body", "syntax": item.syntax, "span_supported": False})
+        if item.syntax.startswith("wiki"):
+            links.append({"destination": item.target, "line": item.line, "area": "body", "syntax": item.syntax, "resolver_link": item, "span_supported": False})
     if not has_fm:
         limitations.append("frontmatter unavailable or malformed")
     return links, limitations
@@ -147,6 +200,7 @@ def compatibility_report(vault: str | Path, *, native_evidence: Any = None) -> d
     wiki = root / "wiki"
     all_paths = lint._walk_files(root)
     pages = []
+    target_pages = {}
     limitations: list[str] = ["reference-style Markdown links and HTML anchor links are not resolved; inspect these manually"]
     for path in all_paths:
         if path.suffix.casefold() != ".md": continue
@@ -154,13 +208,13 @@ def compatibility_report(vault: str | Path, *, native_evidence: Any = None) -> d
         try: page = lint._page_metadata(path, rel, "wiki")
         except (OSError, UnicodeError):
             limitations.append(f"unreadable Markdown: {rel}"); continue
+        target_pages[rel] = page
         if not page.is_wiki_page: continue
         pages.append(page)
-    targets = [lint._Target(path.relative_to(root).as_posix(), path, None) for path in all_paths]
-    # add page metadata to index for aliases, exactly as OKF resolver does
+    targets = [lint._Target(path.relative_to(root).as_posix(), path, target_pages.get(path.relative_to(root).as_posix())) for path in all_paths]
+    # Keep all Markdown metadata for target resolution; report sources remain wiki-only.
     page_map = {p.path: p for p in pages}
     known_link_keys = {(page.path, link["destination"]) for page in pages for link in _authored_links(page)[0]}
-    targets = [lint._Target(t.path, t.absolute, page_map.get(t.path)) for t in targets]
     resolver = lint._Resolver(targets, "wiki")
     if not wiki.is_dir(): limitations.append("wiki directory missing")
     evidence_map: dict[tuple[str, str], str | None] = {}
@@ -202,11 +256,7 @@ def compatibility_report(vault: str | Path, *, native_evidence: Any = None) -> d
         source_offsets = _source_offset_map(page.absolute)
         for link in links:
             dest = link["destination"]
-            raw_file, raw_fragment, fragment_kind = lint._split_fragment(dest)
-            file_part = urllib.parse.unquote(raw_file)
-            fragment = urllib.parse.unquote(raw_fragment) if raw_fragment is not None else None
-            decoded = file_part + (f"#{fragment}" if fragment is not None else "")
-            source_link = lint._Link(page.path, link["line"], decoded, file_part, fragment, fragment_kind, link["syntax"], link["syntax"] == "markdown")
+            source_link = link["resolver_link"]
             candidates = resolver.resolve(source_link)
             native = evidence_map.get((page.path, dest))
             flags = []
@@ -226,7 +276,8 @@ def compatibility_report(vault: str | Path, *, native_evidence: Any = None) -> d
                 replacement = urllib.parse.quote(rel, safe="/.-_") + ("#" + dest.split("#",1)[1] if "#" in dest else "")
                 proposal = {"replacement": replacement, "span": [source_offsets[link["offset"]], source_offsets[link["offset"] + len(dest)] ]}
             results.append({"source": page.path, "kind": kind, "destination": dest, "line": link["line"], "area": link.get("area", "body"), "classification": flags, "okf_candidates": [c.path for c in candidates], "intended_path": intended, "native_resolved_path": native, "evidence": ("native-unresolved" if (page.path, dest) in evidence_map and evidence_map[(page.path, dest)] is None else status), "proposal": proposal, "repair_state": "historical-not-active-repair" if kind == "lifecycle-history" else "active"})
-    sparse = [p.path for p in pages if p.path != "wiki/index.md" and p.path != "wiki/log.md" and not lint._parse_links(p)]
+    resolved_sources = {entry["source"] for entry in results if entry["intended_path"] is not None or entry["native_resolved_path"] is not None}
+    sparse = [p.path for p in pages if Path(p.path).name.casefold() not in {"index.md", "log.md"} and p.path not in resolved_sources]
     return {"version": 1, "vault": str(root), "report_api": "obsidian_compat.compatibility_report(vault, native_evidence=None)", "discovery": {"markdown_pages": len(pages), "links": len(results), "symlinks_followed": False, "scope": "parser-discovered wiki Markdown links; this is not a completeness-certified native graph; hidden/pruned paths, unsupported syntax, and non-Markdown are excluded"},
         "native_graph_complete": False, "evidence_quality": evidence_status, "links": results, "sparse_or_archive_pages": sparse, "limitations": sorted(set(limitations))}
 

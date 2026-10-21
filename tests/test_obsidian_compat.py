@@ -1,15 +1,20 @@
 import hashlib
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
 import sys
 
-SCRIPT = Path(__file__).parents[1] / "scripts/obsidian_compat.py"
+PACKAGE_ROOT = Path(os.environ.get("OSB_TEST_PACKAGE_ROOT", Path(__file__).parents[1])).resolve()
+SCRIPT = PACKAGE_ROOT / "scripts/obsidian_compat.py"
+assert SCRIPT.is_file() and SCRIPT.is_relative_to(PACKAGE_ROOT)
 spec = importlib.util.spec_from_file_location("obsidian_compat", SCRIPT)
 compat = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = compat
 spec.loader.exec_module(compat)
+assert Path(compat.__file__).resolve() == SCRIPT.resolve()
+assert Path(compat.MW).resolve().is_relative_to(PACKAGE_ROOT)
 
 
 def scenario_report_categories_parsing_fallback_and_root_shadow(vault):
@@ -130,6 +135,89 @@ def scenario_bom_crlf_offsets_are_raw_source_offsets(vault):
         assert raw[start:end] == link["destination"]
 
 
+def scenario_alias_ambiguity_keeps_all_markdown_target_metadata(vault):
+    (vault / "wiki").mkdir()
+    (vault / "root.md").write_text('---\ntype: note\naliases: [Shared]\n---\n')
+    (vault / "wiki/target.md").write_text('---\ntype: note\naliases: [Shared]\n---\n')
+    (vault / "wiki/source.md").write_text('---\ntype: note\n---\n[go](/Shared)\n')
+    report = compat.compatibility_report(vault)
+    link = next(x for x in report["links"] if x["source"] == "wiki/source.md")
+    assert link["okf_candidates"] == ["root.md", "wiki/target.md"]
+    assert link["intended_path"] is None
+    assert link["proposal"] is None
+
+
+def scenario_related_and_multiline_description(vault):
+    (vault / "wiki").mkdir()
+    (vault / "wiki/target.md").write_text("# Target\n")
+    source = vault / "wiki/source.md"
+    source.write_text('''---\ntype: note\nrelated:\n  - "[list](/wiki/target.md)"\ndescription: >-\n  [folded](/wiki/target.md)\n---\n''')
+    (vault / "wiki/scalar.md").write_text('---\ntype: note\nrelated: "[scalar](/wiki/target.md)"\n---\n')
+    report = compat.compatibility_report(vault)
+    links = [x for x in report["links"] if x["source"] == "wiki/source.md"]
+    assert {x["destination"] for x in links} >= {"/wiki/target.md"}
+    scalar_links = [x for x in report["links"] if x["source"] == "wiki/scalar.md"]
+    assert len([x for x in links if x["proposal"]]) == 2
+    assert len([x for x in scalar_links if x["proposal"]]) == 1
+    for path in (source, vault / "wiki/scalar.md"):
+        raw = path.read_bytes().decode("utf-8")
+        for link in report["links"]:
+            if link["source"] == path.relative_to(vault).as_posix() and link["proposal"]:
+                start, end = link["proposal"]["span"]
+                assert raw[start:end] == link["destination"]
+
+
+def scenario_nested_unknown_metadata_and_inline_code_untouched(vault):
+    (vault / "wiki").mkdir()
+    (vault / "wiki/target.md").write_text("# Target\n")
+    source = vault / "wiki/source.md"
+    source.write_text('''---\ntype: note\ncustom:\n  description: "[opaque](/wiki/target.md)"\ndescription: '`[example](/wiki/target.md)` <!-- [hidden](/wiki/target.md) --> [real](/wiki/target.md)'\n---\n''')
+    report = compat.compatibility_report(vault)
+    links = [x for x in report["links"] if x["source"] == "wiki/source.md"]
+    assert len(links) == 1
+    assert links[0]["destination"] == "/wiki/target.md"
+    assert links[0]["proposal"] is not None
+    raw = source.read_bytes().decode("utf-8")
+    start, end = links[0]["proposal"]["span"]
+    assert raw[start:end] == links[0]["destination"]
+
+
+def scenario_escaped_opening_bracket_is_not_a_link(vault):
+    (vault / "wiki").mkdir()
+    (vault / "wiki/target.md").write_text("# Target\n")
+    (vault / "wiki/source.md").write_text('---\ntype: note\n---\n\\[literal](/wiki/target.md) [real \\[label\\]](/wiki/target.md)\n')
+    report = compat.compatibility_report(vault)
+    links = [x for x in report["links"] if x["source"] == "wiki/source.md"]
+    assert len(links) == 1
+    assert links[0]["proposal"] is not None
+
+
+def scenario_resolver_semantics_for_markdown_embed_and_percent_wikilink(vault):
+    (vault / "wiki/sub").mkdir(parents=True)
+    (vault / "wiki/sub/x.md").write_text("# sub\n")
+    (vault / "x.md").write_text("# root\n")
+    (vault / "wiki/100%25.md").write_text("# encoded intended\n")
+    (vault / "wiki/100%.md").write_text("# double decode decoy\n")
+    source = vault / "wiki/sub/source.md"
+    source.write_text('---\ntype: note\n---\n![relative](/x.md) [[100%2525]]\n')
+    report = compat.compatibility_report(vault)
+    links = [x for x in report["links"] if x["source"] == "wiki/sub/source.md"]
+    embed = next(x for x in links if x["destination"] == "/x.md")
+    wiki = next(x for x in links if x["destination"] == "100%2525")
+    assert embed["okf_candidates"] == ["wiki/sub/x.md"]
+    assert wiki["okf_candidates"] == ["wiki/100%25.md"]
+
+
+def scenario_sparse_classification_uses_resolved_graph(vault):
+    (vault / "wiki/sub").mkdir(parents=True)
+    (vault / "wiki/target.md").write_text("# Target\n")
+    (vault / "wiki/sub/INDEX.MD").write_text("# Reserved uppercase index\n")
+    (vault / "wiki/source.md").write_text('---\ntype: note\nlinks: "[actual](/wiki/target.md)"\n---\n')
+    report = compat.compatibility_report(vault)
+    assert "wiki/source.md" not in report["sparse_or_archive_pages"]
+    assert "wiki/sub/INDEX.MD" not in report["sparse_or_archive_pages"]
+
+
 def expect_value_error(callback, message):
     try:
         callback()
@@ -155,6 +243,24 @@ class CompatibilityTests(unittest.TestCase):
 
     def test_bom_crlf_offsets_are_raw_source_offsets(self):
         self._run_scenario(scenario_bom_crlf_offsets_are_raw_source_offsets)
+
+    def test_alias_ambiguity_keeps_all_metadata(self):
+        self._run_scenario(scenario_alias_ambiguity_keeps_all_markdown_target_metadata)
+
+    def test_related_and_multiline_description(self):
+        self._run_scenario(scenario_related_and_multiline_description)
+
+    def test_nested_unknown_metadata_and_inline_code(self):
+        self._run_scenario(scenario_nested_unknown_metadata_and_inline_code_untouched)
+
+    def test_escaped_opening_bracket(self):
+        self._run_scenario(scenario_escaped_opening_bracket_is_not_a_link)
+
+    def test_original_embed_and_wikilink_resolution(self):
+        self._run_scenario(scenario_resolver_semantics_for_markdown_embed_and_percent_wikilink)
+
+    def test_sparse_classification_uses_resolved_links(self):
+        self._run_scenario(scenario_sparse_classification_uses_resolved_graph)
 
 
 if __name__ == "__main__":
