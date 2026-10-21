@@ -26,6 +26,7 @@ try {
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
+    "skills/wiki-agent/SKILL.md",
     "skills/wiki/scripts/okf_mw/LICENSE-claude-obsidian",
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
@@ -78,7 +79,9 @@ try {
   }
   const claudePlugin = JSON.parse(fs.readFileSync(path.join(installed, ".claude-plugin/plugin.json"), "utf8"));
   assert.equal(claudePlugin.name, "obsidian-second-brain");
-  for (const name of expectedSkills) {
+  assert.equal(claudePlugin.userConfig.vault_agent_effort.default, "inherit");
+  assert.deepEqual(claudePlugin.userConfig.vault_agent_effort.options, ["inherit", "low", "medium", "high", "xhigh", "max"]);
+  for (const name of [...expectedSkills, "wiki-agent"]) {
     const skill = fs.readFileSync(path.join(installed, `skills/${name}/SKILL.md`), "utf8");
     assert.match(skill, new RegExp(`^name: ${name}$`, "m"), `Claude skill metadata: ${name}`);
   }

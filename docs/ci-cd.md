@@ -77,11 +77,13 @@ can leave a tag with missing npm or GitHub outputs. Normal publishing detects
 an incomplete latest tag and requires recovery rather than silently skipping it.
 
 npm can acknowledge a successful publish before its registry metadata becomes
-visible. Post-publication verification checks every ten seconds for up to five
+visible. Post-publication verification checks every ten seconds for up to fifteen
 minutes of propagation, while still refusing source mismatches and auth/network
-errors immediately. A visibility timeout does not prove publication is missing:
-check the exact npm version, its `gitHead`, and the GitHub Release first. If both
-outputs are complete, rerun the failed job; there is nothing to republish.
+errors immediately. The release job allows thirty minutes to accommodate this
+wait and the surrounding publication steps. A visibility timeout does not prove
+publication is missing: check the exact npm version, its `gitHead`, and the
+GitHub Release first. If both outputs are complete, rerun the failed job; there
+is nothing to republish.
 
 Run the **Release** workflow on **main**, providing its existing stable tag:
 

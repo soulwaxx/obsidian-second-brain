@@ -269,9 +269,15 @@ run `obsidian-second-brain.wiki-vault`, or use
 `/run obsidian-second-brain.wiki-vault "your task"`. The specialist resolves the
 same configured vault; it does not require the parent to start there.
 
-Neither packaged specialist pins a model or effort. See
-[agent configuration](docs/setup.md#configure-the-vault-agent) for client
-settings. Pi without the subagent runner still supports the skill and lifecycle.
+Neither packaged specialist pins a model or effort. Claude Code 2.1.292+ adds
+`/obsidian-second-brain:wiki-agent "your task"`: select **Vault agent effort**
+in the plugin's `/config` settings to request `low` for that explicit delegation
+without changing parent effort. The default is `inherit`; direct agent mentions
+bypass the preference. The plugin's option picker requires Claude Code 2.1.271+.
+Pi uses its existing per-agent `thinking` override instead of a package setting.
+See [agent configuration](docs/setup.md#configure-the-vault-agent) for precedence,
+model restrictions, and unverified live-client checks. Pi without the subagent
+runner still supports the skill and lifecycle.
 
 ## Verify the package
 

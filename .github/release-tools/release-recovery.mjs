@@ -17,18 +17,22 @@ export function assertNpmRelease(info, version, sha) {
   assert.equal(info.gitHead, sha, "existing npm version belongs to a different source; never overwrite it");
 }
 
+const NPM_VISIBILITY_WAIT_MS = 15 * 60 * 1000;
+const NPM_VISIBILITY_INTERVAL_MS = 10 * 1000;
+const NPM_VISIBILITY_ATTEMPTS = NPM_VISIBILITY_WAIT_MS / NPM_VISIBILITY_INTERVAL_MS;
+
 export async function waitForNpmRelease(npm, name, version, sha, sleep = setTimeout) {
   // npm can acknowledge publication before registry metadata is visible to readers.
-  // Keep source checks strict, but allow five minutes of propagation between polls.
-  for (let attempt = 0; attempt <= 30; attempt++) {
+  // Keep source checks strict, but allow fifteen minutes of propagation between polls.
+  for (let attempt = 0; attempt <= NPM_VISIBILITY_ATTEMPTS; attempt++) {
     const info = npm("view", `${name}@${version}`, "--json");
     if (info) { assertNpmRelease(info, version, sha); return; }
-    if (attempt < 30) {
-      console.log(`Waiting for npm ${name}@${version} visibility (${attempt + 1}/30)`);
-      await sleep(10000);
+    if (attempt < NPM_VISIBILITY_ATTEMPTS) {
+      console.log(`Waiting for npm ${name}@${version} visibility (${attempt + 1}/${NPM_VISIBILITY_ATTEMPTS})`);
+      await sleep(NPM_VISIBILITY_INTERVAL_MS);
     }
   }
-  throw new Error(`npm ${name}@${version} is still not visible after five minutes; check registry visibility before tag recovery`);
+  throw new Error(`npm ${name}@${version} is still not visible after fifteen minutes; check registry visibility before tag recovery`);
 }
 
 export async function recoverRelease({ tag, sha, name, repository }, { npm, github, prepareArtifact, describeRelease }) {

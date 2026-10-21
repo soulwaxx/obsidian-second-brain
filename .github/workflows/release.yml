@@ -55,7 +55,7 @@ jobs:
   release:
     needs: [verify]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: read
@@ -110,7 +110,7 @@ jobs:
           # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
           PI_VERSION: '1.0.0'
           # renovate: datasource=npm depName=@anthropic-ai/claude-code
-          CLAUDE_VERSION: '2.1.288'
+          CLAUDE_VERSION: '2.1.292'
         run: npm install --global "@earendil-works/pi-coding-agent@$PI_VERSION" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
       - name: Install and verify locked release tools
         if: github.event_name == 'push'

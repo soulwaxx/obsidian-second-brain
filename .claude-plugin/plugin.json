@@ -3,5 +3,14 @@
   "description": "Obsidian wiki lifecycle and OKF skill for Claude Code",
   "version": "0.1.0",
   "author": { "name": "soulwaxx" },
-  "agents": ["./agents/claude/wiki-vault.md"]
+  "agents": ["./agents/claude/wiki-vault.md"],
+  "userConfig": {
+    "vault_agent_effort": {
+      "type": "string",
+      "title": "Vault agent effort",
+      "description": "Effort requested by /obsidian-second-brain:wiki-agent (Claude Code 2.1.292+). Direct agent mentions are unchanged. Inherit leaves effort unset; supported levels depend on the model and policy.",
+      "default": "inherit",
+      "options": ["inherit", "low", "medium", "high", "xhigh", "max"]
+    }
+  }
 }

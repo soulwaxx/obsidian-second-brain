@@ -74,7 +74,7 @@ function installed(expected) {
   const directory = entry.installPath;
   assert.equal(json(path.join(directory, ".claude-plugin/plugin.json")).version, expected);
   assert.equal(json(path.join(directory, "package.json")).version, expected);
-  for (const resource of ["hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "skills/wiki/SKILL.md", "agents/claude/wiki-vault.md"]) {
+  for (const resource of ["hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "skills/wiki/SKILL.md", "skills/wiki-agent/SKILL.md", "agents/claude/wiki-vault.md"]) {
     assert.ok(fs.existsSync(path.join(directory, resource)), `missing Claude resource: ${resource}`);
   }
   return directory;
