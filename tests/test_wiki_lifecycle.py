@@ -143,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     assert record(vault, caller, removed).stdout.strip() == "pending"
     finalize(vault)
     deletion_log = (vault / "wiki/log.md").read_text()
-    assert "**Deletion**: Removed `deletion-history.md`." in deletion_log
+    assert "**Deletion**: Removed deletion\\-history\\.md." in deletion_log
     assert "**Update**: Revised [deletion-history.md](./deletion-history.md)" not in deletion_log
     assert deletion_log.count("(./deletion-history.md)") == 1
     assert "deletion-history.md" not in (vault / "wiki/index.md").read_text()
@@ -164,6 +164,24 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     assert record(vault, caller, absent).stdout.strip() == "clean"
     finalize(vault)
     assert "never-created.md" not in (vault / "wiki/log.md").read_text()
+
+    # Unusual deletion paths use escaped plain text, never inline code that can
+    # become multiline or a link that points at the removed target.
+    odd_name = "odd`[x]\nname.md"
+    odd = vault / "wiki" / odd_name
+    capture(vault, caller, odd)
+    odd.write_text(page("Odd Deletion Path"))
+    record(vault, caller, odd)
+    finalize(vault)
+    capture(vault, caller, odd)
+    odd.unlink()
+    record(vault, caller, odd)
+    finalize(vault)
+    odd_label = "odd\\`\\[x\\]\\nname\\.md"
+    odd_log = (vault / "wiki/log.md").read_text()
+    assert f"**Deletion**: Removed {odd_label}." in odd_log
+    assert "**Deletion**: Removed `odd" not in odd_log
+    assert odd_log.count("(./odd%60%5Bx%5D%0Aname.md)") == 1
 
     # Existing content produces Update; a no-op write produces no pending/log entry.
     existing = vault / "wiki/base.md"
@@ -315,6 +333,66 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     result = run(RETRIEVE, "UniqueSearchTerm Quasar Updated", "--vault", vault)
     assert "brand-new.md" in result.stdout
     assert not (vault / "scripts").exists()
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-legacy-deletion-retry-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    target = vault / "wiki/base.md"
+    capture(vault, caller, target)
+    target.unlink()
+    record(vault, caller, target)
+
+    wrapper = root / "failing-middleware"
+    wrapper.mkdir()
+    (wrapper / "validate.py").symlink_to(MIDDLEWARE / "validate.py")
+    marker = root / "sync-count"
+    (wrapper / "sync.py").write_text(
+        "import pathlib, subprocess, sys\n"
+        f"real = {str(MIDDLEWARE / 'sync.py')!r}\n"
+        f"marker = pathlib.Path({str(marker)!r})\n"
+        "count = int(marker.read_text()) if marker.exists() else 0\n"
+        "result = subprocess.run([sys.executable, real, *sys.argv[1:]])\n"
+        "marker.write_text(str(count + 1))\n"
+        "raise SystemExit(1 if count == 1 else result.returncode)\n"
+    )
+
+    class LegacyRetryDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 6, tzinfo=_tz)
+
+    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    current_log_update = wiki_lifecycle.safe_log_update
+
+    def publish_legacy_update(log, entries, today):
+        legacy_entries = [("Update" if verb == "Deletion" else verb, rel) for verb, rel in entries]
+        current_log_update(log, legacy_entries, today)
+        # Simulate the pre-upgrade logger's leading-slash destination spelling.
+        content = log.read_text()
+        current_bullet = "[base\\.md](./base.md)."
+        assert current_bullet in content
+        log.write_text(content.replace(current_bullet, "[base\\.md](/base.md).", 1))
+
+    with patch.object(wiki_lifecycle, "datetime", LegacyRetryDay), patch.object(
+            wiki_lifecycle, "safe_log_update", side_effect=publish_legacy_update):
+        try:
+            wiki_lifecycle.finalize(args)
+        except wiki_lifecycle.LifecycleError:
+            pass
+        else:
+            raise AssertionError("injected second-sync failure did not retain deletion retry")
+    log = vault / "wiki/log.md"
+    old_update = "* **Update**: Revised [base\\.md](/base.md)."
+    assert old_update in log.read_text()
+    old_bytes = log.read_bytes()
+    assert json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+
+    retry_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    wiki_lifecycle.finalize(retry_args)
+    assert log.read_bytes() == old_bytes, "retry must preserve the already-published legacy Update entry"
+    assert "**Deletion**" not in log.read_text()
+    assert log.read_text().count("(/base.md)") == 1
+    assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
 
 with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-no-wiki-") as tmp:
     root = Path(tmp)
