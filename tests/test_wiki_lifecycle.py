@@ -412,29 +412,23 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-update-fails-before-log-
     target.write_text(page("Base", "update failed before log publication"))
     record(vault, caller, target)
 
-    wrapper = root / "failing-middleware"
-    wrapper.mkdir()
-    (wrapper / "validate.py").symlink_to(MIDDLEWARE / "validate.py")
-    marker = root / "sync-count"
-    (wrapper / "sync.py").write_text(
-        "import pathlib, subprocess, sys\n"
-        f"real = {str(MIDDLEWARE / 'sync.py')!r}\n"
-        f"marker = pathlib.Path({str(marker)!r})\n"
-        "count = int(marker.read_text()) if marker.exists() else 0\n"
-        "result = subprocess.run([sys.executable, real, *sys.argv[1:]])\n"
-        "marker.write_text(str(count + 1))\n"
-        "raise SystemExit(1 if count == 0 else result.returncode)\n"
-    )
-    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
-    try:
-        wiki_lifecycle.finalize(args)
-    except wiki_lifecycle.LifecycleError:
-        pass
-    else:
-        raise AssertionError("injected first-sync failure did not retain update work")
+    def fail_log_publication(_log, _entries, _today):
+        pending = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+        entry = next(iter(pending.values()))
+        assert entry.get("log_date") and entry.get("log_format_version") == 1
+        raise wiki_lifecycle.LifecycleError("injected log publication failure")
+
+    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    with patch.object(wiki_lifecycle, "safe_log_update", side_effect=fail_log_publication):
+        try:
+            wiki_lifecycle.finalize(args)
+        except wiki_lifecycle.LifecycleError:
+            pass
+        else:
+            raise AssertionError("injected log publication failure did not retain update work")
     pending = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
     entry = next(iter(pending.values()))
-    assert "log_date" not in entry and "log_format_version" not in entry
+    assert entry.get("log_date") and entry.get("log_format_version") == 1
 
     capture(vault, caller, target)
     target.unlink()
