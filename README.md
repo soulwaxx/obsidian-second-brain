@@ -199,6 +199,13 @@ unavailable or has no useful result. Focused workflow limits and
 selected-conversation save rules are documented in
 [the shared workflow reference](skills/wiki/references/focused-workflows.md).
 
+For an explicitly requested Obsidian compatibility audit, run the separate
+read-only `scripts/obsidian_compat.py` report. It keeps OKF resolution unchanged
+and labels filesystem results separately from native resolver evidence.
+[Reviewed link migration](docs/link-migration.md) covers authored Markdown
+batches, opt-in lifecycle-owned historical destinations, and final graph checks.
+Neither diagnostics nor normal finalization implicitly migrate old history.
+
 ## Local retrieval
 
 Retrieval ships with the package; no vault-local helper installation, Ollama,

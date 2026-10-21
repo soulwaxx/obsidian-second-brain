@@ -240,3 +240,12 @@ user asks for that audit. Report findings and suggested next steps; never edit
 configuration, exclusions, indexes, logs, caches, or pages as an implicit
 health-check side effect. Repairs require a separate explicit request and must
 follow their existing setup or wiki-write approval workflow.
+
+For an explicitly requested native-link compatibility audit, use the separate
+read-only `scripts/obsidian_compat.py` report described in
+[reviewed link migration](../../../docs/link-migration.md). Keep OKF findings,
+native observations, and filesystem-only estimates distinct. The app is not
+queried automatically; never claim native graph completeness from the parser.
+Authored destination repairs use existing reviewed Markdown batches. Historical
+log destinations require the dedicated lifecycle-owned preview/apply/recovery
+command and exact owner approval, not ordinary file-tool edits.
