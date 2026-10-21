@@ -11,12 +11,13 @@ Every observation must bind to the resolved vault, exact source/destination, and
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import posixpath
 import re
 import urllib.parse
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 MW = Path(__file__).resolve().parents[1] / "skills/wiki/scripts"
@@ -105,6 +106,19 @@ def _markdown_links(text: str, line: int, offset: int, area: str) -> list[tuple[
     return found
 
 
+def _source_offset_map(path: Path) -> list[int]:
+    """Map lint's UTF-8-sig/universal-newline offsets to original UTF-8 text offsets."""
+    raw = path.read_bytes().decode("utf-8")
+    bom = raw.startswith("\ufeff")
+    body = raw[1:] if bom else raw
+    offsets = [1 if bom else 0]
+    index = 0
+    while index < len(body):
+        index += 2 if body.startswith("\r\n", index) else 1
+        offsets.append((1 if bom else 0) + index)
+    return offsets
+
+
 def _authored_links(page: lint._Page) -> tuple[list[dict[str, Any]], list[str]]:
     links, limitations = [], []
     fm_links, has_fm = _frontmatter_links(page.text)
@@ -127,7 +141,7 @@ def _authored_links(page: lint._Page) -> tuple[list[dict[str, Any]], list[str]]:
     return links, limitations
 
 
-def compatibility_report(vault: str | Path, *, native_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+def compatibility_report(vault: str | Path, *, native_evidence: Any = None) -> dict[str, Any]:
     root = Path(vault).expanduser().resolve(strict=True)
     if not root.is_dir(): raise ValueError("vault must be a directory")
     wiki = root / "wiki"
@@ -145,31 +159,47 @@ def compatibility_report(vault: str | Path, *, native_evidence: dict[str, Any] |
     targets = [lint._Target(path.relative_to(root).as_posix(), path, None) for path in all_paths]
     # add page metadata to index for aliases, exactly as OKF resolver does
     page_map = {p.path: p for p in pages}
+    known_link_keys = {(page.path, link["destination"]) for page in pages for link in _authored_links(page)[0]}
     targets = [lint._Target(t.path, t.absolute, page_map.get(t.path)) for t in targets]
     resolver = lint._Resolver(targets, "wiki")
     if not wiki.is_dir(): limitations.append("wiki directory missing")
-    evidence_map: dict[tuple[str, str], str] = {}
-    evidence_status = "app-unavailable; filesystem fallback only"
+    evidence_map: dict[tuple[str, str], str | None] = {}
+    evidence_status = "native evidence not supplied; filesystem fallback; app not queried"
     if native_evidence is not None:
-        if Path(str(native_evidence.get("vault", ""))).expanduser().resolve() != root:
+        if not isinstance(native_evidence, dict):
+            raise ValueError("native evidence must be an object")
+        if not isinstance(native_evidence.get("vault"), str) or Path(native_evidence["vault"]).expanduser().resolve() != root:
             raise ValueError("native evidence vault does not match requested vault")
-        if not isinstance(native_evidence, dict) or not isinstance(native_evidence.get("links"), list):
+        if not isinstance(native_evidence.get("links"), list):
             raise ValueError("native evidence must contain a links array")
         for item in native_evidence["links"]:
             if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ("source", "destination", "source_hash")) or not (item.get("resolved_path") is None or isinstance(item.get("resolved_path"), str)) or "resolved_path" not in item:
                 raise ValueError("native evidence link must bind source, destination, source_hash, and resolved_path (string or null)")
-            source_path = root / item["source"]
-            if not source_path.is_file() or __import__("hashlib").sha256(source_path.read_bytes()).hexdigest() != item["source_hash"]:
-                raise ValueError(f"stale native evidence for {item['source']}")
-            key = item["source"], item["destination"]
-            if key in evidence_map and evidence_map[key] != item["resolved_path"]:
+            source = item["source"]
+            if source not in page_map:
+                raise ValueError(f"native evidence source is not a discovered wiki page: {source}")
+            source_path = page_map[source].absolute
+            if (source, item["destination"]) not in known_link_keys:
+                raise ValueError(f"native evidence destination is not a discovered link in {source}")
+            if hashlib.sha256(source_path.read_bytes()).hexdigest() != item["source_hash"]:
+                raise ValueError(f"stale native evidence for {source}")
+            resolved_path = item["resolved_path"]
+            if resolved_path is not None:
+                pure = PurePosixPath(resolved_path)
+                if pure.is_absolute() or not resolved_path or ".." in pure.parts or chr(92) in resolved_path or pure.as_posix() != resolved_path:
+                    raise ValueError("native resolved_path must be canonical vault-relative path or null")
+            key = source, item["destination"]
+            if key in evidence_map and evidence_map[key] != resolved_path:
                 raise ValueError("conflicting native evidence for source/destination")
-            evidence_map[key] = item["resolved_path"]
+            evidence_map[key] = resolved_path
         evidence_status = "reviewed native evidence supplied; unmatched links remain filesystem fallback"
     results = []
     for page in pages:
         kind = "generated-navigation" if Path(page.path).name.casefold() == "index.md" else "lifecycle-history" if Path(page.path).name.casefold() == "log.md" else "authored"
-        links, warns = _authored_links(page); limitations.extend(f"{page.path}: {w}" for w in warns)
+        links, warns = _authored_links(page)
+        if kind == "authored":
+            limitations.extend(f"{page.path}: {w}" for w in warns)
+        source_offsets = _source_offset_map(page.absolute)
         for link in links:
             dest = link["destination"]
             raw_file, raw_fragment, fragment_kind = lint._split_fragment(dest)
@@ -187,7 +217,6 @@ def compatibility_report(vault: str | Path, *, native_evidence: dict[str, Any] |
                 root_dupe = root / urllib.parse.unquote(dest.split("#", 1)[0])
                 if root_dupe.exists() and root_dupe.is_file() and (root / src_relative).exists() and root_dupe.resolve() != (root / src_relative).resolve(): flags.append("bare-relative-root-shadow")
             status = "native-evidence" if native is not None else "filesystem-fallback"
-            resolved = native if native is not None else (candidates[0].path if len(candidates) == 1 else None)
             intended = candidates[0].path if len(candidates) == 1 else None
             proposal = None
             if flags and intended and link.get("span_supported") is not False:
@@ -195,8 +224,8 @@ def compatibility_report(vault: str | Path, *, native_evidence: dict[str, Any] |
                 if not rel.startswith("../"):
                     rel = "./" + rel
                 replacement = urllib.parse.quote(rel, safe="/.-_") + ("#" + dest.split("#",1)[1] if "#" in dest else "")
-                proposal = {"replacement": replacement, "span": [link["offset"], link["offset"] + len(dest)]}
-            results.append({"source": page.path, "kind": kind, "destination": dest, "line": link["line"], "area": link.get("area", "body"), "classification": flags, "okf_candidates": [c.path for c in candidates], "intended_path": intended, "native_resolved_path": native, "evidence": ("native-unresolved" if (page.path, dest) in evidence_map and native is None else status), "proposal": proposal, "repair_state": "historical-not-active-repair" if kind == "lifecycle-history" else "active"})
+                proposal = {"replacement": replacement, "span": [source_offsets[link["offset"]], source_offsets[link["offset"] + len(dest)] ]}
+            results.append({"source": page.path, "kind": kind, "destination": dest, "line": link["line"], "area": link.get("area", "body"), "classification": flags, "okf_candidates": [c.path for c in candidates], "intended_path": intended, "native_resolved_path": native, "evidence": ("native-unresolved" if (page.path, dest) in evidence_map and evidence_map[(page.path, dest)] is None else status), "proposal": proposal, "repair_state": "historical-not-active-repair" if kind == "lifecycle-history" else "active"})
     sparse = [p.path for p in pages if p.path != "wiki/index.md" and p.path != "wiki/log.md" and not lint._parse_links(p)]
     return {"version": 1, "vault": str(root), "report_api": "obsidian_compat.compatibility_report(vault, native_evidence=None)", "discovery": {"markdown_pages": len(pages), "links": len(results), "symlinks_followed": False, "scope": "parser-discovered wiki Markdown links; this is not a completeness-certified native graph; hidden/pruned paths, unsupported syntax, and non-Markdown are excluded"},
         "native_graph_complete": False, "evidence_quality": evidence_status, "links": results, "sparse_or_archive_pages": sparse, "limitations": sorted(set(limitations))}
