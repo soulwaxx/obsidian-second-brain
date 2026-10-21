@@ -57,6 +57,7 @@ try {
   assert.equal(manifest.name, "@soulwaxx/obsidian-second-brain");
   assert.notEqual(manifest.private, true);
   assert.equal(manifest.license, "MIT");
+  assert.deepEqual(manifest.engines, { node: ">=18.0.0" });
   const plugin = JSON.parse(fs.readFileSync(path.join(installed, ".claude-plugin/plugin.json"), "utf8"));
   const marketplace = JSON.parse(fs.readFileSync(path.join(installed, ".claude-plugin/marketplace.json"), "utf8"));
   assert.equal(plugin.version, manifest.version);
