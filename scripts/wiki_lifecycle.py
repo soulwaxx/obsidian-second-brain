@@ -322,7 +322,6 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
     prose = {"Creation": "Added", "Update": "Revised", "Deletion": "Removed"}
     bullets = []
     legacy_bullets = []
-    deletion_retry_bullets = []
     from urllib.parse import quote
     for verb, rel in entries:
         # wiki/log.md lives at the wiki root, so page paths are relative to it.
@@ -332,14 +331,9 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
             # Deletions describe the event without adding a link to a missing target.
             bullets.append(f"* **Deletion**: Removed {label}.")
             legacy_bullets.append(bullets[-1])
-            deletion_retry_bullets.append([
-                f"* **Update**: Revised [{label}]({href}).",
-                f"* **Update**: Revised [{label}](/{quote(rel)}).",
-            ])
         else:
             bullets.append(f"* **{verb}**: {prose[verb]} [{label}]({href}).")
             legacy_bullets.append(f"* **{verb}**: {prose[verb]} [{label}](/{quote(rel)}).")
-            deletion_retry_bullets.append([])
     parent_path = log.parent
     try:
         parent_fd = secure_dir(parent_path)
@@ -367,11 +361,8 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
             section_end = next((i for i in range(section_start + 1, len(lines))
                                 if lines[i].startswith("## ")), len(lines))
             existing = set(lines[section_start + 1:section_end])
-            add = [
-                bullet for bullet, legacy, retries in zip(bullets, legacy_bullets, deletion_retry_bullets)
-                if bullet not in existing and legacy not in existing
-                and not any(retry in existing for retry in retries)
-            ]
+            add = [bullet for bullet, legacy in zip(bullets, legacy_bullets)
+                   if bullet not in existing and legacy not in existing]
             if add:
                 insert_at = section_start + 1
                 while insert_at < section_end and not lines[insert_at].strip():
@@ -576,7 +567,7 @@ def finalize(args: argparse.Namespace) -> None:
             raise LifecycleError("wiki index synchronization failed; pending batch retained:\n" + (result.stdout + result.stderr))
         today = datetime.now(timezone.utc).date().isoformat()
         log_entries: dict[str, list[tuple[str, str]]] = {}
-        log_date_persisted = False
+        log_metadata_persisted = False
         for raw, entry in sorted(pending.items()):
             page = Path(raw)
             try:
@@ -586,7 +577,15 @@ def finalize(args: argparse.Namespace) -> None:
             current = digest(page)
             if current is None:
                 if entry.get("existed"):
-                    log_item = ("Deletion", rel)
+                    if entry.get("log_date") and not entry.get("deletion_event"):
+                        # A pre-marker pending deletion may already have an Update
+                        # bullet; replay that legacy event rather than adding history.
+                        log_item = ("Update", rel)
+                    else:
+                        log_item = ("Deletion", rel)
+                        if not entry.get("deletion_event"):
+                            entry["deletion_event"] = True
+                            log_metadata_persisted = True
                 else:
                     log_item = None
             elif current != entry.get("before"):
@@ -596,9 +595,9 @@ def finalize(args: argparse.Namespace) -> None:
             if log_item:
                 if not entry.get("log_date"):
                     entry["log_date"] = today
-                    log_date_persisted = True
+                    log_metadata_persisted = True
                 log_entries.setdefault(entry["log_date"], []).append(log_item)
-        if log_date_persisted:
+        if log_metadata_persisted:
             atomic_json(state_path, state)
         for log_date, entries in sorted(log_entries.items()):
             safe_log_update(vault / "wiki" / "log.md", entries, log_date)

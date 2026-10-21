@@ -365,6 +365,9 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-legacy-deletion-retry-")
     current_log_update = wiki_lifecycle.safe_log_update
 
     def publish_legacy_update(log, entries, today):
+        state_path = vault / ".vault-meta/lifecycle/state.json"
+        state_before_log = json.loads(state_path.read_text())
+        assert all(entry.get("deletion_event") for entry in state_before_log["pending"].values())
         legacy_entries = [("Update" if verb == "Deletion" else verb, rel) for verb, rel in entries]
         current_log_update(log, legacy_entries, today)
         # Simulate the pre-upgrade logger's leading-slash destination spelling.
@@ -372,6 +375,10 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-legacy-deletion-retry-")
         current_bullet = "[base\\.md](./base.md)."
         assert current_bullet in content
         log.write_text(content.replace(current_bullet, "[base\\.md](/base.md).", 1))
+        state = json.loads(state_path.read_text())
+        for entry in state["pending"].values():
+            entry.pop("deletion_event", None)
+        state_path.write_text(json.dumps(state))
 
     with patch.object(wiki_lifecycle, "datetime", LegacyRetryDay), patch.object(
             wiki_lifecycle, "safe_log_update", side_effect=publish_legacy_update):
@@ -385,13 +392,45 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-legacy-deletion-retry-")
     old_update = "* **Update**: Revised [base\\.md](/base.md)."
     assert old_update in log.read_text()
     old_bytes = log.read_bytes()
-    assert json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+    state_after_failure = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())
+    assert state_after_failure["pending"]
+    legacy_entry = next(iter(state_after_failure["pending"].values()))
+    assert legacy_entry["log_date"] == "2026-10-06" and "deletion_event" not in legacy_entry
 
     retry_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
     wiki_lifecycle.finalize(retry_args)
     assert log.read_bytes() == old_bytes, "retry must preserve the already-published legacy Update entry"
     assert "**Deletion**" not in log.read_text()
     assert log.read_text().count("(/base.md)") == 1
+    assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-same-day-update-delete-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    target = vault / "wiki/base.md"
+
+    class SameDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 7, tzinfo=_tz)
+
+    finalize_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    with patch.object(wiki_lifecycle, "datetime", SameDay):
+        capture(vault, caller, target)
+        target.write_text(page("Base", "same-day edit"))
+        record(vault, caller, target)
+        wiki_lifecycle.finalize(finalize_args)
+        assert "**Update**" in (vault / "wiki/log.md").read_text()
+
+        capture(vault, caller, target)
+        target.unlink()
+        record(vault, caller, target)
+        wiki_lifecycle.finalize(finalize_args)
+
+    same_day_log = (vault / "wiki/log.md").read_text()
+    assert same_day_log.count("## 2026-10-07") == 1, same_day_log
+    assert "**Update**: Revised [base\\.md](./base.md)." in same_day_log
+    assert "**Deletion**: Removed base\\.md." in same_day_log
     assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
 
 with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-no-wiki-") as tmp:
