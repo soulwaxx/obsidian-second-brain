@@ -575,26 +575,31 @@ def finalize(args: argparse.Namespace) -> None:
             except ValueError as exc:
                 raise LifecycleError("pending path escaped captured vault boundary") from exc
             current = digest(page)
+            legacy_deletion_retry = False
             if current is None:
                 if entry.get("existed"):
-                    if entry.get("log_date") and not entry.get("deletion_event"):
+                    if entry.get("log_date") and not entry.get("log_format_version"):
                         # A pre-marker pending deletion may already have an Update
                         # bullet; replay that legacy event rather than adding history.
                         log_item = ("Update", rel)
+                        legacy_deletion_retry = True
                     else:
                         log_item = ("Deletion", rel)
-                        if not entry.get("deletion_event"):
-                            entry["deletion_event"] = True
-                            log_metadata_persisted = True
+                        legacy_deletion_retry = False
                 else:
                     log_item = None
             elif current != entry.get("before"):
                 log_item = ("Update" if entry.get("existed") else "Creation", rel)
+                legacy_deletion_retry = False
             else:
                 log_item = None
+                legacy_deletion_retry = False
             if log_item:
                 if not entry.get("log_date"):
                     entry["log_date"] = today
+                    log_metadata_persisted = True
+                if not legacy_deletion_retry and entry.get("log_format_version") != 1:
+                    entry["log_format_version"] = 1
                     log_metadata_persisted = True
                 log_entries.setdefault(entry["log_date"], []).append(log_item)
         if log_metadata_persisted:
