@@ -42,6 +42,9 @@
     "NOTICE.md"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "pi": {
     "extensions": ["./extensions/obsidian.ts"],
     "skills": [

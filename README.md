@@ -17,6 +17,9 @@ preserves existing notes and unrelated settings, and refuses conflicts. See
 ## Requirements
 
 - Claude Code or Pi; Python 3 with PyYAML; `jq` for lifecycle commands.
+- Node.js 18 or newer for the package CLI launcher. Use a supported Node.js LTS
+  release; Node 18 is end-of-life. Pi has its own Node.js requirement, which can
+  be higher than this package minimum.
 - Obsidian with the owner-installed Obsidian Git plugin for version control.
   Setup validates its installed manifest and enabled-plugin list before applying
   the configuration profile; it does not download plugin binaries.
