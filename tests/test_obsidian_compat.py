@@ -262,6 +262,20 @@ class CompatibilityTests(unittest.TestCase):
     def test_sparse_classification_uses_resolved_links(self):
         self._run_scenario(scenario_sparse_classification_uses_resolved_graph)
 
+    def test_obsidian_wikilink_embeds_remain_in_graph(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vault = Path(directory)
+            (vault / "wiki/meta").mkdir(parents=True)
+            (vault / "wiki/meta/view.base").write_text("views: []\n")
+            (vault / "wiki/dashboard.md").write_text("---\ntype: note\n---\n![[wiki/meta/view.base]]\n")
+            report = compat.compatibility_report(vault)
+            embeds = [link for link in report["links"] if link["source"] == "wiki/dashboard.md"]
+            self.assertEqual(len(embeds), 1)
+            self.assertEqual(embeds[0]["destination"], "wiki/meta/view.base")
+            self.assertEqual(embeds[0]["okf_candidates"], ["wiki/meta/view.base"])
+            self.assertIsNone(embeds[0]["proposal"])
+            self.assertNotIn("wiki/dashboard.md", report["sparse_or_archive_pages"])
+
 
 if __name__ == "__main__":
     unittest.main()

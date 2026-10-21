@@ -187,7 +187,7 @@ def _authored_links(page: lint._Page) -> tuple[list[dict[str, Any]], list[str]]:
             resolver_link = next((link for link in embeds if link.line == line and link.target == resolver_link.target), resolver_link)
         links.append({"destination": dest, "line": line, "offset": start, "area": area, "syntax": syntax, "resolver_link": resolver_link})
     for item in parsed:
-        if item.syntax.startswith("wiki"):
+        if item.syntax.startswith("wiki") or item.syntax == "embed":
             links.append({"destination": item.target, "line": item.line, "area": "body", "syntax": item.syntax, "resolver_link": item, "span_supported": False})
     if not has_fm:
         limitations.append("frontmatter unavailable or malformed")
