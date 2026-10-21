@@ -494,13 +494,24 @@ callouts, tags, and the other syntax conventions.
 
 **You never write `wiki/log.md`.** The vault lifecycle hook owns it. It writes
 the OKF v0.2 §9 shape: an `# Directory Update Log` title, `## YYYY-MM-DD` date
-headings newest first, and one prose bullet per changed page with a
-wiki-root-relative link (for example, `* **Creation**: Added [path](./path).` /
-`* **Update**: Revised [path](./path).`), classified from pre-write existence,
-not Git history. Finalization records
+headings newest first, and one prose bullet per changed page. Creation/update
+bullets use wiki-root-relative links (for example,
+`* **Creation**: Added [path](./path).` / `* **Update**: Revised [path](./path).`),
+classified from pre-write existence, not Git history. New actual deletions use
+`* **Deletion**: Removed path.` with an escaped plain-text path, so the new event
+does not link to a missing file. Earlier creation/update links remain historical
+evidence; a pending pre-upgrade deletion can retain its legacy retry semantics.
+Finalization records
 successful content changes independently of commits, preserves prior entries,
 and avoids duplicate no-op/retry entries. The log has one writer because an
 agent prepend based on a stale read can lose lifecycle entries.
+
+A separate, explicitly approved lifecycle-owned command can migrate reviewed
+historical destinations without changing other history bytes. Follow
+[reviewed link migration](../../docs/link-migration.md) for its preview, exact
+hash approval, and recovery steps. Ordinary agent file tools remain prohibited
+from editing reserved logs at every depth; normal finalization never performs
+this migration implicitly.
 
 Put the rationale in the relevant source, decision, or synthesis page, not in
 an agent-generated commit message or a direct edit to `log.md`.

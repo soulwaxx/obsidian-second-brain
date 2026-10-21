@@ -23,13 +23,14 @@ try {
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py", "scripts/provision-retrieval.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
     "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs",
+    "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
     "skills/wiki/scripts/okf_mw/LICENSE-claude-obsidian",
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md",
+    "docs/setup.md", "docs/link-migration.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -102,6 +103,11 @@ try {
   assert.match(evaluatorHelp, /--vault/);
   assert.match(evaluatorHelp, /--gold/);
   run("python3", ["tests/test_retrieval_evaluation.py"], { env: { ...env, OSB_EVALUATOR_PATH: path.join(installed, "scripts/evaluate-retrieval.py") }, stdio: "inherit" });
+  for (const suite of ["test_wiki_lifecycle.py", "test_obsidian_compat.py", "test_wiki_migrate.py", "test_wiki_history.py"]) {
+    run("python3", [`tests/${suite}`], {
+      env: { ...env, OSB_TEST_PACKAGE_ROOT: installed }, stdio: "inherit",
+    });
+  }
 
   const captureVault = path.join(work, "capture-vault");
   fs.mkdirSync(path.join(captureVault, "wiki"), { recursive: true });

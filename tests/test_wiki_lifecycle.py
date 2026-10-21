@@ -12,13 +12,18 @@ import tempfile
 from urllib.parse import quote, unquote
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OSB_TEST_PACKAGE_ROOT", SOURCE_ROOT)).resolve(strict=True)
 HELPER = ROOT / "scripts/wiki_lifecycle.py"
 MIDDLEWARE = ROOT / "skills/wiki/scripts/okf_mw"
 BM25 = ROOT / "scripts/bm25-index.py"
 RETRIEVE = ROOT / "scripts/retrieve.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 import wiki_lifecycle
+
+assert Path(wiki_lifecycle.__file__).resolve() == HELPER.resolve(), (
+    f"lifecycle import escaped selected package root: {wiki_lifecycle.__file__}"
+)
 
 
 def run(*args: object, ok: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -54,7 +59,7 @@ def setup(root: Path, ignored: bool = True) -> tuple[Path, Path]:
     subprocess.run(["git", "-C", str(vault), "config", "user.name", "fixture"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "user.email", "fixture@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "core.excludesFile", os.devnull], check=True)
-    run(ROOT / "skills/wiki/scripts/okf_mw/sync.py", vault)
+    run(MIDDLEWARE / "sync.py", vault)
     subprocess.run(["git", "-C", str(vault), "add", "wiki"] + ([".gitignore"] if (vault / ".gitignore").exists() else []), check=True)
     subprocess.run(["git", "-C", str(vault), "commit", "-qm", "baseline"], check=True)
     return vault, caller
@@ -123,6 +128,60 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     finalize(vault)
     assert (vault / "wiki/log.md").read_text().count("(./brand-new.md)") == 1
     assert subprocess.check_output(["git", "-C", str(vault), "rev-parse", "HEAD"], text=True).strip() == head
+
+    # A real deletion is logged without a missing-target link. The old creation
+    # link remains as historical evidence and is the sole allowed dangling link.
+    removed = vault / "wiki/deletion-history.md"
+    capture(vault, caller, removed)
+    removed.write_text(page("Deletion History"))
+    record(vault, caller, removed)
+    finalize(vault)
+    created_history = (vault / "wiki/log.md").read_text()
+    assert "**Creation**" in created_history and "(./deletion-history.md)" in created_history
+    capture(vault, caller, removed)
+    removed.unlink()
+    assert record(vault, caller, removed).stdout.strip() == "pending"
+    finalize(vault)
+    deletion_log = (vault / "wiki/log.md").read_text()
+    assert "**Deletion**: Removed deletion\\-history\\.md." in deletion_log
+    assert "**Update**: Revised [deletion-history.md](./deletion-history.md)" not in deletion_log
+    assert deletion_log.count("(./deletion-history.md)") == 1
+    assert "deletion-history.md" not in (vault / "wiki/index.md").read_text()
+    state = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())
+    assert not state["pending"]
+    lint = json.loads(run(MIDDLEWARE / "lint.py", vault, "--format", "json").stdout)
+    historical_dead = [item for item in lint["dead_links"] if item["source"] == "wiki/log.md"]
+    assert len(historical_dead) == 1, historical_dead
+    assert historical_dead[0]["target"] == "./deletion-history.md"
+    log_after_delete = (vault / "wiki/log.md").read_bytes()
+    finalize(vault)
+    assert (vault / "wiki/log.md").read_bytes() == log_after_delete
+    assert (vault / "wiki/log.md").read_text().count("**Deletion**") == 1
+
+    # Deleting a path absent at both snapshots is a no-op.
+    absent = vault / "wiki/never-created.md"
+    capture(vault, caller, absent)
+    assert record(vault, caller, absent).stdout.strip() == "clean"
+    finalize(vault)
+    assert "never-created.md" not in (vault / "wiki/log.md").read_text()
+
+    # Unusual deletion paths use escaped plain text, never inline code that can
+    # become multiline or a link that points at the removed target.
+    odd_name = "odd`[x]\nname.md"
+    odd = vault / "wiki" / odd_name
+    capture(vault, caller, odd)
+    odd.write_text(page("Odd Deletion Path"))
+    record(vault, caller, odd)
+    finalize(vault)
+    capture(vault, caller, odd)
+    odd.unlink()
+    record(vault, caller, odd)
+    finalize(vault)
+    odd_label = "odd\\`\\[x\\]\\nname\\.md"
+    odd_log = (vault / "wiki/log.md").read_text()
+    assert f"**Deletion**: Removed {odd_label}." in odd_log
+    assert "**Deletion**: Removed `odd" not in odd_log
+    assert odd_log.count("(./odd%60%5Bx%5D%0Aname.md)") == 1
 
     # Existing content produces Update; a no-op write produces no pending/log entry.
     existing = vault / "wiki/base.md"
@@ -274,6 +333,193 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-test-") as tmp:
     result = run(RETRIEVE, "UniqueSearchTerm Quasar Updated", "--vault", vault)
     assert "brand-new.md" in result.stdout
     assert not (vault / "scripts").exists()
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-legacy-deletion-retry-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    target = vault / "wiki/base.md"
+    capture(vault, caller, target)
+    target.unlink()
+    record(vault, caller, target)
+
+    wrapper = root / "failing-middleware"
+    wrapper.mkdir()
+    (wrapper / "validate.py").symlink_to(MIDDLEWARE / "validate.py")
+    marker = root / "sync-count"
+    (wrapper / "sync.py").write_text(
+        "import pathlib, subprocess, sys\n"
+        f"real = {str(MIDDLEWARE / 'sync.py')!r}\n"
+        f"marker = pathlib.Path({str(marker)!r})\n"
+        "count = int(marker.read_text()) if marker.exists() else 0\n"
+        "result = subprocess.run([sys.executable, real, *sys.argv[1:]])\n"
+        "marker.write_text(str(count + 1))\n"
+        "raise SystemExit(1 if count == 1 else result.returncode)\n"
+    )
+
+    class LegacyRetryDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 6, tzinfo=_tz)
+
+    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    current_log_update = wiki_lifecycle.safe_log_update
+
+    def publish_legacy_update(log, entries, today):
+        state_path = vault / ".vault-meta/lifecycle/state.json"
+        state_before_log = json.loads(state_path.read_text())
+        assert all(entry.get("log_format_version") == 1 for entry in state_before_log["pending"].values())
+        legacy_entries = [("Update" if verb == "Deletion" else verb, rel) for verb, rel in entries]
+        current_log_update(log, legacy_entries, today)
+        # Simulate the pre-upgrade logger's leading-slash destination spelling.
+        content = log.read_text()
+        current_bullet = "[base\\.md](./base.md)."
+        assert current_bullet in content
+        log.write_text(content.replace(current_bullet, "[base\\.md](/base.md).", 1))
+        state = json.loads(state_path.read_text())
+        for entry in state["pending"].values():
+            entry.pop("log_format_version", None)
+        state_path.write_text(json.dumps(state))
+
+    with patch.object(wiki_lifecycle, "datetime", LegacyRetryDay), patch.object(
+            wiki_lifecycle, "safe_log_update", side_effect=publish_legacy_update):
+        try:
+            wiki_lifecycle.finalize(args)
+        except wiki_lifecycle.LifecycleError:
+            pass
+        else:
+            raise AssertionError("injected second-sync failure did not retain deletion retry")
+    log = vault / "wiki/log.md"
+    old_update = "* **Update**: Revised [base\\.md](/base.md)."
+    assert old_update in log.read_text()
+    old_bytes = log.read_bytes()
+    state_after_failure = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())
+    assert state_after_failure["pending"]
+    legacy_entry = next(iter(state_after_failure["pending"].values()))
+    assert legacy_entry["log_date"] == "2026-10-06" and "log_format_version" not in legacy_entry
+
+    retry_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    wiki_lifecycle.finalize(retry_args)
+    assert log.read_bytes() == old_bytes, "retry must preserve the already-published legacy Update entry"
+    assert "**Deletion**" not in log.read_text()
+    assert log.read_text().count("(/base.md)") == 1
+    assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-update-fails-before-log-delete-retry-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    target = vault / "wiki/base.md"
+    capture(vault, caller, target)
+    target.write_text(page("Base", "update failed before log publication"))
+    record(vault, caller, target)
+
+    def fail_log_publication(_log, _entries, _today):
+        pending = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+        entry = next(iter(pending.values()))
+        assert entry.get("log_date") and entry.get("log_format_version") == 1
+        raise wiki_lifecycle.LifecycleError("injected log publication failure")
+
+    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    with patch.object(wiki_lifecycle, "safe_log_update", side_effect=fail_log_publication):
+        try:
+            wiki_lifecycle.finalize(args)
+        except wiki_lifecycle.LifecycleError:
+            pass
+        else:
+            raise AssertionError("injected log publication failure did not retain update work")
+    pending = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+    entry = next(iter(pending.values()))
+    assert entry.get("log_date") and entry.get("log_format_version") == 1
+
+    capture(vault, caller, target)
+    target.unlink()
+    record(vault, caller, target)
+    finalize(vault)
+    log = (vault / "wiki/log.md").read_text()
+    assert "**Deletion**: Removed base\\.md." in log
+    assert "**Update**: Revised [base\\.md]" not in log
+    assert "(./base.md)" not in log
+    assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-update-fails-after-log-delete-retry-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    target = vault / "wiki/base.md"
+    capture(vault, caller, target)
+    target.write_text(page("Base", "update logged before failure"))
+    record(vault, caller, target)
+
+    wrapper = root / "failing-middleware"
+    wrapper.mkdir()
+    (wrapper / "validate.py").symlink_to(MIDDLEWARE / "validate.py")
+    marker = root / "sync-count"
+    (wrapper / "sync.py").write_text(
+        "import pathlib, subprocess, sys\n"
+        f"real = {str(MIDDLEWARE / 'sync.py')!r}\n"
+        f"marker = pathlib.Path({str(marker)!r})\n"
+        "count = int(marker.read_text()) if marker.exists() else 0\n"
+        "result = subprocess.run([sys.executable, real, *sys.argv[1:]])\n"
+        "marker.write_text(str(count + 1))\n"
+        "raise SystemExit(1 if count == 1 else result.returncode)\n"
+    )
+
+    class UpdateRetryDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 8, tzinfo=_tz)
+
+    args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(wrapper), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    with patch.object(wiki_lifecycle, "datetime", UpdateRetryDay):
+        try:
+            wiki_lifecycle.finalize(args)
+        except wiki_lifecycle.LifecycleError:
+            pass
+        else:
+            raise AssertionError("injected second-sync failure did not retain logged update")
+        state = json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())
+        retry_entry = next(iter(state["pending"].values()))
+        assert retry_entry["log_date"] == "2026-10-08" and retry_entry["log_format_version"] == 1
+        assert "**Update**: Revised [base\\.md](./base.md)." in (vault / "wiki/log.md").read_text()
+
+        capture(vault, caller, target)
+        target.unlink()
+        record(vault, caller, target)
+        retry_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+        wiki_lifecycle.finalize(retry_args)
+
+    log = (vault / "wiki/log.md").read_text()
+    assert log.count("**Update**") == 1
+    assert log.count("**Deletion**") == 1
+    assert "**Deletion**: Removed base\\.md." in log
+    assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-same-day-update-delete-") as tmp:
+    root = Path(tmp)
+    vault, caller = setup(root)
+    target = vault / "wiki/base.md"
+
+    class SameDay:
+        @staticmethod
+        def now(_tz):
+            return RealDateTime(2026, 10, 7, tzinfo=_tz)
+
+    finalize_args = type("FinalizeArgs", (), {"vault": str(vault), "middleware": str(MIDDLEWARE), "retrieval_script": None, "owner": None, "recover_owner": None})()
+    with patch.object(wiki_lifecycle, "datetime", SameDay):
+        capture(vault, caller, target)
+        target.write_text(page("Base", "same-day edit"))
+        record(vault, caller, target)
+        wiki_lifecycle.finalize(finalize_args)
+        assert "**Update**" in (vault / "wiki/log.md").read_text()
+
+        capture(vault, caller, target)
+        target.unlink()
+        record(vault, caller, target)
+        wiki_lifecycle.finalize(finalize_args)
+
+    same_day_log = (vault / "wiki/log.md").read_text()
+    assert same_day_log.count("## 2026-10-07") == 1, same_day_log
+    assert "**Update**: Revised [base\\.md](./base.md)." in same_day_log
+    assert "**Deletion**: Removed base\\.md." in same_day_log
+    assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
 
 with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-no-wiki-") as tmp:
     root = Path(tmp)
