@@ -231,7 +231,7 @@ def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -
                 info = os.fstat(fd)
                 temp_identity = (info.st_dev, info.st_ino)
                 try:
-                    with os.fdopen(fd, "wb") as stream:
+                    with os.fdopen(fd, "wb", closefd=False) as stream:
                         stream.write(after); stream.flush(); os.fsync(stream.fileno())
                     config_still_matches(config_id, vault)
                     if (not LIFE.same_public_parent(life, life_fd)
@@ -248,7 +248,10 @@ def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -
                             or not LIFE.same_public_parent(vault / "wiki", parent)):
                         raise HistoryError("public lifecycle/wiki directory changed during publication; migration is recoverable")
                 finally:
-                    LIFE.cleanup_temp_at(parent, temp, temp_identity)
+                    try:
+                        LIFE.cleanup_temp_at(parent, temp, temp_identity)
+                    finally:
+                        os.close(fd)
             finally:
                 os.close(parent)
         return {"planHash": approval, "applied": True, "alreadyApplied": False}

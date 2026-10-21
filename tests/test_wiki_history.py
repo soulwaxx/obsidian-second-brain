@@ -129,7 +129,14 @@ class HistoryMigrationTests(unittest.TestCase):
 
     def test_temp_file_substitution_is_refused(self):
         plan = self.preview()
+        before = self.log.read_bytes()
         original = wiki_history.config_still_matches
+        create_temp = wiki_history.LIFE.create_log_temp
+        descriptors = []
+        def remember_temp(parent):
+            fd, name = create_temp(parent)
+            descriptors.append(fd)
+            return fd, name
         calls = 0
         def replace_temp(config_id, vault):
             nonlocal calls
@@ -137,13 +144,18 @@ class HistoryMigrationTests(unittest.TestCase):
             if calls == 2:
                 temp = next((p for p in (self.vault / "wiki").iterdir() if p.name.startswith(".log-")), None)
                 self.assertIsNotNone(temp)
+                self.assertEqual(temp.stat().st_ino, os.fstat(descriptors[0]).st_ino)
                 temp.unlink()
+                self.assertEqual(os.fstat(descriptors[0]).st_nlink, 0)
                 temp.write_bytes(b"unreviewed replacement")
             return original(config_id, vault)
-        with patch.object(wiki_history, "config_still_matches", side_effect=replace_temp):
+        with patch.object(wiki_history.LIFE, "create_log_temp", side_effect=remember_temp), \
+                patch.object(wiki_history, "config_still_matches", side_effect=replace_temp):
             with self.assertRaises(wiki_history.HistoryError):
                 wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
-        self.assertIn(b"/target.md", self.log.read_bytes())
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
+        self.assertEqual(self.log.read_bytes(), before)
 
     def test_case_check_runs_on_journal_replay(self):
         plan = self.preview()
