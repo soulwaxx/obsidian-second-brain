@@ -5,8 +5,8 @@ Public API: ``compatibility_report(vault, *, native_evidence=None) -> dict``.
 The versioned, JSON-serializable report contains ``links`` for the complete
 parseable wiki graph, ``limitations``, and evidence-quality metadata. Optional
 native evidence is reviewed JSON of shape ``{"vault": "/absolute/path", "links":
-[{"source": "wiki/a.md", "destination": "./b.md", "resolved_path": "wiki/b.md"}]}``.
-Every observation must bind to the resolved vault, exact source/destination, and SHA-256 of the current source text (``source_sha256``). Stale or conflicting evidence is rejected. This tool never invokes Obsidian, accesses the network, or writes to the vault.
+[{"source": "wiki/a.md", "destination": "./b.md", "resolved_path": "wiki/b.md", "source_hash": "<sha256-of-current-source>"}]}``.
+Every observation must bind to the resolved vault, exact source/destination, and SHA-256 of the current source text (``source_hash``). A null ``resolved_path`` explicitly records native-unresolved. Stale or conflicting evidence is rejected. This tool never invokes Obsidian, accesses the network, or writes to the vault.
 """
 from __future__ import annotations
 
@@ -156,10 +156,10 @@ def compatibility_report(vault: str | Path, *, native_evidence: dict[str, Any] |
         if not isinstance(native_evidence, dict) or not isinstance(native_evidence.get("links"), list):
             raise ValueError("native evidence must contain a links array")
         for item in native_evidence["links"]:
-            if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ("source", "destination", "resolved_path", "source_sha256")):
-                raise ValueError("native evidence link must bind source, destination, resolved_path, and source_sha256")
+            if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ("source", "destination", "source_hash")) or not (item.get("resolved_path") is None or isinstance(item.get("resolved_path"), str)) or "resolved_path" not in item:
+                raise ValueError("native evidence link must bind source, destination, source_hash, and resolved_path (string or null)")
             source_path = root / item["source"]
-            if not source_path.is_file() or __import__("hashlib").sha256(source_path.read_bytes()).hexdigest() != item["source_sha256"]:
+            if not source_path.is_file() or __import__("hashlib").sha256(source_path.read_bytes()).hexdigest() != item["source_hash"]:
                 raise ValueError(f"stale native evidence for {item['source']}")
             key = item["source"], item["destination"]
             if key in evidence_map and evidence_map[key] != item["resolved_path"]:
@@ -196,9 +196,10 @@ def compatibility_report(vault: str | Path, *, native_evidence: dict[str, Any] |
                     rel = "./" + rel
                 replacement = urllib.parse.quote(rel, safe="/.-_") + ("#" + dest.split("#",1)[1] if "#" in dest else "")
                 proposal = {"replacement": replacement, "span": [link["offset"], link["offset"] + len(dest)]}
-            results.append({"source": page.path, "kind": kind, "destination": dest, "line": link["line"], "area": link.get("area", "body"), "classification": flags, "okf_candidates": [c.path for c in candidates], "intended_path": intended, "native_resolved_path": native, "evidence": status, "proposal": proposal, "repair_state": "historical-not-active-repair" if kind == "lifecycle-history" else "active"})
+            results.append({"source": page.path, "kind": kind, "destination": dest, "line": link["line"], "area": link.get("area", "body"), "classification": flags, "okf_candidates": [c.path for c in candidates], "intended_path": intended, "native_resolved_path": native, "evidence": ("native-unresolved" if (page.path, dest) in evidence_map and native is None else status), "proposal": proposal, "repair_state": "historical-not-active-repair" if kind == "lifecycle-history" else "active"})
     sparse = [p.path for p in pages if p.path != "wiki/index.md" and p.path != "wiki/log.md" and not lint._parse_links(p)]
-    return {"version": 1, "vault": str(root), "report_api": "obsidian_compat.compatibility_report(vault, native_evidence=None)", "discovery": {"markdown_pages": len(pages), "links": len(results), "symlinks_followed": False, "scope": "complete discovered wiki Markdown graph; hidden/pruned paths and non-Markdown are excluded"}, "evidence_quality": evidence_status, "links": results, "sparse_or_archive_pages": sparse, "limitations": sorted(set(limitations))}
+    return {"version": 1, "vault": str(root), "report_api": "obsidian_compat.compatibility_report(vault, native_evidence=None)", "discovery": {"markdown_pages": len(pages), "links": len(results), "symlinks_followed": False, "scope": "parser-discovered wiki Markdown links; this is not a completeness-certified native graph; hidden/pruned paths, unsupported syntax, and non-Markdown are excluded"},
+        "native_graph_complete": False, "evidence_quality": evidence_status, "links": results, "sparse_or_archive_pages": sparse, "limitations": sorted(set(limitations))}
 
 
 def main() -> int:

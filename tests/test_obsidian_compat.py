@@ -50,7 +50,7 @@ custom: untouched
 def test_evidence_is_bound_to_vault_source_destination(tmp_path):
     (tmp_path / "wiki").mkdir()
     (tmp_path / "wiki/a.md").write_text("[b](./b.md)\n")
-    evidence = {"vault": str(tmp_path), "links": [{"source": "wiki/a.md", "destination": "./b.md", "resolved_path": "wiki/b.md", "source_sha256": hashlib.sha256((tmp_path / "wiki/a.md").read_bytes()).hexdigest()}]}
+    evidence = {"vault": str(tmp_path), "links": [{"source": "wiki/a.md", "destination": "./b.md", "resolved_path": "wiki/b.md", "source_hash": hashlib.sha256((tmp_path / "wiki/a.md").read_bytes()).hexdigest()}]}
     report = compat.compatibility_report(tmp_path, native_evidence=evidence)
     assert report["links"][0]["evidence"] == "native-evidence"
     assert report["links"][0]["native_resolved_path"] == "wiki/b.md"
@@ -61,6 +61,12 @@ def test_evidence_is_bound_to_vault_source_destination(tmp_path):
         assert "does not match" in str(exc)
     else:
         raise AssertionError("unbound evidence accepted")
+    evidence["vault"] = str(tmp_path)
+    evidence["links"] = [{"source": "wiki/a.md", "destination": "./b.md", "resolved_path": None, "source_hash": hashlib.sha256((tmp_path / "wiki/a.md").read_bytes()).hexdigest()}]
+    unresolved = compat.compatibility_report(tmp_path, native_evidence=evidence)
+    assert unresolved["links"][0]["evidence"] == "native-unresolved"
+    assert unresolved["links"][0]["okf_candidates"] == []
+    assert unresolved["native_graph_complete"] is False
 
 
 def test_nested_relative_proposals_and_encoded_targets(tmp_path):
