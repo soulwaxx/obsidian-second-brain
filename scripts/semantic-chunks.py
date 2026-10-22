@@ -21,6 +21,7 @@ import math
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -75,7 +76,12 @@ def _request(endpoint, route, payload=None, timeout=8.0):
     request = urllib.request.Request(url, data=data,
                                      headers={"Content-Type": "application/json"} if data else {})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
-    with opener.open(request, timeout=timeout) as response:
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise
+    with response:
         return json.loads(response.read().decode("utf-8"))
 
 

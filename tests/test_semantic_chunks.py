@@ -1,4 +1,5 @@
 """Semantic chunk boundaries and explicit embedding-cache build contracts."""
+import io
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +130,19 @@ class SemanticChunkTests(unittest.TestCase):
                 server.shutdown()
                 thread.join()
                 server.server_close()
+
+    def test_model_digest_closes_http_error_response_and_falls_back(self):
+        response = io.BytesIO(b"service unavailable")
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1:11434/api/tags", 503, "Service Unavailable", {}, response)
+
+        class FailingOpener:
+            def open(self, *_args, **_kwargs):
+                raise error
+
+        with patch("urllib.request.build_opener", return_value=FailingOpener()):
+            self.assertIsNone(chunks.model_digest("http://127.0.0.1:11434", "fixture"))
+        self.assertTrue(response.closed)
 
     def test_model_digest_matches_untagged_explicit_namespaced_and_registry_aliases(self):
         with tempfile.TemporaryDirectory() as temporary:

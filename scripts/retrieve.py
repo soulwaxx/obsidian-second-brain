@@ -7,6 +7,7 @@ import json
 import math
 import re
 from pathlib import Path
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -96,7 +97,12 @@ def embeddings(inputs, endpoint, model, timeout):
     body = json.dumps({"model": model, "input": inputs}).encode()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
     request = urllib.request.Request(endpoint, data=body, headers={"Content-Type": "application/json"})
-    with opener.open(request, timeout=timeout) as response:
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise
+    with response:
         data = json.loads(response.read().decode("utf-8"))
     vectors = data["embeddings"]
     if not isinstance(vectors, list) or len(vectors) != len(inputs):
