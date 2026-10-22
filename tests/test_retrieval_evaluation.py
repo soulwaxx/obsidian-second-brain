@@ -271,5 +271,71 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result["interval95"], [-1, 1])
 
 
+class PassageExperimentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[1]
+        cls.experiment = load_source("test_passage_experiment", str(root / "experiments/passage-exposure/experiment.py"))
+        cls.report = cls.experiment.experiment()
+        cls.rows = {(row["id"], row["language"]): row["policies"] for row in cls.report["rows"]}
+
+    def test_repeatable_offline_report_and_explicit_provenance(self):
+        with patch("urllib.request.build_opener", side_effect=AssertionError("no network")):
+            self.assertEqual(self.report, self.experiment.experiment())
+        self.assertFalse(self.report["liveModelQualityEvaluated"])
+        self.assertFalse(self.report["freshHoldoutEvaluated"])
+        self.assertIsNone(self.report["model"])
+        self.assertIsNone(self.report["cache"])
+        self.assertEqual(self.report["fixtureHash"], "fcb4e8781f933361442de101e515fd230f41b65cf29c5adef4770a33fc247b7a")
+        self.assertEqual(len(self.report["sourceHashes"]), 11)
+        self.assertEqual(len(self.report["rows"]), 16)
+
+    def test_rendering_and_selection_failures_are_distinct(self):
+        late = self.rows["late-answer", "en"]
+        self.assertTrue(late["prefix"]["targetContainsSpan"])
+        self.assertFalse(late["prefix"]["targetSpanExposed"])
+        self.assertTrue(late["query-paragraph"]["targetSpanExposed"])
+        wrong = self.rows["wrong-chunk", "en"]
+        self.assertFalse(wrong["prefix"]["targetContainsSpan"])
+        self.assertFalse(wrong["query-paragraph"]["targetSpanExposed"])
+        self.assertTrue(wrong["lexical-chunk-prefix"]["targetSpanExposed"])
+        self.assertEqual(wrong["lexical-chunk-prefix"]["cutoffs"]["1"]["targetSpanExposed"], 0)
+        self.assertEqual(wrong["lexical-chunk-prefix"]["cutoffs"]["3"]["targetSpanExposed"], 1)
+
+    def test_metadata_removal_has_a_measured_counterexample(self):
+        for language in ("en", "it"):
+            displacement = self.rows["metadata-displacement", language]
+            metadata = self.rows["metadata-answer", language]
+            self.assertFalse(displacement["prefix"]["targetSpanExposed"])
+            self.assertTrue(displacement["body-prefix"]["targetSpanExposed"])
+            self.assertTrue(metadata["prefix"]["targetSpanExposed"])
+            self.assertFalse(metadata["body-prefix"]["targetSpanExposed"])
+
+    def test_temporal_unknown_and_language_limits_survive_scoring(self):
+        self.assertEqual(self.rows["temporal-correction", "en"]["query-paragraph"]["targetLabel"], "current")
+        self.assertEqual(self.rows["temporal-correction", "it"]["query-paragraph"]["targetLabel"], "stale")
+        self.assertEqual(self.rows["long-context", "en"]["query-paragraph"]["targetLabel"], "unjudgeable")
+        for language, expected in (("en", 5), ("it", 3)):
+            summary = self.report["summary"][language]
+            self.assertEqual(summary["query-paragraph"]["cutoffs"]["3"]["targetSpanExposed"], expected)
+            for policy in summary.values():
+                self.assertEqual(policy["cutoffs"]["1"]["pageHits"], 4)
+                self.assertEqual(policy["cutoffs"]["3"]["pageHits"], 8)
+                self.assertEqual(policy["cutoffs"]["3"]["unknownResults"], 17)
+                self.assertEqual(policy["cutoffs"]["3"]["judgedResults"], 7)
+            self.assertEqual(summary["prefix"]["cutoffs"]["3"]["answerUnknown"], 6)
+
+    def test_original_crlf_coordinates_and_character_budget(self):
+        fixture = json.loads((self.experiment.HERE / "fixtures.json").read_bytes())
+        source = "".join(next(case for case in fixture["cases"] if case["id"] == "unicode-crlf")["chunks"])
+        window = self.rows["unicode-crlf", "en"]["query-paragraph"]["targetWindow"]
+        self.assertIn("\r\n", source)
+        self.assertEqual(source[window["charStart"]:window["charEnd"]], "Caffè retention is 12 days.\r\n")
+        for row in self.report["rows"]:
+            for policy in row["policies"].values():
+                self.assertLessEqual(len(policy["targetWindow"]["excerpt"]), 360)
+                self.assertLessEqual(policy["returnedCharacters"], 3 * 360)
+
+
 if __name__ == "__main__":
     unittest.main()

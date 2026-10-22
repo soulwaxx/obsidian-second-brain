@@ -6,6 +6,15 @@ explicit, versioned gold file. It is separate from the deterministic
 gate. Keep private corpus content, gold, queries and reports outside the source
 repository and published package. Commit only synthetic public-safe fixtures.
 
+## Public passage mechanics experiment
+
+The repository-only [passage exposure experiment](https://github.com/soulwaxx/obsidian-second-brain/tree/main/experiments/passage-exposure)
+is a service-free investigation of issue #21. It holds synthetic page rankings
+fixed while comparing excerpt windows and chunk selection separately. Its record
+includes EN/IT exposure counts, temporal and metadata counterexamples, unknown
+judgments and helper cost; it establishes no live model-quality gain or default
+change.
+
 ## Run against a prepared disposable snapshot
 
 Use an explicit vault root and gold path. The evaluator never installs models,

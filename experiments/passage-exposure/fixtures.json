@@ -1,0 +1,74 @@
+{
+  "revision": "passage-mechanics-v1",
+  "split": "development",
+  "annotationAuthority": "Agent-authored synthetic facts and context labels; no human validation",
+  "cases": [
+    {
+      "id": "early-answer",
+      "category": "prefix-control",
+      "targetRank": 1,
+      "queries": {"en": "What is the journal retention?", "it": "Qual è la conservazione del registro?"},
+      "chunks": ["---\ntype: Note\n---\n# Journal\n\nJournal retention is 14 days.\n"],
+      "evidence": [{"text": "Journal retention is 14 days.", "label": "current", "supportsAnswer": true}]
+    },
+    {
+      "id": "late-answer",
+      "category": "display-window",
+      "targetRank": 2,
+      "queries": {"en": "Where are backups stored?", "it": "Dove vengono conservate le copie di sicurezza?"},
+      "chunks": ["---\ntype: Note\n---\n# Storage\n\nThis fictional service has an introductory operational description. Operators review the general notes before changing the service. The description covers routine ownership and review procedures, without specifying the location requested by the question. It repeats the review process so that this introductory paragraph occupies more than the display budget. These sentences supply neutral context for the experiment and contain no answer to the location question.\n\nBackups are stored in the amber bucket.\n"],
+      "evidence": [{"text": "Backups are stored in the amber bucket.", "label": "current", "supportsAnswer": true}]
+    },
+    {
+      "id": "wrong-chunk",
+      "category": "chunk-selection",
+      "targetRank": 3,
+      "queries": {"en": "What is the retry ceiling?", "it": "Qual è il limite dei tentativi?"},
+      "chunks": ["---\ntype: Note\n---\n# Retry\n\nRetry workflow overview.\n\n", "## Limits\n\nRetry ceiling is 7 attempts.\n"],
+      "evidence": [{"text": "Retry ceiling is 7 attempts.", "label": "current", "supportsAnswer": true}]
+    },
+    {
+      "id": "metadata-displacement",
+      "category": "metadata-display",
+      "targetRank": 1,
+      "queries": {"en": "What is the archive destination?", "it": "Qual è la destinazione dell'archivio?"},
+      "chunks": ["---\ntype: Note\naliases: [archive, destination, records, storage, repository, retention, operational-notes, service-handbook, ownership-review, status-summary, destination-notes, archive-handbook, archive-review, destination-review, service-history, retention-review, operational-summary, record-location, archival-process, routine-review, maintenance-guide, archive-summary, storage-summary, record-summary, service-summary]\n---\n# Archive\n\nArchive destination is the violet bucket.\n"],
+      "evidence": [{"text": "Archive destination is the violet bucket.", "label": "current", "supportsAnswer": true}]
+    },
+    {
+      "id": "temporal-correction",
+      "category": "temporal-current",
+      "targetRank": 2,
+      "queries": {"en": "What is the timeout now?", "it": "Qual è il timeout attuale?"},
+      "chunks": ["---\ntype: Note\n---\n# Timeout\n\nThe timeout was 90 seconds.\n\nThis paragraph separates the historical setting from the replacement setting. The fictional service changed during a routine review. This introductory text deliberately delays the replacement setting beyond the display budget. The review notes themselves specify no additional duration. Operators keep this context to show that the earlier setting belongs to the service history and must not answer a question about the present.\n\nThe timeout is now 30 seconds.\n"],
+      "evidence": [
+        {"text": "The timeout was 90 seconds.", "label": "stale", "supportsAnswer": false},
+        {"text": "The timeout is now 30 seconds.", "label": "current", "supportsAnswer": true}
+      ]
+    },
+    {
+      "id": "long-context",
+      "category": "paragraph-truncation",
+      "targetRank": 1,
+      "queries": {"en": "What is the export limit?", "it": "Qual è il limite di esportazione?"},
+      "chunks": ["---\ntype: Note\n---\n# Export\n\nThe export limit needs its qualification: this paragraph describes the production setting, while the training environment uses a separate value. Operators must read the whole qualification before applying the value to a service. This synthetic explanation intentionally exceeds the available display budget so that selecting the correct paragraph does not guarantee a complete answer. Only the production environment in the approved region uses the export limit of 25 records.\n"],
+      "evidence": [{"text": "The export limit needs its qualification: this paragraph describes the production setting, while the training environment uses a separate value. Operators must read the whole qualification before applying the value to a service. This synthetic explanation intentionally exceeds the available display budget so that selecting the correct paragraph does not guarantee a complete answer. Only the production environment in the approved region uses the export limit of 25 records.", "label": "current", "supportsAnswer": true}]
+    },
+    {
+      "id": "unicode-crlf",
+      "category": "offset-control",
+      "targetRank": 3,
+      "queries": {"en": "What is Caffè retention?", "it": "Quanti giorni si conservano i dati del Caffè?"},
+      "chunks": ["---\r\ntype: Note\r\n---\r\n# Caffè\r\n\r\nThis introductory paragraph concerns the fictional café service. Its accented title and Windows line endings check original decoded character coordinates. The following description supplies neutral review context before the requested setting. Operators read the maintenance notes during routine checks. These notes deliberately occupy the initial display budget without giving a duration. They contain no additional factual claim about the requested setting.\r\n\r\nCaffè retention is 12 days.\r\n"],
+      "evidence": [{"text": "Caffè retention is 12 days.", "label": "current", "supportsAnswer": true}]
+    },
+    {
+      "id": "metadata-answer",
+      "category": "metadata-evidence",
+      "targetRank": 1,
+      "queries": {"en": "Who is the owner?", "it": "Chi è il responsabile?"},
+      "chunks": ["---\ntype: Note\nowner: Mira\n---\n# Ownership\n\nReview this note before changing the service.\n"],
+      "evidence": [{"text": "owner: Mira", "label": "current", "supportsAnswer": true}]
+    }
+  ]
+}
