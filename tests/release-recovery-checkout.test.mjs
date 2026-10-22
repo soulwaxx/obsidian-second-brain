@@ -8,7 +8,7 @@ import { test } from "node:test";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const steps = JSON.parse(execFileSync("python3", ["-c",
-  "import json,sys,yaml; print(json.dumps(yaml.load(open(sys.argv[1]),Loader=yaml.BaseLoader)['jobs']['release']['steps']))",
+  "import json,sys,yaml; from pathlib import Path; print(json.dumps(yaml.load(Path(sys.argv[1]).read_text(),Loader=yaml.BaseLoader)['jobs']['release']['steps']))",
   path.join(root, ".github/workflows/release.yml")], { encoding: "utf8", timeout: 10000 }));
 
 test("trusted current recovery survives a pre-relocation tagged artifact checkout", () => {

@@ -137,39 +137,43 @@ selection and release notes, and exercises npm preparation against disposable
 manifests without publishing. Dependency lifecycle scripts are disabled during
 installation; the owned package's version hook still runs during preparation.
 
+CI and release use the same pinned npm 11.x CLI. Agent CLI installation uses
+`--strict-allow-scripts` with a command-scoped allow-list for Claude Code's
+native-binary placement, `@google/genai`'s no-op preinstall, and `protobufjs`'s
+version-scheme check. New dependency install scripts fail the job until reviewed;
+do not replace the allow-list with blanket approval. The pinned Pi package no
+longer requires the previous `esbuild` postinstall. A transitive
+`node-domexception` deprecation can still appear during CLI installation; keep
+it visible until the upstream dependency is replaced.
+
+Node 24 and Python 3.14 setup check for the latest matching patch rather than
+using an older runner-cached version. This can add a download to the job. Release
+also disables pip's version-update notice, matching PR CI.
+
 **Temporary approved audit policy:** print the full audit report and block
 critical findings. High/moderate findings remain visible and unresolved; a
 passing gate is not a vulnerability-free claim. Authentication or audit-service
 failures still fail the job. Revisit this policy when compatible upstream fixes
 are available; do not run `npm audit fix --force` just to make the report green.
 
-The locked toolset updates `handlebars` to 4.7.10 to resolve the critical
-JavaScript-injection advisories affecting 4.7.9. The audit still reports 12
-affected package entries (10 high, 2 moderate), stemming from these upstream
-dependencies:
+The locked toolset keeps `handlebars` at 4.7.10 to resolve the critical
+JavaScript-injection advisories affecting 4.7.9. Updating both the publishing CLI
+and the lockfile's transitive npm to 11.21.1 replaces vulnerable bundled copies
+of `brace-expansion`, `http-cache-semantics`, `undici`, `ip-address`, and
+`postcss-selector-parser`. An installed-tree check and the release-plugin check
+verify the refresh; updating the global CLI alone does not update the locked
+release tool's npm.
 
-| Dependency | Findings and relevance |
-| --- | --- |
-| `braces` through `micromatch` | Nested-pattern stack exhaustion. Release branch/rule patterns are repository-owned constants, reducing exposure to attacker-supplied patterns. |
-| npm-bundled `brace-expansion` | Pattern-expansion denial of service. Package fetching/packing still warrants upstream remediation. |
-| npm-bundled `http-cache-semantics` | Cache disclosure through `max-stale`. Disposable runners/caches reduce cross-user reuse, but are not a proof of safety. |
-| npm-bundled `undici` | WebSocket denial of service and retry-interceptor response splitting. The workflow does not intentionally use WebSockets; applicability still needs upstream review. |
-| npm-bundled `ip-address` | Address-classification/subnet and diagnostic-size issues. Do not assume these establish a vulnerability in the shipped plugin. |
-| npm-bundled `postcss-selector-parser` | Quadratic selector-parsing complexity can exhaust CPU. This is release tooling, not a shipped runtime dependency; upstream remediation is still needed. |
-
-The remaining high-severity findings are waiting for upstream patches:
-
-- [`braces` GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
-  has no patched upstream release; 3.0.3 remains the latest. Its recursive
-  AST walkers can exhaust the stack on deeply nested patterns. The finding
-  propagates through `micromatch` to semantic-release and its plugins; these
-  audit entries are not ten independent root vulnerabilities. npm's suggested
-  semantic-release 15.14.0 downgrade is not a compatible remediation.
-- Patched upstream library releases exist for `brace-expansion` (5.0.12),
-  `http-cache-semantics` (4.3.0), and `undici` (6.28.1 or later in v6), but npm
-  11.21.0 and 12.2.0 still bundle vulnerable copies. A disposable installation
-  confirmed that npm dependency overrides do not replace those bundled files.
-  Updating a lockfile or adding overrides alone is not a verified runtime fix.
+The audit now reports seven high-severity affected package entries, with no
+moderate or critical entries in the reviewed tree. These seven entries trace
+back to [`braces` GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm),
+which has no patched upstream release; 3.0.3 remains the latest. Its recursive
+AST walkers can exhaust the stack on deeply nested patterns. The finding
+propagates through `micromatch` to semantic-release and its plugins; these are
+not seven independent root vulnerabilities. Release branch/rule patterns are
+repository-owned constants, reducing exposure to attacker-supplied patterns
+without proving safety. npm's suggested semantic-release 15.14.0 downgrade is
+not a compatible remediation.
 
 Do not suppress these findings, adopt unreviewed forks, patch installed files
 ad hoc, or declare them harmless. Keep the full audit visible and reassess both
@@ -182,7 +186,11 @@ PRs. The preset remains below v10 until the changelog writer is compatible.
 The scheduled self-hosted workflow needs `RENOVATE_TOKEN` with access to this
 repository and permission to update workflow files and open PRs. A dedicated
 identity lets its PRs trigger CI; the ordinary `GITHUB_TOKEN` is not a drop-in
-replacement. Keep credentials out of the repository. Major updates and all
-merges remain reviewed. Inspect the workflow log after token configuration to
-confirm repository discovery and authorization; a stored secret alone is not
-proof of a working maintenance loop.
+replacement. The workflow owns the weekly schedule; the repository config has
+no second time window that could block branch creation when GitHub starts a
+scheduled run late. Manual workflow runs can also create update branches.
+
+Keep credentials out of the repository. Major updates and all merges remain
+reviewed. Inspect the workflow log after token configuration to confirm
+repository discovery and authorization; a stored secret alone is not proof of
+a working maintenance loop.

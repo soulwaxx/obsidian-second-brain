@@ -1,5 +1,6 @@
 """Focused hybrid retrieval, freshness, and service-failure contracts."""
 import hashlib
+import io
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -216,6 +218,22 @@ class HybridRetrievalTests(unittest.TestCase):
                          "restored v2 metadata invalidates the still-cached v1 vectors")
         self.assertEqual(QueryEmbedding.calls, 0)
         self.assertEqual(cache_path.read_bytes(), cached_before)
+
+    def test_embedding_http_error_response_is_closed_and_exception_is_preserved(self):
+        response = io.BytesIO(b"service unavailable")
+        error = urllib.error.HTTPError(
+            self.url, 503, "Service Unavailable", {}, response)
+
+        class FailingOpener:
+            def open(self, *_args, **_kwargs):
+                raise error
+
+        retrieve_module = load_source("embedding_http_error_retrieval", str(RETRIEVE))
+        with patch("urllib.request.build_opener", return_value=FailingOpener()):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                retrieve_module.embeddings(["query"], self.url, "fixture", 1)
+        self.assertIs(raised.exception, error)
+        self.assertTrue(response.closed)
 
     def test_invalid_embedding_origins_are_rejected_before_any_opener_dispatch(self):
         retrieve_module = load_source(

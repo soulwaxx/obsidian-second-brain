@@ -8,7 +8,6 @@
   "labels": ["dependencies"],
   "prConcurrentLimit": 3,
   "prHourlyLimit": 0,
-  "schedule": ["before 06:00 on saturday"],
   "dependencyDashboard": false,
   "automerge": false,
   "vulnerabilityAlerts": {

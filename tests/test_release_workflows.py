@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -29,6 +30,9 @@ for workflow in workflows.values():
                 assert step['with']['persist-credentials'] == 'false'
             if step.get('uses', '').startswith('actions/setup-node@'):
                 assert step['with']['package-manager-cache'] == 'false'
+                assert step['with']['check-latest'] == 'true'
+            if step.get('uses', '').startswith('actions/setup-python@'):
+                assert step['with']['check-latest'] == 'true'
 
 assert checks['name'] == 'CI'
 assert 'push' not in checks['on']
@@ -44,6 +48,31 @@ for command in ('npm run release:check', 'npm test', 'npm run test:release', 'np
                 'claude plugin validate .', 'bash tests/install-smoke.sh',
                 'shellcheck tests/install-smoke.sh', 'sha256sum --check --ignore-missing'):
     assert command in commands
+
+mac_prerequisites = next(step for step in checks['jobs']['test']['steps']
+                         if step.get('name') == 'Install system prerequisites (macOS)')
+with tempfile.TemporaryDirectory() as temporary:
+    work = Path(temporary)
+    brew = work / 'brew'
+    brew.write_text('''#!/bin/bash
+if [ "$1" = list ]; then
+  [ "$3" != "$MISSING_FORMULA" ]
+else
+  printf '%s\\n' "$2" >> "$INSTALL_LOG"
+  [ "$FAIL_INSTALL" != 1 ]
+fi
+''')
+    brew.chmod(0o755)
+    for missing, fail, expected in (('', '0', ''), ('shellcheck', '0', 'shellcheck\n'),
+                                    ('jq', '1', 'jq\n')):
+        log = work / 'installed'
+        log.write_text('')
+        result = subprocess.run(['bash', '-eo', 'pipefail', '-c', mac_prerequisites['run']],
+                                env={**os.environ, 'PATH': f'{work}:{os.environ["PATH"]}',
+                                     'MISSING_FORMULA': missing, 'FAIL_INSTALL': fail,
+                                     'INSTALL_LOG': str(log)})
+        assert (result.returncode == 0) == (fail == '0')
+        assert log.read_text() == expected
 
 # Metadata edits never restart the expensive matrix or cancel its evidence run.
 assert set(metadata['on']['pull_request']['types']) == {'opened', 'synchronize', 'reopened', 'edited'}
@@ -96,9 +125,23 @@ assert 'release-source.mjs verify' in verify['steps'][-1]['run']
 job = release['jobs']['release']
 assert job['needs'] == ['verify']
 assert job['timeout-minutes'] == '30'
+npm_versions = []
+for workflow in (checks, release):
+    assert workflow['env']['PIP_DISABLE_PIP_VERSION_CHECK'] == '1'
 for client_job in (checks['jobs']['test'], job):
     cli = next(step for step in client_job['steps'] if 'CLAUDE_VERSION' in step.get('env', {}))
-    assert tuple(map(int, cli['env']['CLAUDE_VERSION'].split('.'))) >= (2, 1, 292)
+    assert tuple(map(int, cli['env']['CLAUDE_VERSION'].split('.'))) >= (2, 1, 308)
+    assert tuple(map(int, cli['env']['PI_VERSION'].split('.'))) >= (1, 4, 0)
+    assert '--strict-allow-scripts' in cli['run']
+    allowed = re.search(r'--allow-scripts=([^\s]+)', cli['run']).group(1).split(',')
+    assert set(allowed) == {'@anthropic-ai/claude-code', '@google/genai', 'protobufjs'}
+    assert '--dangerously-allow-all-scripts' not in cli['run']
+    npm = next(step for step in client_job['steps'] if 'NPM_VERSION' in step.get('env', {}))
+    npm_versions.append(npm['env']['NPM_VERSION'])
+    assert '--ignore-scripts' in npm['run']
+    assert client_job['steps'].index(npm) < client_job['steps'].index(cli)
+assert npm_versions[0] == npm_versions[1]
+assert tuple(map(int, npm_versions[0].split('.'))) >= (11, 21, 1)
 ci_steps = checks['jobs']['test']['steps']
 cli_index = next(index for index, step in enumerate(ci_steps) if 'CLAUDE_VERSION' in step.get('env', {}))
 assert any('node tests/claude-effort-contract.mjs' in step.get('run', '')
@@ -159,6 +202,9 @@ for entry in lock['packages'].values():
     if 'resolved' in entry:
         assert entry['resolved'].startswith('https://registry.npmjs.org/')
         assert 'integrity' in entry
+locked_npm = [entry for entry in lock['packages'].values() if 'npm' in entry.get('bin', {})]
+assert len(locked_npm) == 1
+assert tuple(map(int, locked_npm[0]['version'].split('.'))) >= (11, 21, 1)
 assert 'bash tests/install-smoke.sh' in commands
 assert 'tests/install-smoke.sh' in (root / '.github/release-tools/release-artifact.mjs').read_text()
 manifest = json.loads((root / 'package.json').read_text())
@@ -172,6 +218,7 @@ assert action['with']['token'] == '${{ secrets.RENOVATE_TOKEN }}'
 config = json.loads((root / '.github/renovate.json').read_text())
 assert 'helpers:pinGitHubActionDigests' in config['extends']
 assert config['automerge'] is False
+assert not config.get('schedule'), 'The workflow owns scheduling so delayed/manual runs can create branches'
 pattern = re.compile(config['customManagers'][0]['matchStrings'][0].replace('(?<', '(?P<'))
 dependencies = {}
 for file in (root / '.github/workflows').glob('*.yml'):
