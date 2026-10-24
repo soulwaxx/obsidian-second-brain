@@ -116,7 +116,7 @@ jobs:
           # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
           PI_VERSION: '1.4.0'
           # renovate: datasource=npm depName=@anthropic-ai/claude-code
-          CLAUDE_VERSION: '2.1.308'
+          CLAUDE_VERSION: '2.1.310'
         run: |
           npm install --global --strict-allow-scripts \
             --allow-scripts=@anthropic-ai/claude-code,@google/genai,protobufjs \
