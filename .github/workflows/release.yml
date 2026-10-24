@@ -109,7 +109,7 @@ jobs:
       - name: Install publishing CLI
         env:
           # renovate: datasource=npm depName=npm
-          NPM_VERSION: '11.21.1'
+          NPM_VERSION: '12.2.1'
         run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-fund
       - name: Install agent CLIs for prepared-artifact checks
         env:
