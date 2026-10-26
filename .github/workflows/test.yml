@@ -107,6 +107,7 @@ jobs:
             "@earendil-works/pi-coding-agent@$PI_VERSION" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
       - name: Validate plugin and isolated installation
         run: |
+          npm run test:pi-runtime -- --require-runtime
           node tests/claude-effort-contract.mjs
           claude plugin validate .
           bash tests/install-smoke.sh

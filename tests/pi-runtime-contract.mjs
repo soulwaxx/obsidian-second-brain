@@ -2,30 +2,21 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-
-function installedPackage() {
-  if (process.env.PI_CODING_AGENT_PACKAGE) return path.resolve(process.env.PI_CODING_AGENT_PACKAGE);
-  try {
-    const cli = fs.realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim());
-    for (let dir = path.dirname(cli); dir !== path.dirname(dir); dir = path.dirname(dir)) {
-      if (fs.existsSync(path.join(dir, "package.json")) && JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).name === "@earendil-works/pi-coding-agent") return dir;
-    }
-  } catch { /* Pi is optional for this package. */ }
-  return null;
-}
+import { installedPackage, resolveRuntimeDependencies } from "./pi-runtime-paths.mjs";
 
 const packageRoot = installedPackage();
 if (!packageRoot) {
-  console.log("UNVERIFIED: installed Pi SDK/runtime unavailable; set PI_CODING_AGENT_PACKAGE to run the real-runtime contract.");
+  const diagnostic = "Pi SDK/runtime unavailable; set PI_CODING_AGENT_PACKAGE to run the real-runtime contract.";
+  if (process.argv.includes("--require-runtime")) throw new Error(diagnostic);
+  console.log(`UNVERIFIED: ${diagnostic}`);
   process.exit(0);
 }
 
 const sdkUrl = pathToFileURL(path.join(packageRoot, "dist/index.js")).href;
-const aiEventStreamPath = path.join(packageRoot, "node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js");
+const [aiUrl, typeboxUrl] = resolveRuntimeDependencies(packageRoot);
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkUrl);
-const { createAssistantMessageEventStream } = await import(pathToFileURL(aiEventStreamPath).href);
+const { createAssistantMessageEventStream } = await import(aiUrl);
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-pi-runtime-"));
 const vault = path.join(tmp, "vault");
 const home = path.join(tmp, "home");
@@ -180,8 +171,7 @@ try {
   fs.mkdirSync(path.join(repairVault, "wiki", "runtime"), { recursive: true });
   fs.writeFileSync(config, JSON.stringify({ vaultPath: repairVault, features: { guard: true } }));
   process.env.OBSIDIAN_VAULT_PATH = repairVault;
-  const typeboxPath = path.join(packageRoot, "node_modules/typebox/build/index.mjs");
-  const { Type } = await import(pathToFileURL(typeboxPath).href);
+  const { Type } = await import(typeboxUrl);
   const orchestrationExtension = (pi) => pi.registerTool({
     name: "m1_repair_read",
     label: "Repair and read wiki",

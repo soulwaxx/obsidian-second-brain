@@ -56,7 +56,7 @@ def parse_frontmatter(content):
         return None, None
     try:
         data = yaml.safe_load(rest[:closing.start()])
-    except yaml.YAMLError:
+    except (yaml.YAMLError, ValueError):
         return None, None
     if not isinstance(data, dict):
         return None, None
@@ -176,6 +176,14 @@ def _read_page_at(directory_fd, name):
         os.close(fd)
 
 
+def _directory_has_index(dirpath):
+    """Whether this directory will retain an index after recursive sync."""
+    if _md_files(dirpath) or _base_files(dirpath):
+        return True
+    return any(_directory_has_index(os.path.join(dirpath, name))
+               for name in _subdirs(dirpath))
+
+
 def _index_text(value):
     """Keep untrusted frontmatter on one line and out of link syntax."""
     return (re.sub(r'\s+', ' ', value).strip()
@@ -197,6 +205,8 @@ def build_index_content(dirpath, is_root, directory_fd=None):
         bases = _base_files_at(directory_fd)
         subdirs = _subdirs_at(directory_fd)
 
+    subdirs = [name for name in subdirs
+               if _directory_has_index(os.path.join(dirpath, name))]
     if not files and not bases and not subdirs:
         return None
 

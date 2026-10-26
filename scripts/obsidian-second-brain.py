@@ -133,7 +133,8 @@ def doctor(config_file: Path, config: dict[str, Any] | None, config_error: str |
             retrieval.update({"ready": False, "reason": "index is stale; use the reviewed index-build workflow"})
     retry = LIFECYCLE_MODULE.retrieval_status(vault)
     retrieval["retry"] = retry
-    retrieval["automaticRefreshEnabled"] = ((config or {}).get("features") or {}).get("retrievalRefresh") is not False
+    features = config.get("features") if isinstance(config, dict) else None
+    retrieval["automaticRefreshEnabled"] = features.get("retrievalRefresh") is not False if isinstance(features, dict) else True if features is None else None
     if retry.get("pending") or retry.get("error"):
         retrieval.update({"ready": False, "reason": "published wiki batch has a pending retrieval refresh" if retry.get("pending") else retry["error"]})
     checks["retrieval"] = retrieval
@@ -325,6 +326,14 @@ def main() -> int:
             result = reports.build_report(vault, args.as_of)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
+        except ModuleNotFoundError as exc:
+            if exc.name in {"markdown_it", "mdurl"}:
+                print("obsidian-second-brain: evidence-report requires markdown-it-py; "
+                      "install it with python3 -m pip install 'markdown-it-py>=4.2.0,<5' "
+                      "or install the package's requirements.txt", file=sys.stderr)
+            else:
+                print(f"obsidian-second-brain: {exc}", file=sys.stderr)
+            return 1
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"obsidian-second-brain: {exc}", file=sys.stderr)
             return 1

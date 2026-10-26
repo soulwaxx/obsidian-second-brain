@@ -11,6 +11,8 @@ import stat
 import sys
 from typing import Any
 
+from markdown_it import MarkdownIt
+
 from module_loading import load_source
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,21 @@ finally:
     sys.path.remove(_MIDDLEWARE)
 _LIFECYCLE = load_source("evidence_report_lifecycle", str(_ROOT / "scripts/wiki_lifecycle.py"))
 _LEDGER = load_source("evidence_report_ledger", str(Path(__file__).with_name("evidence_ledger.py")))
+
+
+def _citation_marker(state: Any, silent: bool) -> bool:
+    match = re.match(r"\[\^([A-Za-z0-9._-]+)\]", state.src[state.pos:state.posMax])
+    if match is None or silent:
+        return False
+    token = state.push("text", "", 0)
+    token.content = match.group(0)
+    state.pos += len(match.group(0))
+    return True
+
+
+_MARKDOWN = MarkdownIt("commonmark", {"inline_definitions": True})
+_MARKDOWN.inline.ruler.before("emphasis", "evidence_citation", _citation_marker)
+_MARKDOWN.core.ruler.disable(["text_join"])
 
 
 class ReportError(ValueError):
@@ -97,7 +114,7 @@ def _structural(path: Path) -> dict[str, Any]:
         return {"status": "unavailable", "issues": [str(exc)]}
 
 
-def _local_reference(resource: str, vault: Path, existing: set[str]) -> str:
+def _local_reference(resource: str, vault: Path) -> str:
     value = resource.split("#", 1)[0].split("?", 1)[0]
     if not value:
         return "unresolved"
@@ -105,17 +122,40 @@ def _local_reference(resource: str, vault: Path, existing: set[str]) -> str:
         return "external-unchecked"
     if value.startswith("wiki/"):
         relative = value
+    elif value.startswith(".raw/"):
+        relative = value
     elif value.startswith("/") or value.startswith("."):
         return "unsafe-or-unresolved"
     else:
         return "external-unchecked"
-    return "resolved-in-vault" if relative in existing else "missing"
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return "unsafe-or-unresolved"
+    try:
+        parent_fd = _LIFECYCLE.secure_dir(vault.joinpath(*parts[:-1]), create=False)
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, ValueError):
+        return "unsafe-or-unresolved"
+    try:
+        try:
+            info = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return "missing"
+        return "resolved-in-vault" if stat.S_ISREG(info.st_mode) else "unsafe-or-unresolved"
+    except OSError:
+        return "unsafe-or-unresolved"
+    finally:
+        os.close(parent_fd)
 
 
-def _references(metadata: dict[str, Any], vault: Path, pages: set[str], records: dict[str, dict]) -> list[dict[str, Any]]:
+def _references(metadata: dict[str, Any], vault: Path, records: dict[str, dict]) -> list[dict[str, Any]]:
     entries = metadata.get("sources", [])
     if entries is None:
-        return []
+        entries = []
+    singleton = metadata.get("resource")
+    if isinstance(singleton, str):
+        entries = [{"resource": singleton}, *entries] if isinstance(entries, list) else [{"resource": singleton}, entries]
     if isinstance(entries, str):
         entries = [entries]
     elif not isinstance(entries, list):
@@ -140,10 +180,21 @@ def _references(metadata: dict[str, Any], vault: Path, pages: set[str], records:
             issues.append("invalid-source-id")
         if resource is not None and safe_resource is None:
             issues.append("invalid-source-resource")
-        if safe_identity and safe_identity in source_records:
-            state = {"current": "ledger-source-current", "stale": "ledger-source-stale", "unknown": "ledger-source-currentness-unknown"}[source_records[safe_identity]["freshness"]]
+        resource_state = _local_reference(safe_resource, vault) if safe_resource is not None else None
+        source_record = source_records.get(safe_identity) if safe_identity else None
+        if source_record is not None:
+            state = {"current": "ledger-source-current", "stale": "ledger-source-stale", "unknown": "ledger-source-currentness-unknown"}[source_record["freshness"]]
+            if safe_resource is not None:
+                if safe_resource != source_record["locator"]:
+                    issues.append("ledger-resource-mismatch")
+                if resource_state == "missing":
+                    issues.append("referenced-resource-missing")
+                elif resource_state == "unsafe-or-unresolved":
+                    issues.append("referenced-resource-unsafe-or-unresolved")
+                elif resource_state == "unresolved":
+                    issues.append("referenced-resource-unresolved")
         elif safe_resource is not None:
-            state = _local_reference(safe_resource, vault, pages)
+            state = resource_state
         elif safe_identity is not None:
             state = "missing-source-record" if safe_identity.startswith("source-") else "reference-id-only-unverified"
         else:
@@ -151,10 +202,40 @@ def _references(metadata: dict[str, Any], vault: Path, pages: set[str], records:
             if not issues:
                 issues.append("source-reference-needs-id-or-resource")
         reference = {"id": safe_identity, "resource": safe_resource, "state": state}
+        if source_record is not None and resource_state is not None:
+            reference["resourceState"] = resource_state
         if issues:
             reference["issues"] = issues
         result.append(reference)
     return result
+
+
+def _markdown_citations(text: str) -> set[str]:
+    text = re.sub(r"\A(?:\ufeff)?---[ \t]*\r?\n.*?^(?:---|\.\.\.)[ \t]*(?:\r?\n|$)", "", text, count=1, flags=re.MULTILINE | re.DOTALL)
+    environment: dict[str, Any] = {}
+    tokens = _MARKDOWN.parse(text, environment)
+    identities = set()
+    for token in tokens:
+        if token.type == "definition":
+            match = re.fullmatch(r"\^([A-Za-z0-9._-]+)", token.meta.get("label", ""), flags=re.IGNORECASE)
+            if match:
+                identities.add(match.group(1))
+            continue
+        if token.type != "inline":
+            continue
+        children = token.children or []
+        for child in children:
+            if child.type == "text":
+                identities.update(re.findall(r"\[\^([A-Za-z0-9._-]+)\]", child.content))
+        for index, child in enumerate(children):
+            if child.type != "link_open" or index + 2 >= len(children):
+                continue
+            label = children[index + 1]
+            if label.type == "text" and children[index + 2].type == "link_close":
+                match = re.fullmatch(r"\^([A-Za-z0-9._-]+)", label.content)
+                if match:
+                    identities.add(match.group(1))
+    return identities
 
 
 def _citations(text: str, metadata: dict[str, Any]) -> list[dict[str, str]]:
@@ -162,7 +243,8 @@ def _citations(text: str, metadata: dict[str, Any]) -> list[dict[str, str]]:
     source_ids = {entry.get("id") for entry in source_entries
                   if isinstance(entry, dict) and isinstance(entry.get("id"), str)} if isinstance(source_entries, list) else set()
     result = []
-    for identity in sorted(set(re.findall(r"\[\^([A-Za-z0-9._-]+)\](?!:)", text))):
+    identities = _markdown_citations(text)
+    for identity in sorted(identities):
         result.append({"id": identity, "state": "source-entry-present" if identity in source_ids else "missing-source-entry"})
     return result
 
@@ -247,7 +329,6 @@ def build_report(vault: Path, as_of: str | date | None = None) -> dict[str, Any]
     records, ledger = _load_ledger(vault)
     candidates = sorted(path for path in wiki.rglob("*") if path.is_file() and path.name.casefold().endswith(".md")
                         and _INDEX.eligible(path, vault))
-    page_paths = {path.relative_to(vault).as_posix() for path in candidates}
     pages = []
     for path in candidates:
         relative = path.relative_to(vault).as_posix()
@@ -269,7 +350,7 @@ def build_report(vault: Path, as_of: str | date | None = None) -> dict[str, Any]
             freshness_issues.append("invalid-stale-after")
         else:
             freshness_status = "stale" if expiry < report_date else "current-through-as-of"
-        references = _references(metadata, vault, page_paths, records)
+        references = _references(metadata, vault, records)
         citations = _citations(text, metadata)
         claims = _claims(metadata, records)
         issues = list(freshness_issues)

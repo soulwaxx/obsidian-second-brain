@@ -92,6 +92,24 @@ postwrite_captured "$vault/wiki/topic/new page.md"
 (cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize --owner "claude:$TEST_SESSION")
 grep -Fq '**Update**' "$vault/wiki/log.md"
 
+# A foreign Claude reader cannot bypass writer ownership through a missing index.
+mkdir -p "$vault/wiki/fresh"
+capture_with_prewrite "$vault/wiki/fresh/first-page.md"
+read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/fresh/index.md" '{session_id:"fresh-reader",tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
+printf '%s' "$read_result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+cat >"$vault/wiki/fresh/first-page.md" <<'EOF'
+---
+type: note
+title: Fresh First Page
+---
+# Fresh First Page
+EOF
+postwrite_captured "$vault/wiki/fresh/first-page.md"
+(cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize --owner "claude:$TEST_SESSION")
+[ -f "$vault/wiki/fresh/index.md" ]
+read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/fresh/index.md" '{session_id:"fresh-reader",tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
+[ "$read_result" = clean ]
+
 # Reserved files at any depth/case, traversal, vault settings/source, and unsafe symlinks are denied.
 for target in "$vault/wiki/index.md" "$vault/wiki/topic/INDEX.MD" "$vault/wiki/topic/Log.md" \
   "$vault/.raw/secret" "$vault/.obsidian/app.json" "$vault/.vault-meta/cache" "$vault/.git/config" \
@@ -100,6 +118,25 @@ for target in "$vault/wiki/index.md" "$vault/wiki/topic/INDEX.MD" "$vault/wiki/t
     echo "protected destination accepted: $target" >&2; exit 1
   fi
 done
+# Case-equivalent spellings are protected on case-insensitive filesystems,
+# while unrelated case-distinct paths remain ordinary paths on Linux.
+wiki_alias="$vault/WIKI"
+if [ "$wiki_alias" -ef "$vault/wiki" ]; then
+  result=$(cd "$caller" && jq -nc --arg p "$wiki_alias/index.md" '{session_id:"case-alias",tool_name:"Write",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+fi
+vault_alias="$work/VAULT"
+if [ "$vault_alias" -ef "$vault" ]; then
+  result=$(cd "$caller" && jq -nc --arg p "$vault_alias/wiki/index.md" '{session_id:"vault-prefix-alias",tool_name:"Write",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+  result=$(cd "$caller" && jq -nc --arg p "$vault_alias/wiki/topic/ordinary-alias.md" '{session_id:"vault-prefix-alias-page",tool_name:"Write",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+  capture_with_prewrite "$vault/wiki/topic/new page.md"
+  result=$(cd "$caller" && jq -nc --arg p "$vault_alias/wiki/topic/index.md" '{session_id:"case-alias-reader",tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+  postwrite_captured "$vault/wiki/topic/new page.md"
+  (cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize --owner "claude:$TEST_SESSION")
+fi
 mkdir -p "$work/outside"
 ln -s "$work/outside" "$vault/wiki/escape"
 if (cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" guard "$vault/wiki/escape/new.md") >/dev/null 2>&1; then

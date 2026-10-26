@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
+import { installedPackage } from "./pi-runtime-paths.mjs";
 
 const [source, hook, middleware] = process.argv.slice(2);
 if (!source || !hook || !middleware) throw new Error("extension, hook, and middleware paths required");
@@ -12,7 +14,6 @@ try {
   const vault = path.join(tmp, "vault");
   fs.mkdirSync(path.join(vault, "wiki", "topic"), { recursive: true });
   fs.mkdirSync(path.join(vault, "wiki", ".raw"));
-  fs.writeFileSync(path.join(vault, "wiki", "index.md"), "# Test TOC\\n");
   fs.mkdirSync(path.join(tmp, "extensions"), { recursive: true });
   fs.mkdirSync(path.join(tmp, "hooks"), { recursive: true });
   fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
@@ -38,6 +39,60 @@ try {
   assert.equal(await call("outside.md"), undefined);
   for (const p of ["wiki/index.md", "wiki/topic/index.md", "wiki/log.md", "wiki/.raw/secret.env"]) {
     assert.equal((await call(p))?.block, true, `expected block: ${p}`);
+  }
+  const savedHome = process.env.HOME;
+  const initialConfig = fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8");
+  process.env.HOME = tmp;
+  try {
+    const runtime = installedPackage();
+    const hostWrite = runtime
+      ? (await import(pathToFileURL(path.join(runtime, "dist/core/tools/write.js")))).createWriteTool(vault)
+      : null;
+    const spellings = [
+      (p) => `@${p}`,
+      (p) => pathToFileURL(p).href,
+      (p) => `~/${path.relative(tmp, p)}`,
+      (p) => `@${pathToFileURL(p).href}`,
+      (p) => p.replace("with space", "with\u202Fspace"),
+    ];
+    fs.mkdirSync(path.join(vault, "wiki/with space"));
+    for (const [i, spelling] of spellings.entries()) {
+      for (const target of ["wiki/index.md", "wiki/with space/log.md", ".obsidian/app.json", ".raw/secret.txt"]) {
+        assert.equal((await call(spelling(path.join(vault, target))))?.block, true, `alternate path must be guarded: ${target}, spelling ${i}`);
+      }
+      const target = path.join(vault, `wiki/with space/alias-${i}.md`);
+      const event = { toolCallId: `path-alias-${i}`, toolName: "write", input: { path: spelling(target), content: "---\ntype: note\n---\nAlias page.\n" } };
+      assert.equal(await handlers.get("tool_call")(event, ctx), undefined);
+      const pending = JSON.parse(fs.readFileSync(path.join(vault, ".vault-meta/lifecycle/state.json"), "utf8"));
+      assert.ok(pending.pending[path.join(fs.realpathSync(path.dirname(target)), path.basename(target))], "alternate path must capture the actual destination");
+      if (hostWrite) await hostWrite.execute(event.toolCallId, event.input);
+      else fs.writeFileSync(target, event.input.content);
+      await handlers.get("tool_result")({ ...event, isError: false }, ctx);
+      await handlers.get("turn_end")({}, ctx);
+      assert.ok(fs.readFileSync(path.join(vault, "wiki/with space/index.md"), "utf8").includes(`alias-${i}.md`));
+      const navigation = path.join(vault, "wiki/with space/index.md");
+      assert.equal(await handlers.get("tool_call")({ toolName: "read", input: { path: spelling(navigation) } }, ctx), undefined);
+      if (runtime) {
+        const hostRead = (await import(pathToFileURL(path.join(runtime, "dist/core/tools/read.js")))).createReadTool();
+        const read = await hostRead.execute(`path-read-${i}`, { path: spelling(navigation) });
+        assert.ok(JSON.stringify(read).includes(`alias-${i}.md`), "installed Pi read must resolve the same navigation destination");
+      }
+    }
+    fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault }));
+    const tildeCopy = path.join(tmp, "extensions/obsidian-tilde.ts");
+    fs.writeFileSync(tildeCopy, text.replace(importLine, "type ExtensionAPI = unknown;"));
+    process.env.OBSIDIAN_AGENT_CONFIG = "~/properties.json";
+    delete process.env.OBSIDIAN_VAULT_PATH;
+    const tildeHandlers = new Map();
+    (await import(pathToFileURL(tildeCopy))).default({ on: (name, handler) => tildeHandlers.set(name, handler) });
+    assert.match((await tildeHandlers.get("before_agent_start")({}, ctx)).message.content, /Configured Obsidian wiki:/);
+    assert.match(execFileSync("bash", [hook, "start"], { cwd: tmp, encoding: "utf8", env: process.env }), /Configured Obsidian wiki:/);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    process.env.OBSIDIAN_AGENT_CONFIG = path.join(tmp, "properties.json");
+    fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, initialConfig);
+    process.env.OBSIDIAN_VAULT_PATH = vault;
   }
   fs.symlinkSync(path.join(vault, "wiki", "topic"), path.join(vault, "wiki", "alias"));
   assert.equal((await call("wiki/alias/page.md", "edit"))?.block, true);
@@ -192,11 +247,55 @@ try {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(siblingReadFinished, true, "in-flight wiki read must return a bounded block instead of waiting forever for a missing callback");
   assert.equal(siblingReadResult?.block, true, "sibling navigation must be blocked while the writer tool is still active");
+  const alternateVaultCase = path.join(path.dirname(fs.realpathSync(vault)), path.basename(vault).replace(/[a-z]/gi, (c) => c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+  if (fs.existsSync(alternateVaultCase) && fs.realpathSync(alternateVaultCase) === fs.realpathSync(vault)) {
+    assert.equal((await featureHandlers.get("tool_call")({ toolName: "read", input: { path: path.join(alternateVaultCase, "wiki/topic/index.md") } }, ctx))?.block, true,
+      "case-equivalent navigation reads must remain blocked during a foreign active writer");
+  }
   await featureHandlers.get("tool_result")({ toolCallId: "write-1", toolName: "write", input: { path: disabledPage }, isError: false }, ctx);
   await siblingRead;
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "read", input: { path: "wiki/topic/index.md" } }, ctx), undefined,
     "navigation becomes available after the writer result is settled and synchronized");
+
+  // Missing generated indexes are still navigation barriers and trigger first-page reconciliation.
+  const freshDir = path.join(vault, "wiki/fresh");
+  fs.mkdirSync(freshDir);
+  const freshPage = path.join(freshDir, "first-page.md");
+  const freshWrite = { toolCallId: "fresh-first-page", toolName: "write", input: { path: freshPage } };
+  await featureHandlers.get("tool_call")(freshWrite, ctx);
+  fs.writeFileSync(freshPage, "---\ntype: note\ntitle: First Page\n---\n# First Page\n");
+  await featureHandlers.get("tool_result")({ ...freshWrite, isError: false }, ctx);
+  const freshIndex = path.join(freshDir, "index.md");
+  assert.equal(fs.existsSync(freshIndex), false, "postwrite alone must leave first-page navigation pending");
+  assert.equal(await featureHandlers.get("tool_call")({ toolName: "read", input: { path: freshIndex } }, ctx), undefined,
+    "a missing canonical index read must finalize the first page before Pi attempts the read");
+  assert.match(fs.readFileSync(freshIndex, "utf8"), /First Page/);
+
+  // Foreign ownership blocks a reader of a not-yet-generated index, then the same reader retries.
+  const foreignDir = path.join(vault, "wiki/foreign-fresh");
+  fs.mkdirSync(foreignDir);
+  const foreignPage = path.join(foreignDir, "first-page.md");
+  const foreignCtx = { ...ctx, sessionManager: { getSessionId: () => "pi-foreign-writer" } };
+  const freshReaderCtx = { ...ctx, sessionManager: { getSessionId: () => "pi-fresh-reader" } };
+  const foreignWrite = { toolCallId: "foreign-fresh-page", toolName: "write", input: { path: foreignPage } };
+  await featureHandlers.get("tool_call")(foreignWrite, foreignCtx);
+  fs.writeFileSync(foreignPage, "---\ntype: note\ntitle: Foreign First Page\n---\n# Foreign First Page\n");
+  await featureHandlers.get("tool_result")({ ...foreignWrite, isError: false }, foreignCtx);
+  const foreignIndex = path.join(foreignDir, "index.md");
+  assert.equal((await featureHandlers.get("tool_call")({ toolName: "read", input: { path: foreignIndex } }, freshReaderCtx))?.block, true,
+    "reader must not bypass foreign pending ownership when the generated index is absent");
+  await featureHandlers.get("turn_end")({}, foreignCtx);
+  assert.equal(await featureHandlers.get("tool_call")({ toolName: "read", input: { path: foreignIndex } }, freshReaderCtx), undefined,
+    "the same reader must retry missing-index finalization after the foreign writer settles");
+  assert.match(fs.readFileSync(foreignIndex, "utf8"), /Foreign First Page/);
+
   const canonicalVaultForAlias = fs.realpathSync(vault);
+  const caseAliasVault = path.join(path.dirname(canonicalVaultForAlias), path.basename(canonicalVaultForAlias).swapCase?.() ?? path.basename(canonicalVaultForAlias).replace(/[a-z]/gi, (c) => c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+  if (fs.existsSync(caseAliasVault) && fs.realpathSync(caseAliasVault) === canonicalVaultForAlias) {
+    const caseAliasCtx = { ...ctx, cwd: caseAliasVault };
+    assert.equal((await featureHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/topic/alias-case.md" } }, caseAliasCtx))?.block, true,
+      "case-equivalent vault-prefix writes must be refused rather than escaping lifecycle capture");
+  }
   if (process.platform === "darwin" && canonicalVaultForAlias.startsWith("/private/var/")) {
     const aliasVault = canonicalVaultForAlias.replace(/^\/private\/var\//, "/var/");
     assert.equal(fs.realpathSync(aliasVault), canonicalVaultForAlias);
@@ -416,6 +515,9 @@ try {
   assert.match(fs.readFileSync(sharedLog, "utf8"), /\*\*Update\*\*.*paused-before\.md/s,
     "prewrite existence must classify the settled write as Update");
   assert.doesNotMatch(fs.readFileSync(sharedLog, "utf8"), /\*\*Creation\*\*.*paused-before\.md/s);
+
+  assert.equal(await readerHandlers.get("tool_call")({ toolName: "read", input: { path: sharedIndex } }, readerCtx), undefined,
+    "same reader must retry durable finalization after the foreign writer settles");
 
   // Two-session pause after a partial write: readers still cannot reconcile or
   // publish bytes until the owning writer returns a settled valid result.

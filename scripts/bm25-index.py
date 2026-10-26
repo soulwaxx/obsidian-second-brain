@@ -17,7 +17,7 @@ RESERVED = {"index.md", "log.md", "_plan.md"}
 MAX_COUNT = 2**31 - 1
 
 
-def eligible(path, root):
+def eligible(path, root, *, discovery=False):
     root = Path(root).resolve()
     wiki = root / "wiki"
     if wiki.is_symlink():
@@ -26,7 +26,11 @@ def eligible(path, root):
         rel = path.relative_to(wiki)
         resolved = path.resolve(strict=True)
         resolved.relative_to(wiki.resolve(strict=True))
-    except (OSError, ValueError):
+    except ValueError:
+        return False
+    except OSError:
+        if discovery:
+            raise
         return False
     return (not path.is_symlink()
             and path.is_file()
@@ -85,12 +89,34 @@ def tokens(text):
     return [word.casefold() for word in TOKEN.findall(text)]
 
 
+def markdown_sources(root):
+    """Walk visible wiki directories without suppressing traversal errors."""
+    wiki = Path(root) / "wiki"
+    if wiki.is_symlink() or not wiki.is_dir():
+        raise FileNotFoundError(f"wiki directory is missing or symlinked: {wiki}")
+    found = []
+
+    def walk(directory):
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    walk(path)
+                elif entry.is_file(follow_symlinks=False) and entry.name.casefold().endswith(".md"):
+                    if eligible(path, root, discovery=True):
+                        found.append(path)
+
+    walk(wiki)
+    return sorted(found)
+
+
 def source_manifest(root):
     """Hashes of all eligible original Markdown sources, including empty pages."""
     root = Path(root).resolve()
     return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted((root / "wiki").rglob("*"))
-            if path.name.casefold().endswith(".md") and eligible(path, root)}
+            for path in markdown_sources(root)}
 
 
 def output_identity(output):
@@ -110,13 +136,7 @@ def build(root=Path("."), output=None):
     history = {}
     titles = {}
     historical_titles = {}
-    wiki = root / "wiki"
-    if wiki.is_symlink() or not wiki.is_dir():
-        raise FileNotFoundError(f"wiki directory is missing or symlinked: {wiki}")
-    for path in sorted(candidate for candidate in wiki.rglob("*")
-                       if candidate.is_file() and candidate.name.casefold().endswith(".md")):
-        if not eligible(path, root):
-            continue
+    for path in markdown_sources(root):
         rel = path.relative_to(root).as_posix()
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != source_hashes.get(rel):

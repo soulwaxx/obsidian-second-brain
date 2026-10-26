@@ -86,6 +86,44 @@ class CliTests(unittest.TestCase):
                 self.assertIn("retrieval", report)
                 self.assertEqual(state_path.read_bytes(), payload)
 
+    def test_doctor_json_reports_malformed_config_shapes_without_crashing(self):
+        for invalid in (
+            {"vaultPath": str(self.vault), "features": []},
+            {"vaultPath": str(self.vault), "features": "invalid"},
+            {"vaultPath": str(self.vault), "features": {"retrievalRefresh": "false"}},
+            {"vaultPath": []},
+            [],
+        ):
+            with self.subTest(config=invalid):
+                self.config.write_text(json.dumps(invalid), encoding="utf-8")
+                result = self.run_cli("doctor", "--json")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertFalse(report["config"]["valid"])
+                self.assertTrue(report["config"]["error"])
+                self.assertIn("retrieval", report)
+                if isinstance(invalid, dict) and isinstance(invalid.get("vaultPath"), str) and not isinstance(invalid.get("features"), dict):
+                    self.assertIsNone(report["retrieval"]["automaticRefreshEnabled"])
+
+    def test_doctor_reports_automatic_refresh_defaults_for_valid_feature_settings(self):
+        for features, expected in (
+            ("omitted", True),
+            (None, True),
+            ({}, True),
+            ({"retrievalRefresh": True}, True),
+            ({"retrievalRefresh": False}, False),
+        ):
+            with self.subTest(features=features):
+                config = {"vaultPath": str(self.vault)}
+                if features != "omitted":
+                    config["features"] = features
+                self.config.write_text(json.dumps(config), encoding="utf-8")
+                result = self.run_cli("doctor", "--json")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertTrue(report["config"]["valid"], report)
+                self.assertIs(expected, report["retrieval"]["automaticRefreshEnabled"])
+
     def test_blank_vault_override_falls_back_to_config_like_hook(self):
         self.env["OBSIDIAN_VAULT_PATH"] = ""
         doctor = self.run_cli("doctor", "--json")

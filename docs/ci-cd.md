@@ -11,7 +11,9 @@ check will not appear on branches that still use the old workflow files.
 
 - `CI` runs the full macOS/Linux source, release, packed-runtime, and isolated
   install checks on PR code changes. It also supports merge-group and manual
-  diagnostic runs. It does not repeat the full matrix after a merge.
+  diagnostic runs. After installing the agent CLIs, it requires the real Pi
+  SDK runtime contract to pass; missing runtime discovery fails rather than
+  silently skipping. It does not repeat the full matrix after a merge.
 - `PR metadata` validates Conventional Commit titles. Title/body edits run only
   this inexpensive workflow, without cancelling or restarting the code checks.
 - After both OS jobs pass, PR CI records its repository, run/attempt, PR head,
@@ -27,7 +29,11 @@ check will not appear on branches that still use the old workflow files.
 - npm trusted publishing uses OIDC with provenance. There is no `NPM_TOKEN`
   dependency, main-branch release commit, approval environment, or manual
   client-verification gate. Confirm npm's trusted publisher authorizes
-  `soulwaxx/obsidian-second-brain` and `release.yml` before rollout. An unused
+  `soulwaxx/obsidian-second-brain` and `release.yml`, permits direct `npm publish`,
+  and has **Allow npm dist-tag** enabled before rollout. Dist-tag permission is
+  independent of publish permission and is required when recovery promotes
+  `latest`; see [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+  An unused
   old token should be revoked by its owner after confirming OIDC publication.
 
 The GitHub marketplace fetches the plugin from npm `latest`; its entry has no
@@ -105,9 +111,13 @@ or silently fall back to an older notes-less recovery implementation. It:
    same full PR descriptions. It preflights details before missing-output writes
    and binds the range to the tagged source and its preceding stable ancestor
    tag, not later main changes. A first release has no preceding comparison.
-4. Preserves existing outputs and never downgrades npm `latest`.
+4. Preserves existing outputs and never downgrades GitHub's Latest release or
+   npm `latest`. Before creating a missing GitHub Release, recovery reads the
+   current `/releases/latest` stable release and explicitly sets `make_latest`
+   to `false` unless the recovered version is newer (or no stable release
+   exists). Prereleases do not become Latest.
 
-A missing npm package is initially published under `recovered`; `latest` is
+A missing npm package is initially published under `recovered`; npm `latest` is
 advanced only when appropriate. A repeat run with complete outputs is read-only.
 Authentication/network failures are not interpreted as missing outputs.
 

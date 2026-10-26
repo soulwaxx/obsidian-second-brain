@@ -56,6 +56,106 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(score["ku@1"], 0)
             self.assertTrue(score["staleBeforeCurrent"])
 
+    def test_projected_current_evidence_keeps_answer_support_credit_with_trailing_strike(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "wiki").mkdir()
+            source = "The timeout is 30 seconds. ~~90 seconds.~~"
+            (vault / "wiki/timeout.md").write_text(source)
+            case = {"intent": "current", "queries": {"en": "current timeout", "it": "timeout attuale"},
+                    "targets": [{"path": "wiki/timeout.md", "evidence": [{"start": 0,
+                    "end": len(source), "text": source, "label": "current", "supportsAnswer": True}]}]}
+            result = {"path": "wiki/timeout.md", "charStart": 0, "charEnd": len(source),
+                      "excerpt": "The timeout is 30 seconds."}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["current"])
+            self.assertEqual(score["ku@1"], 1)
+            self.assertEqual(score["answerHit"], 1)
+
+    def test_projected_evidence_with_masked_leading_line_uses_actual_search_excerpt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "wiki").mkdir()
+            source = "~~The timeout was 90 seconds.~~\nThe timeout is 30 seconds.\n"
+            page = vault / "wiki/timeout.md"
+            page.write_text(source)
+            E.CLI.INDEX_MODULE.build(vault)
+            query = "current timeout"
+            result = next(row for row in E.CLI.search(vault.resolve(), query, 10)["results"]
+                          if row["path"] == "wiki/timeout.md")
+            self.assertEqual(result["excerpt"], "The timeout is 30 seconds.")
+            self.assertEqual((result["lineStart"], result["lineEnd"]), (2, 2))
+            case = {"intent": "current", "queries": {"en": query, "it": "timeout attuale"},
+                    "targets": [{"path": "wiki/timeout.md", "evidence": [{"start": 0,
+                    "end": len(source), "text": source, "label": "current", "supportsAnswer": True}]}]}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["current"])
+            self.assertEqual(score["ku@1"], 1)
+            self.assertEqual(score["answerHit"], 1)
+
+    def test_fully_masked_current_span_does_not_receive_answer_credit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "wiki").mkdir()
+            source = "~~The timeout was 90 seconds.~~"
+            (vault / "wiki/timeout.md").write_text(source)
+            case = {"intent": "current", "queries": {"en": "current timeout", "it": "timeout attuale"},
+                    "targets": [{"path": "wiki/timeout.md", "evidence": [{"start": 0,
+                    "end": len(source), "text": source, "label": "current", "supportsAnswer": True}]}]}
+            result = {"path": "wiki/timeout.md", "charStart": 0, "charEnd": len(source), "excerpt": ""}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["unjudgeable"])
+            self.assertIsNone(score["ku@1"])
+            self.assertIsNone(score["answerHit"])
+
+    def test_historical_evidence_keeps_unprojected_answer_credit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "wiki").mkdir()
+            source = "~~The timeout was 90 seconds.~~"
+            (vault / "wiki/timeout.md").write_text(source)
+            case = {"intent": "historical", "queries": {"en": "timeout 2025-02-14", "it": "timeout 2025-02-14"},
+                    "targets": [{"path": "wiki/timeout.md", "evidence": [{"start": 0,
+                    "end": len(source), "text": source, "label": "stale", "supportsAnswer": True}]}]}
+            result = {"path": "wiki/timeout.md", "charStart": 0, "charEnd": len(source), "excerpt": source}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["stale"])
+            self.assertEqual(score["answerHit"], 1)
+
+    def test_truncated_current_evidence_does_not_receive_answer_credit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "wiki").mkdir()
+            source = "The timeout is 30 seconds. All workers use this value."
+            (vault / "wiki/timeout.md").write_text(source)
+            case = {"intent": "current", "queries": {"en": "current timeout", "it": "timeout attuale"},
+                    "targets": [{"path": "wiki/timeout.md", "evidence": [{"start": 0,
+                    "end": len(source), "text": source, "label": "current", "supportsAnswer": True}]}]}
+            cut = len("The timeout is 30 seconds.")
+            result = {"path": "wiki/timeout.md", "charStart": 0, "charEnd": cut,
+                      "excerpt": "The timeout is 30 seconds."}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertEqual(score["exposedLabels"], ["unjudgeable"])
+            self.assertIsNone(score["ku@1"])
+            self.assertIsNone(score["answerHit"])
+
+    def test_evaluation_hit_and_recall_depth_is_independent_of_mrr_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            target = gold["intents"][0]["targets"][0]["path"]
+            results = [{"path": "wiki/other.md", "score": 2}, {"path": target, "score": 1}]
+            response = {"results": results, "fallback": None, "freshness": "current-by-hash"}
+            with patch.object(E.CLI, "search", return_value=response):
+                report = E.evaluate(vault, gold, cutoff=1)
+            metrics = report["queries"][0]["methods"]["bm25"]["metrics"]
+            self.assertEqual(metrics["mrr@1"], 0)
+            self.assertEqual(metrics["hit@3"], 1)
+            self.assertEqual(metrics["recall@3"], 1)
+            self.assertEqual(metrics["hit@10"], 1)
+            self.assertEqual(metrics["recall@10"], 1)
+
     def test_repeated_text_beyond_excerpt_is_not_visible_gold_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
@@ -221,7 +321,31 @@ class EvaluationTests(unittest.TestCase):
             thread.start()
             url = f"http://127.0.0.1:{server.server_port}"
             try:
+                (vault / "wiki/other.md").write_text("# Other\n" + "\n".join(
+                    f"Paragraph {index}. " + ("distinct semantic content " * 35) for index in range(8)))
+                E.CLI.INDEX_MODULE.build(vault)
                 E.CHUNKS.build(vault, url, "fixture")
+                complete = E.evaluate(vault, gold, live=True, model="fixture", endpoint=url)
+                self.assertTrue(all(row["semanticStatus"] == "complete" for row in complete["queries"]))
+                cache_path = vault / ".vault-meta/retrieval/chunks.json"
+                saved_cache = cache_path.read_bytes()
+                cache = json.loads(saved_cache)
+                cache["pages"].pop("wiki/archive.md")
+                cache_path.write_text(json.dumps(cache))
+                missing_record = E.evaluate(vault, gold, live=True, model="fixture", endpoint=url)
+                self.assertTrue(all(row["semanticStatus"] == "partial" for row in missing_record["queries"]))
+                cache = json.loads(saved_cache)
+                self.assertGreater(len(cache["pages"]["wiki/other.md"]["chunks"]), 1)
+                cache["pages"]["wiki/other.md"]["chunks"].pop()
+                cache_path.write_text(json.dumps(cache))
+                missing_tail = E.evaluate(vault, gold, live=True, model="fixture", endpoint=url)
+                self.assertTrue(all(row["semanticStatus"] == "partial" for row in missing_tail["queries"]))
+                cache = json.loads(saved_cache)
+                cache["pages"]["wiki/archive.md"]["chunks"][0]["vector"] = [1.0, 2.0, 3.0]
+                cache_path.write_text(json.dumps(cache))
+                bad_dimension = E.evaluate(vault, gold, live=True, model="fixture", endpoint=url)
+                self.assertTrue(all(row["semanticStatus"] == "partial" for row in bad_dimension["queries"]))
+                cache_path.write_bytes(saved_cache)
                 (vault / "wiki/missing.md").write_text("# Missing\nNot built semantically.\n")
                 E.CLI.INDEX_MODULE.build(vault)
                 with patch.object(E.CHUNKS, "embeddings", wraps=E.CHUNKS.embeddings) as embed:

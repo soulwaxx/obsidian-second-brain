@@ -111,6 +111,18 @@ class WikiBatchTests(unittest.TestCase):
         with self.assertRaises(MODULE.BatchError):
             self.inspect(self.bundle(self.operation("wiki/node", PAGE_A), self.operation("wiki/node/child.md", PAGE_B)))
 
+    def test_case_colliding_shared_directory_prefixes_rejected_during_inspection(self):
+        bundle = self.bundle(self.operation("wiki/Topic/Inner/a.md", PAGE_A),
+                             self.operation("wiki/topic/inner/b.md", PAGE_B))
+        before = self.vault_snapshot()
+        with self.assertRaisesRegex(MODULE.BatchError, "case-insensitive directory collision"):
+            self.inspect(bundle)
+        self.assertEqual(self.vault_snapshot(), before)
+        with self.assertRaisesRegex(MODULE.BatchError, "case-insensitive directory collision"):
+            self.inspect(self.bundle(self.operation("wiki/Topic/a.md", PAGE_A),
+                                     self.operation("wiki/topic/b.md", PAGE_B)))
+        self.assertEqual(self.vault_snapshot(), before)
+
     def test_rejects_unapproved_content_and_user_preimage_drift(self):
         bundle = self.bundle(self.operation())
         plan = self.inspect(bundle)
@@ -135,6 +147,65 @@ class WikiBatchTests(unittest.TestCase):
         with self.assertRaises(MODULE.BatchError):
             MODULE.recover(self.vault, result["batchId"])
         self.assertEqual((self.vault / "wiki/beta.md").read_text(), "app edit\n")
+
+    def test_recovery_rejects_reordered_duplicate_and_invalid_journal_indexes(self):
+        variants = ((1, 0), (-1, 1), (0, 2), (0, 0), (True, 1))
+        for indexes in variants:
+            with self.subTest(indexes=indexes), tempfile.TemporaryDirectory() as temp:
+                vault = Path(temp) / "vault"
+                (vault / "wiki").mkdir(parents=True)
+                config = Path(temp) / "properties.json"
+                bundle = self.bundle(self.operation(".raw/agent-captures/a.txt", "approved A"),
+                                     self.operation(".raw/agent-captures/b.txt", "approved B"))
+                plan = MODULE.inspect(vault, bundle, config, "source-capture")
+                save = MODULE._save_journal
+
+                def persist_then_interrupt(root, journal):
+                    save(root, journal)
+                    if journal["phase"] == "approved":
+                        raise OSError("stop after approved journal")
+
+                MODULE._save_journal = persist_then_interrupt
+                try:
+                    with self.assertRaisesRegex(OSError, "approved journal"):
+                        MODULE.apply(vault, bundle, config, plan["planHash"], "source-capture")
+                finally:
+                    MODULE._save_journal = save
+                journal_path = next((vault / ".vault-meta/lifecycle/batches").glob("*.json"))
+                journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                for entry, index in zip(journal["entries"], indexes):
+                    entry["index"] = index
+                journal_path.write_text(json.dumps(journal), encoding="utf-8")
+                with self.assertRaisesRegex(MODULE.BatchError, "indexes do not match"):
+                    MODULE.recover(vault, journal["batchId"])
+                self.assertFalse((vault / ".raw/agent-captures/a.txt").exists())
+                self.assertFalse((vault / ".raw/agent-captures/b.txt").exists())
+
+    def test_create_only_publication_refuses_boundary_arrival_and_cleans_temp(self):
+        bundle = self.bundle(self.operation(".raw/agent-captures/immutable.txt", "approved payload"))
+        plan = self.inspect(bundle, "source-capture")
+        destination = self.vault / ".raw/agent-captures/immutable.txt"
+        original_link = MODULE.os.link
+        arrived = {"done": False}
+
+        def arrival_then_link(src, dst, *args, **kwargs):
+            if dst == "immutable.txt" and not arrived["done"]:
+                arrived["done"] = True
+                destination.write_bytes(b"concurrent owner bytes")
+            return original_link(src, dst, *args, **kwargs)
+
+        MODULE.os.link = arrival_then_link
+        try:
+            with self.assertRaisesRegex(MODULE.BatchError, "create-only target appeared"):
+                MODULE.apply(self.vault, bundle, self.config, plan["planHash"], "source-capture")
+        finally:
+            MODULE.os.link = original_link
+        self.assertTrue(arrived["done"])
+        self.assertEqual(destination.read_bytes(), b"concurrent owner bytes")
+        self.assertEqual(list(destination.parent.glob(".batch-*.tmp")), [])
+        journal = json.loads(next((self.vault / ".vault-meta/lifecycle/batches").glob("*.json")).read_text())
+        self.assertEqual(journal["phase"], "approved")
+        self.assertEqual(journal["entries"][0]["state"], "publishing")
 
     def test_recovery_after_first_publication_and_journal_interruption(self):
         bundle = self.bundle(self.operation(), self.operation("wiki/beta.md", PAGE_B))
