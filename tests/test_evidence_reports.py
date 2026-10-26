@@ -120,6 +120,34 @@ class EvidenceReportTests(unittest.TestCase):
         self.assertEqual(item["freshness"]["status"], "unknown")
         self.assertIn("invalid-stale-after", item["freshness"]["issues"])
 
+    def test_missing_markdown_parser_has_actionable_error_and_leaves_doctor_available(self):
+        modules = self.root / "without-parser"
+        modules.mkdir()
+        (modules / "markdown_it.py").write_text(
+            "raise ModuleNotFoundError('No module named markdown-it-py', name='markdown_it')\n",
+            encoding="utf-8",
+        )
+        env = {**os.environ, "OBSIDIAN_AGENT_CONFIG": str(self.config), "PYTHONPATH": str(modules)}
+        report = subprocess.run(
+            [sys.executable, str(CLI), "evidence-report", "--vault", str(self.vault), "--json"],
+            env=env, text=True, capture_output=True, timeout=3,
+        )
+        self.assertEqual(report.returncode, 1)
+        self.assertIn("evidence-report requires markdown-it-py", report.stderr)
+        self.assertIn("pip install 'markdown-it-py>=4.2.0,<5'", report.stderr)
+        doctor = subprocess.run(
+            [sys.executable, str(CLI), "doctor", "--vault", str(self.vault), "--json"],
+            env=env, text=True, capture_output=True, timeout=3,
+        )
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        self.assertEqual(json.loads(doctor.stdout)["vault"], str(self.vault.resolve()))
+        search = subprocess.run(
+            [sys.executable, str(CLI), "search", "local query", "--vault", str(self.vault), "--json"],
+            env=env, text=True, capture_output=True, timeout=3,
+        )
+        self.assertEqual(search.returncode, 0, search.stderr)
+        self.assertEqual(json.loads(search.stdout)["results"], [])
+
     def test_cli_report_json_as_of_is_read_only(self):
         (self.vault / "wiki/minimal.md").write_text("---\ntype: Note\n---\nText\n", encoding="utf-8")
         env = {**__import__("os").environ, "OBSIDIAN_AGENT_CONFIG": str(self.config)}
@@ -303,6 +331,334 @@ class EvidenceReportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), report)
         self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_singleton_and_raw_resource_locators_are_inspected_read_only(self):
+        (self.vault / ".raw").mkdir()
+        (self.vault / ".raw/source.txt").write_text("raw bytes", encoding="utf-8")
+        (self.vault / "wiki/existing.txt").write_text("local bytes", encoding="utf-8")
+        outside = self.root / "outside.txt"
+        outside.write_text("outside bytes", encoding="utf-8")
+        (self.vault / "wiki/linked.txt").symlink_to(outside)
+        page = self.vault / "wiki/sources.md"
+        page.write_text("""---
+type: source
+resource: wiki/missing.txt
+---
+Source.
+""", encoding="utf-8")
+        bundle = self.vault / "wiki/bundle.md"
+        bundle.write_text("""---
+type: source
+sources:
+  - id: raw
+    resource: .raw/source.txt
+  - id: absent
+    resource: .raw/absent.txt
+  - id: external
+    resource: https://example.test/source
+  - id: linked
+    resource: wiki/linked.txt
+---
+Bundle.
+""", encoding="utf-8")
+        before = self.snapshot(self.vault)
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        pages = {item["path"]: item for item in report["pages"]}
+        self.assertEqual(pages["wiki/sources.md"]["references"], [
+            {"id": None, "resource": "wiki/missing.txt", "state": "missing"}
+        ])
+        self.assertEqual([ref["state"] for ref in pages["wiki/bundle.md"]["references"]], [
+            "resolved-in-vault", "missing", "external-unchecked", "unsafe-or-unresolved"
+        ])
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_ledger_identity_does_not_hide_missing_or_conflicting_resource(self):
+        source = LEDGER.make_source("https://example.test/canonical", b"ledger snapshot", freshness="current")
+        self.write_record(source)
+        page = self.vault / "wiki/ledger-link.md"
+        page.write_text(
+            f"---\ntype: Note\nsources:\n  - id: {source['id']}\n"
+            f"    resource: wiki/missing.md\n  - id: {source['id']}\n"
+            f"    resource: https://example.test/other\n  - id: {source['id']}\n"
+            "    resource: https://example.test/canonical\n---\nText\n", encoding="utf-8"
+        )
+        before = self.snapshot(self.vault)
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        refs = report["pages"][0]["references"]
+        self.assertEqual([ref["state"] for ref in refs], ["ledger-source-current"] * 3)
+        self.assertEqual(refs[0]["resourceState"], "missing")
+        self.assertIn("referenced-resource-missing", refs[0]["issues"])
+        self.assertIn("ledger-resource-mismatch", refs[0]["issues"])
+        self.assertIn("ledger-resource-mismatch", refs[1]["issues"])
+        self.assertEqual(refs[2]["resourceState"], "external-unchecked")
+        self.assertNotIn("issues", refs[2])
+        self.assertIn("referenced-resource-missing", report["pages"][0]["issues"])
+        self.assertIn("ledger-resource-mismatch", report["pages"][0]["issues"])
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_citations_ignore_frontmatter_and_code_but_count_prose_and_definitions(self):
+        page = self.vault / "wiki/footnotes.md"
+        page.write_text(
+            "---\ntype: Note\nexample: '[^frontmatter]'\n---\n"
+            "Inline `[^inline]` and ``code `[^double-inline]` `` examples.\n"
+            "\\[^escaped] and \\\\[^double-escaped]. A real claim.[^real]\n"
+            "```markdown\nExample [^fenced]\n```\n~~~text\n[^tilde]\n~~~\n"
+            "    [^indented]\n\n[^defined]: Footnote definition text.\n", encoding="utf-8"
+        )
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        self.assertEqual(report["pages"][0]["citations"], [
+            {"id": "defined", "state": "missing-source-entry"},
+            {"id": "double-escaped", "state": "missing-source-entry"},
+            {"id": "real", "state": "missing-source-entry"},
+        ])
+        self.assertIn("missing-citation-source-entry", report["pages"][0]["issues"])
+
+    def test_unclosed_list_fence_does_not_hide_citation_after_list_ends(self):
+        page = self.vault / "wiki/unclosed-list-fence.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "- ~~~markdown\n"
+            "  [^literal]\n"
+            "\n"
+            "Real claim.[^real]\n",
+            encoding="utf-8",
+        )
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        before = self.snapshot(self.vault)
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        item = next(page for page in report["pages"] if page["path"] == "wiki/unclosed-list-fence.md")
+        self.assertEqual(item["citations"], expected)
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                        if page["path"] == "wiki/unclosed-list-fence.md")
+        self.assertEqual(cli_item["citations"], expected)
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_emphasis_like_footnote_identifiers_survive_parser_tokenization(self):
+        page = self.vault / "wiki/emphasis-like-citation.md"
+        page.write_text(
+            "---\ntype: Note\n---\nReal claim.[^source-_draft_]\n",
+            encoding="utf-8",
+        )
+        controls = self.vault / "wiki/citation-controls.md"
+        controls.write_text(
+            "---\ntype: Note\nsources:\n  - id: defined-_draft_\n"
+            "    resource: https://example.test/source\n---\n"
+            "A claim.[^missing] and [^defined-_draft_].\n"
+            "Escaped \\[^escaped-_draft_] and inline `[^code-_draft_]`.\n",
+            encoding="utf-8",
+        )
+        before = self.snapshot(self.vault)
+        expected = [{"id": "source-_draft_", "state": "missing-source-entry"}]
+        control_expected = [
+            {"id": "defined-_draft_", "state": "source-entry-present"},
+            {"id": "missing", "state": "missing-source-entry"},
+        ]
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        items = {item["path"]: item for item in report["pages"]}
+        self.assertEqual(items["wiki/emphasis-like-citation.md"]["citations"], expected)
+        self.assertIn("missing-citation-source-entry", items["wiki/emphasis-like-citation.md"]["issues"])
+        self.assertEqual(items["wiki/citation-controls.md"]["citations"], control_expected)
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_items = {item["path"]: item for item in json.loads(result.stdout)["pages"]}
+        self.assertEqual(cli_items["wiki/emphasis-like-citation.md"]["citations"], expected)
+        self.assertIn("missing-citation-source-entry", cli_items["wiki/emphasis-like-citation.md"]["issues"])
+        self.assertEqual(cli_items["wiki/citation-controls.md"]["citations"], control_expected)
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_container_footnote_definitions_preserve_original_citation_labels(self):
+        pages = (
+            ("blockquote-definition", "> [^note]: https://example.test/source\n"),
+            ("list-definition", "- [^note]: https://example.test/source\n"),
+        )
+        expected = [{"id": "note", "state": "source-entry-present"}]
+        for name, definition in pages:
+            with self.subTest(name=name):
+                page = self.vault / "wiki" / f"{name}.md"
+                page.write_text(
+                    "---\ntype: Note\nsources:\n  - id: note\n"
+                    "    resource: https://example.test/source\n---\n"
+                    "Claim.[^note]\n\n" + definition,
+                    encoding="utf-8",
+                )
+                before = self.snapshot(self.vault)
+                report = MODULE.build_report(self.vault, "2026-06-01")
+                item = next(page for page in report["pages"] if page["path"] == f"wiki/{name}.md")
+                self.assertEqual(item["citations"], expected)
+                self.assertNotIn("missing-citation-source-entry", item["issues"])
+                result = self.cli_report()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                                if page["path"] == f"wiki/{name}.md")
+                self.assertEqual(cli_item["citations"], expected)
+                self.assertNotIn("missing-citation-source-entry", cli_item["issues"])
+                self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_unclosed_list_fence_does_not_hide_later_citation(self):
+        page = self.vault / "wiki/unclosed-list-fence-no-blank.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "- ~~~markdown\n"
+            "  [^literal]\n"
+            "\nReal claim.[^real]\n",
+            encoding="utf-8",
+        )
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        before = self.snapshot(self.vault)
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        item = next(page for page in report["pages"] if page["path"] == "wiki/unclosed-list-fence-no-blank.md")
+        self.assertEqual(item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", item["issues"])
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                        if page["path"] == "wiki/unclosed-list-fence-no-blank.md")
+        self.assertEqual(cli_item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", cli_item["issues"])
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_list_item_fence_example_does_not_hide_later_citation(self):
+        page = self.vault / "wiki/list-fence.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "- ~~~markdown\n"
+            "  [^literal]\n"
+            "  ~~~\n\n"
+            "Real claim.[^real]\n",
+            encoding="utf-8",
+        )
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        self.assertEqual(report["pages"][0]["citations"], expected)
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["pages"][0]["citations"], expected)
+
+    def test_escaped_backticks_do_not_mask_citations_but_even_backslashes_do(self):
+        page = self.vault / "wiki/escaped-backticks.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "Escaped \\` marker. Claim.[^real] Another \\` marker.\n"
+            "Even \\\\`[^literal]\\\\` delimiters.\n",
+            encoding="utf-8",
+        )
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        self.assertEqual(report["pages"][0]["citations"], [
+            {"id": "real", "state": "missing-source-entry"}
+        ])
+
+    def test_inline_code_closing_backslash_does_not_expose_literal_footnote(self):
+        page = self.vault / "wiki/closing-backslash.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "Example `[^literal]\\`. Real claim.[^real]\n",
+            encoding="utf-8",
+        )
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        item = next(page for page in report["pages"] if page["path"] == "wiki/closing-backslash.md")
+        self.assertEqual(item["citations"], expected)
+        self.assertNotIn("literal", {citation["id"] for citation in item["citations"]})
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                        if page["path"] == "wiki/closing-backslash.md")
+        self.assertEqual(cli_item["citations"], expected)
+
+    def test_unmatched_inline_backticks_do_not_cross_paragraph_boundaries(self):
+        page = self.vault / "wiki/separate-paragraphs.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "An unmatched ` marker.\n\nReal claim.[^real]\n\nAnother ` marker.\n",
+            encoding="utf-8",
+        )
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        item = next(page for page in report["pages"] if page["path"] == "wiki/separate-paragraphs.md")
+        self.assertEqual(item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", item["issues"])
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                        if page["path"] == "wiki/separate-paragraphs.md")
+        self.assertEqual(cli_item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", cli_item["issues"])
+
+    def test_indented_paragraph_continuation_is_prose_not_code(self):
+        page = self.vault / "wiki/indented-paragraph.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "A factual paragraph\n"
+            "    continues here.[^real]\n",
+            encoding="utf-8",
+        )
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        item = next(page for page in report["pages"] if page["path"] == "wiki/indented-paragraph.md")
+        self.assertEqual(item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", item["issues"])
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                        if page["path"] == "wiki/indented-paragraph.md")
+        self.assertEqual(cli_item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", cli_item["issues"])
+
+    def test_blockquote_fence_ends_when_its_container_ends(self):
+        page = self.vault / "wiki/blockquote-fence-boundary.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "> ~~~markdown\n"
+            "> [^literal]\n"
+            "\n"
+            "Real claim.[^real]\n",
+            encoding="utf-8",
+        )
+        expected = [{"id": "real", "state": "missing-source-entry"}]
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        item = next(page for page in report["pages"] if page["path"] == "wiki/blockquote-fence-boundary.md")
+        self.assertEqual(item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", item["issues"])
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cli_item = next(page for page in json.loads(result.stdout)["pages"]
+                        if page["path"] == "wiki/blockquote-fence-boundary.md")
+        self.assertEqual(cli_item["citations"], expected)
+        self.assertIn("missing-citation-source-entry", cli_item["issues"])
+
+    def test_citation_code_masking_handles_multiline_spans_and_blockquote_fences(self):
+        page = self.vault / "wiki/code-examples.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "Example `literal\n[^multiline]` text.\n"
+            "> ~~~markdown\n> [^blockquote]\n> ~~~\n",
+            encoding="utf-8",
+        )
+        before = self.snapshot(self.vault)
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        self.assertEqual(report["pages"][0]["citations"], [])
+        self.assertNotIn("missing-citation-source-entry", report["pages"][0]["issues"])
+        result = self.cli_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["pages"][0]["citations"], [])
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_list_item_continuation_is_prose_but_top_level_indented_code_is_not(self):
+        page = self.vault / "wiki/list-continuation.md"
+        page.write_text(
+            "---\ntype: Note\n---\n"
+            "1. Item\n\n"
+            "    Continued factual claim.[^real]\n"
+            "\nOutside the list.\n\n    [^code-example]\n",
+            encoding="utf-8",
+        )
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        self.assertEqual(report["pages"][0]["citations"], [
+            {"id": "real", "state": "missing-source-entry"}
+        ])
+        self.assertIn("missing-citation-source-entry", report["pages"][0]["issues"])
 
     def test_nonregular_ledger_entries_are_rejected_without_blocking(self):
         if not hasattr(os, "mkfifo"):

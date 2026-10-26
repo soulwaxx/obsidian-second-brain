@@ -16,7 +16,7 @@ preserves existing notes and unrelated settings, and refuses conflicts. See
 
 ## Requirements
 
-- Claude Code or Pi; Python 3 with PyYAML; `jq` for lifecycle commands.
+- Claude Code or Pi; Python 3.14 or newer with PyYAML; markdown-it-py for evidence reports; `jq` for lifecycle commands.
 - Node.js 18 or newer for the package CLI launcher. Use a supported Node.js LTS
   release; Node 18 is end-of-life. Pi has its own Node.js requirement, which can
   be higher than this package minimum.
@@ -28,13 +28,17 @@ preserves existing notes and unrelated settings, and refuses conflicts. See
 - A repository checkout or installed package directory for setup commands.
   Installing the package does not add a setup CLI to the shell path.
 
-If Python cannot import PyYAML:
+Ensure `python3 --version` reports Python 3.14 or newer. Install the Python runtime dependencies from the active package checkout (or unpacked package):
 
 ```sh
 python3 -m venv "$HOME/.venvs/obsidian-second-brain"
 . "$HOME/.venvs/obsidian-second-brain/bin/activate"
-python3 -m pip install PyYAML
+python3 -m pip install -r requirements.txt
 ```
+
+`markdown-it-py` is used only by `evidence-report`; doctor and local retrieval
+remain available without it. If it is missing, the evidence command prints the
+installation command instead of silently using incomplete Markdown scanning.
 
 On Linux, install your distribution's `python3-venv` package if necessary. Keep
 the environment active when running Python commands.
@@ -197,8 +201,9 @@ configuration, dependencies, vault, cache-exclusion, lifecycle, and retrieval
 status without repairing them. `evidence-report` is also read-only; optional
 source/claim records are not migrated or required, and its structural,
 freshness, and relationship output does not establish factual truth or source
-verification. Use the wiki's generated index hierarchy when search is
-unavailable or has no useful result. Focused workflow limits and
+verification. Citation scanning follows markdown-it-py's CommonMark parsing; it
+does not enable Obsidian-specific Markdown extensions. Use the wiki's generated
+index hierarchy when search is unavailable or has no useful result. Focused workflow limits and
 selected-conversation save rules are documented in
 [the shared workflow reference](skills/wiki/references/focused-workflows.md).
 
@@ -222,8 +227,8 @@ python3 "$PLUGIN_DIR/scripts/retrieve.py" "query terms" --vault "$VAULT"
 The derived cache lives under `.vault-meta/retrieval/`. Keep it and
 `.vault-meta/lifecycle/` effectively ignored in Git. Lifecycle refresh uses
 package-owned scripts; a missing/corrupt cache falls back to generated index
-navigation. Existing vault-local helpers are left untouched; the legacy
-`provision-retrieval.py` preview/apply workflow remains available if needed.
+navigation. Vault-local helper copying is no longer supported; use the active package's
+scripts instead. Package updates never delete existing vault-local files.
 
 Current retrieval conservatively masks clear single-line Markdown strikethrough
 outside literal/code/link contexts; authored history and original source offsets
@@ -288,6 +293,7 @@ npm run release:check
 npm test
 npm run test:release
 npm run test:package
+npm run test:pi-runtime -- --require-runtime
 claude plugin validate .
 bash tests/install-smoke.sh
 bash -n hooks/obsidian-session.sh tests/install-smoke.sh

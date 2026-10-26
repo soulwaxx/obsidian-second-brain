@@ -29,6 +29,13 @@ BLOCKED_DIRS = {
 }
 
 
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 def _path_contains_traversal(p: Path) -> bool:
     """Check if a path contains '..' traversal components."""
     return ".." in p.parts
@@ -122,7 +129,16 @@ def check_agent_write(wiki_root: str, target_path: str) -> tuple[bool, str]:
     lexical = raw if raw.is_absolute() else root / raw
     wiki = root / "wiki"
     for ancestor in (lexical, *lexical.parents):
-        if ancestor.name == "wiki" and ancestor.parent.resolve() == root:
+        if (ancestor.name.casefold() == "wiki" and _same_file(ancestor.parent, root)
+                and (ancestor.name == "wiki" or _same_file(ancestor, wiki))):
+            # Path.resolve() does not canonicalize casing on every filesystem.
+            # Refuse aliases rather than letting lifecycle tracking miss them.
+            if ancestor.name != "wiki":
+                return False, f"BLOCKED: {target_path} — use the canonical wiki path under {wiki}"
+            parent_spelling = str(ancestor.parent.resolve())
+            root_spelling = str(root)
+            if parent_spelling != root_spelling and parent_spelling.casefold() == root_spelling.casefold():
+                return False, f"BLOCKED: {target_path} — use the canonical vault path {root}"
             return check_write(wiki_root, str(wiki / lexical.relative_to(ancestor)))
     if ".." in raw.parts:
         try:
@@ -136,7 +152,7 @@ def check_agent_write(wiki_root: str, target_path: str) -> tuple[bool, str]:
     for ancestor in (lexical, *lexical.parents):
         if in_set(ancestor.name, protected):
             try:
-                if ancestor.parent.resolve() == root:
+                if _same_file(ancestor.parent, root):
                     return False, f"BLOCKED: {target_path} — path points to protected vault data '{ancestor.name}'"
             except (OSError, RuntimeError):
                 return False, f"BLOCKED: {target_path} — unsafe protected path resolution"

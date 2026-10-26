@@ -257,6 +257,19 @@ def _working_tree_clean(root, rel):
     return result.returncode == 0 and result.stdout == b''
 
 
+def _matches_committed_baseline(root, rel, content):
+    """Trust a Git-clean baseline only for tracked bytes equal to HEAD."""
+    tracked = subprocess.run(
+        ['git', '-C', root, 'ls-files', '--error-unmatch', '--', rel],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if tracked.returncode != 0:
+        return False
+    committed = subprocess.run(
+        ['git', '-C', root, 'show', f'HEAD:{rel}'],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    return committed.returncode == 0 and committed.stdout == content
+
+
 def _journal_path(root, rel):
     if (not isinstance(rel, str) or not rel.startswith('wiki/') or
             rel.startswith('/') or any(part in ('', '.', '..') for part in rel.split('/')) or
@@ -352,7 +365,8 @@ def validate_before_sync(root, rel, current_bytes):
         current_hash = fingerprint(current_bytes)
         if current_bytes is None:
             return None, True
-        if _working_tree_clean(context[0], rel):
+        if (_working_tree_clean(context[0], rel) and
+                _matches_committed_baseline(context[0], rel, current_bytes)):
             return current_hash, True
         if entry and entry.get('after') == current_hash:
             return entry.get('before'), False

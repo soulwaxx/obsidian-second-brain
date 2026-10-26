@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -50,11 +51,78 @@ def selected_config(path: str, vault: Path) -> dict:
     return {"path": str(config), "sha256": sha(content) if content is not None else None}
 
 
-def read_bytes(parent: int) -> bytes:
-    text, identity = LIFE.read_log_at(parent)
-    if identity is None:
-        raise HistoryError("root wiki/log.md is missing")
-    return text.encode("utf-8")
+def read_bytes(parent: int, name: str = "log.md") -> bytes:
+    fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), dir_fd=parent)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise HistoryError("history is not a regular file")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            return stream.read()
+    finally:
+        os.close(fd)
+
+
+def publish_log(parent: int, temp: str, before: bytes, approval: str) -> None:
+    """Publish without replacing arrivals; keep the displaced inode recoverable."""
+    quarantine = f".history-log-{approval}.recovery"
+    check_case_collision_at(parent, quarantine)
+    try:
+        os.link("log.md", quarantine, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+    except FileExistsError:
+        # Resume only the verified hard-link intermediate state. A distinct
+        # recovery artifact may be owner data even when its bytes happen to match.
+        public = os.stat("log.md", dir_fd=parent, follow_symlinks=False)
+        retained = os.stat(quarantine, dir_fd=parent, follow_symlinks=False)
+        if (public.st_dev, public.st_ino) != (retained.st_dev, retained.st_ino):
+            raise HistoryError(f"retained history requires review at wiki/{quarantine}")
+    except OSError as exc:
+        raise HistoryError(f"cannot retain displaced history at wiki/{quarantine}: {exc}") from exc
+
+    try:
+        if read_bytes(parent, quarantine) != before:
+            raise HistoryError("root history changed during publication")
+        public = os.stat("log.md", dir_fd=parent, follow_symlinks=False)
+        retained = os.stat(quarantine, dir_fd=parent, follow_symlinks=False)
+        if (public.st_dev, public.st_ino) != (retained.st_dev, retained.st_ino):
+            raise HistoryError("root history changed during publication")
+        displaced = f".history-log-{approval}.displaced"
+        check_case_collision_at(parent, displaced)
+        try:
+            os.stat(displaced, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            # A previous attempt may have retained this name. Never unlink it;
+            # select a fresh exclusive destination for this attempt instead.
+            displaced = f".history-log-{approval}.displaced-{os.urandom(6).hex()}"
+            check_case_collision_at(parent, displaced)
+        rename_noreplace(parent, "log.md", displaced)
+        os.fsync(parent)
+        displaced_stat = os.stat(displaced, dir_fd=parent, follow_symlinks=False)
+        retained = os.stat(quarantine, dir_fd=parent, follow_symlinks=False)
+        if (read_bytes(parent, displaced) != before
+                or (displaced_stat.st_dev, displaced_stat.st_ino) != (retained.st_dev, retained.st_ino)):
+            conflict = f".history-log-{approval}.conflict"
+            check_case_collision_at(parent, conflict)
+            os.link(displaced, conflict, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            os.link(displaced, "log.md", src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            os.fsync(parent)
+            raise HistoryError(f"concurrent history preserved at wiki/{conflict} and wiki/{displaced}")
+        # Keep the displaced inode as a durable artifact. POSIX has no
+        # identity-conditional unlink; deleting this pathname could destroy a
+        # concurrent substitution after any preceding stat.
+        os.fsync(parent)
+        os.link(temp, "log.md", src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+        os.fsync(parent)
+    except (OSError, HistoryError) as exc:
+        try:
+            os.link(quarantine, "log.md", src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            os.fsync(parent)
+        except OSError:
+            raise HistoryError(f"history publication conflicted; recover prior history at wiki/{quarantine}") from exc
+        raise HistoryError("history publication conflicted; preserved concurrent bytes") from exc
+    if read_bytes(parent, quarantine) != before:
+        raise HistoryError(f"history changed during publication; retained bytes at wiki/{quarantine}")
 
 
 def secure_wiki(vault: Path) -> int:
@@ -116,6 +184,30 @@ def plan(vault: Path, config_id: dict) -> dict:
     digest_basis = {"version": 1, "vault": str(vault), "config": config_id,
                     "beforeHash": sha(before), "afterHash": sha(after), "replacements": changes}
     return {**digest_basis, "operations": changes, "planHash": sha(canonical(digest_basis)), "_before": before, "_after": after}
+
+
+def rename_noreplace(parent: int, source: str, destination: str) -> None:
+    """Atomically move a name only if the destination is absent; fail closed elsewhere."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux"):
+        operation = getattr(libc, "renameat2", None)
+        if operation is None:
+            raise HistoryError("atomic no-replace rename is unavailable on this Linux platform")
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        operation.restype = ctypes.c_int
+        result = operation(parent, os.fsencode(source), parent, os.fsencode(destination), 1)
+    elif sys.platform == "darwin":
+        operation = getattr(libc, "renameatx_np", None)
+        if operation is None:
+            raise HistoryError("atomic no-replace rename is unavailable on this macOS platform")
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        operation.restype = ctypes.c_int
+        result = operation(parent, os.fsencode(source), parent, os.fsencode(destination), 0x00000004)
+    else:
+        raise HistoryError(f"atomic no-replace rename is unsupported on {sys.platform}")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), destination)
 
 
 def check_case_collision_at(parent: int, name: str) -> None:
@@ -218,8 +310,30 @@ def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -
                         raise HistoryError("lifecycle directory changed during journal creation")
             parent = secure_wiki(vault)
             try:
+                check_case_collision_at(parent, "log.md")
+                quarantine = f".history-log-{approval}.recovery"
+                check_case_collision_at(parent, quarantine)
+                try:
+                    os.stat("log.md", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    # A stopped process may have displaced the log but not yet
+                    # published. Restore only the journal's exact preimage and
+                    # only into a vacant name before resuming the approved plan.
+                    try:
+                        retained = read_bytes(parent, quarantine)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if retained != before:
+                            raise HistoryError(f"retained history changed; recover prior history at wiki/{quarantine}")
+                        os.link(quarantine, "log.md", src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                        os.fsync(parent)
                 check_root_log_name(parent)
                 current_bytes = read_bytes(parent)
+                try:
+                    retained_bytes = read_bytes(parent, quarantine)
+                except FileNotFoundError:
+                    retained_bytes = None
                 if sha(current_bytes) == sha(after):
                     if (not LIFE.same_public_parent(life, life_fd)
                             or not LIFE.same_public_parent(vault / "wiki", parent)):
@@ -227,6 +341,12 @@ def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -
                     return {"planHash": approval, "applied": False, "alreadyApplied": True}
                 if current_bytes != before or sha(current_bytes) != expected:
                     raise HistoryError("root history changed since approval; preserving current bytes")
+                if retained_bytes is not None:
+                    public_stat = os.stat("log.md", dir_fd=parent, follow_symlinks=False)
+                    retained_stat = os.stat(quarantine, dir_fd=parent, follow_symlinks=False)
+                    if ((public_stat.st_dev, public_stat.st_ino) != (retained_stat.st_dev, retained_stat.st_ino)
+                            or retained_bytes != before):
+                        raise HistoryError(f"retained history requires review at wiki/{quarantine}")
                 fd, temp = LIFE.create_log_temp(parent)
                 info = os.fstat(fd)
                 temp_identity = (info.st_dev, info.st_ino)
@@ -242,8 +362,7 @@ def apply(vault: Path, config_id: dict, approval: str, recovery: bool = False) -
                     if (not stat.S_ISREG(temp_info.st_mode)
                             or (temp_info.st_dev, temp_info.st_ino) != temp_identity):
                         raise HistoryError("temporary history file changed before publication")
-                    os.replace(temp, "log.md", src_dir_fd=parent, dst_dir_fd=parent)
-                    os.fsync(parent)
+                    publish_log(parent, temp, before, approval)
                     if (not LIFE.same_public_parent(life, life_fd)
                             or not LIFE.same_public_parent(vault / "wiki", parent)):
                         raise HistoryError("public lifecycle/wiki directory changed during publication; migration is recoverable")

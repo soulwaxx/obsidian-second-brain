@@ -7,8 +7,7 @@ configures remotes/authentication, or synchronizes notes as an incidental step.
 
 ## 1. Prepare tools and select paths
 
-Install Claude Code or Pi, Python 3 with PyYAML, `jq`, Git, and Obsidian. Use the
-[README installation commands](../README.md#install-the-agent-package). Setup
+Install Claude Code or Pi, Python 3.14 or newer, `jq`, Git, and Obsidian. Install the package's Python dependencies (PyYAML and markdown-it-py) in the Python environment used by both clients; see the [README requirements](../README.md#requirements). Ensure `python3 --version` reports the supported version. Setup
 scripts ship with the package but are not added to the shell path; these
 examples use a repository checkout:
 
@@ -183,8 +182,8 @@ python3 "$PLUGIN_DIR/scripts/retrieve.py" "query terms" --vault "$VAULT"
 Keep `.vault-meta/retrieval/` and `.vault-meta/lifecycle/` effectively ignored.
 Later negations or already-tracked files require review; neither runtime nor
 setup silently stages/untracks them. Existing helper copies and ownership
-journals remain untouched. The legacy provisioning command still has its own
-preview/hash-confirmed apply and overwrite refusal.
+journals remain untouched. The helper-copy provisioner is retired; use the
+package-owned commands above.
 
 The lifecycle refreshes the package BM25 cache once per validated finalized
 changed batch when retrieval refresh is enabled. It durably records a retry
@@ -222,9 +221,9 @@ Ollama running locally with a model you have already installed. Build the cached
 chunk vectors only when requested, then opt in to rank fusion per search:
 
 ```sh
-python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \\
+python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \
   --semantic-chunks --ollama-model <installed-model>
-python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \\
+python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \
   --hybrid --ollama-model <installed-model>
 ```
 

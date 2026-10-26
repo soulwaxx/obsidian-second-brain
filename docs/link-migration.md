@@ -110,7 +110,7 @@ python3 "$PLUGIN_DIR/scripts/wiki_history.py" \
   --recover HASH_FROM_REVIEWED_PREVIEW --json
 ```
 
-An unchanged completed result is a no-op. Drift is a conflict, not permission to overwrite. The command does not delete notes, change settings, update nested logs, regenerate navigation, or run Git writes.
+An unchanged completed result is a no-op. Drift is a conflict, not permission to overwrite. Publication exclusively retains the displaced log inode as `.history-log-<planHash>.recovery`, then uses an atomic no-replace move to displace the public name before publishing the new log. It verifies the inode actually displaced, so a last-moment replacement is restored at the public name and retained as `.history-log-<planHash>.conflict` rather than discarded. Late writes through an already-open handle remain recoverable. Displaced and recovery artifacts are retained rather than unlinked by pathname; completed migrations can leave `.history-log-<planHash>.displaced*` files for reconciliation. Review them if the command reports drift. If a process stopped with the public log absent, recovery restores only an exact journal preimage into the vacant name before resuming and keeps the recovery link. Recovery never overwrites concurrent history or discards retained bytes. The command does not delete notes, change settings, update nested logs, regenerate navigation, or run Git writes.
 
 ## Verify the final graph
 

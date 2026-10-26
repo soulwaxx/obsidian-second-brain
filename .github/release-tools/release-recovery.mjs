@@ -44,6 +44,9 @@ export async function recoverRelease({ tag, sha, name, repository }, { npm, gith
   if (release) assert.equal(release.tag_name, tag);
   // Preflight missing-release details before creating any missing publication output.
   const description = release ? undefined : await describeRelease();
+  const latestRelease = release ? undefined : github("GET", `repos/${repository}/releases/latest`);
+  const makeLatest = !latestRelease || (latestRelease.prerelease !== true
+    && isNewerStableRelease(version, latestRelease.tag_name));
   if (!info) {
     npm("version", version, "--no-git-tag-version", "--allow-same-version");
     prepareArtifact();
@@ -58,12 +61,21 @@ export async function recoverRelease({ tag, sha, name, repository }, { npm, gith
       })
       : { body: `# ${tag}` };
     github("POST", `repos/${repository}/releases`, { tag_name: tag, target_commitish: sha, name: tag,
-      body: `${notes.body}\n\n${description.notes}` });
+      body: `${notes.body}\n\n${description.notes}`, make_latest: makeLatest ? "true" : "false" });
   }
   const tags = npm("view", name, "dist-tags", "--json") || {};
   const latest = tags.latest;
   if (!latest || compareStable(version, latest) > 0) npm("dist-tag", "add", `${name}@${version}`, "latest");
   console.log(`Recovered ${tag}; existing npm versions and releases were preserved`);
+}
+
+function isNewerStableRelease(version, tag) {
+  try {
+    return compareStable(version, releaseVersion(tag)) > 0;
+  } catch {
+    // Unknown existing release tags are not grounds to move GitHub's pointer.
+    return false;
+  }
 }
 
 function compareStable(a, b) {

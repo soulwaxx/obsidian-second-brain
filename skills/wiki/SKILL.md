@@ -150,9 +150,9 @@ compatible build, never silent vector relabeling. Cached searches embed only the
 query, not documents or the legacy page-head shortlist. ISO-date queries stay lexical:
 
 ```sh
-python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \\
+python3 <package-dir>/scripts/obsidian-second-brain.py build --vault <vault-root> \
   --semantic-chunks --ollama-model <installed-model>
-python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \\
+python3 <package-dir>/scripts/retrieve.py "query terms" --vault <vault-root> \
   --hybrid --ollama-model <installed-model>
 ```
 
@@ -168,9 +168,9 @@ problems rather than editing ignore rules or staging files. Use reviewed setup
 to repair exclusions; already-tracked state needs a deliberate owner-approved
 untracking step.
 
-`provision-retrieval.py` remains a legacy preview/apply workflow for vault-local
-helper copies. It refuses overwrites; existing helpers and journals are never
-automatically deleted or migrated. New setup uses package-owned scripts.
+Use package-owned retrieval scripts; vault-local helper copying is no longer
+supported. Existing vault-local files and journals are never automatically
+deleted or migrated.
 
 Current BM25/semantic inputs and exposed excerpts conservatively mask clear
 single-line strikethrough outside literal/code/link contexts. Original notes,

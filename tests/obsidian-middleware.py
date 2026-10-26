@@ -56,6 +56,17 @@ with tempfile.TemporaryDirectory() as temp:
     caller.mkdir()
     run(guard, "--if-wiki", root, str(root / ".obsidian" / "app.json"), ok=False)
     run(guard, "--if-wiki", root, str(root / "wiki" / "topic" / "page.md"))
+    case_wiki = root / "WIKI"
+    if case_wiki.exists() and case_wiki.samefile(wiki):
+        run(guard, "--if-wiki", root, str(case_wiki / "index.md"), ok=False)
+        run(guard, "--if-wiki", root, str(case_wiki / "topic" / "page.md"), ok=False)
+    else:
+        # Linux must not treat a distinct WIKI/ directory spelling as wiki/.
+        run(guard, "--if-wiki", root, str(case_wiki / "ordinary.md"))
+    prefix_alias = root.parent / root.name.swapcase()
+    if prefix_alias.exists() and prefix_alias.samefile(root):
+        run(guard, "--if-wiki", root, str(prefix_alias / "wiki" / "index.md"), ok=False)
+        run(guard, "--if-wiki", root, str(prefix_alias / "wiki" / "topic" / "page.md"), ok=False)
     # Protected selected-vault roots remain blocked when symlinked outside or
     # into an otherwise writable area of the selected vault.
     unprotected = root / "unprotected"
@@ -83,6 +94,14 @@ with tempfile.TemporaryDirectory() as temp:
     invalid = wiki / "invalid.md"
     invalid.write_text("---\ntype: note\n---not-a-delimiter\n")
     run(validator, invalid, ok=False)
+    invalid.unlink()
+    invalid.write_text('---\ntype: note\nlast_updated: 2026-99-99\n---\n')
+    result = run(validator, invalid, ok=False)
+    validation = json.loads(result.stderr)
+    assert validation['valid'] is False
+    assert validation['errors'][0]['field'] == 'yaml'
+    run(middleware / "sync.py", root)
+    assert "[invalid](./invalid.md)" in (wiki / "index.md").read_text()
     invalid.unlink()
 
     source_forms = {
@@ -227,6 +246,33 @@ with tempfile.TemporaryDirectory() as temp:
         ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"], text=True).strip())
     assert (metadata_dir / "okf-index-ownership.json").exists()
     assert not (root / "okf-index-ownership.json").exists()
+
+    # Ignored untracked indexes have no Git baseline; owner edits must not be adopted.
+    ignored = Path(temp) / "ignored-vault"
+    ignored_wiki = ignored / "wiki"
+    ignored_wiki.mkdir(parents=True)
+    ignored_page = ignored_wiki / "page.md"
+    ignored_page.write_text('---\ntype: note\ntitle: Initial\n---\n')
+    subprocess.run(["git", "init", "-q", str(ignored)], check=True)
+    subprocess.run(["git", "-C", str(ignored), "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "-C", str(ignored), "config", "user.email", "test@example.invalid"], check=True)
+    (ignored / ".gitignore").write_text("/wiki/index.md\n")
+    subprocess.run(["git", "-C", str(ignored), "add", ".gitignore", "wiki/page.md"], check=True)
+    subprocess.run(["git", "-C", str(ignored), "commit", "-qm", "baseline"], check=True)
+    run(sync, ignored)
+    ignored_index = ignored_wiki / "index.md"
+    ignored_index.write_bytes(ignored_index.read_bytes() + b"\nmanual ignored navigation\n")
+    ignored_edit = ignored_index.read_bytes()
+    ignored_page.write_text('---\ntype: note\ntitle: Updated\n---\n')
+    ignored_result = run(sync, ignored, ok=False)
+    assert "unowned dirty bytes" in ignored_result.stdout
+    assert ignored_index.read_bytes() == ignored_edit
+
+    # Empty-directory removal must preserve ignored indexes with owner edits too.
+    ignored_page.unlink()
+    ignored_removal = run(sync, ignored, ok=False)
+    assert "unowned dirty bytes" in ignored_removal.stdout
+    assert ignored_index.read_bytes() == ignored_edit
 
     # A marker is not ownership: preserve a relevant user-edited index even
     # when the marker remains and the page makes that directory relevant.
@@ -685,5 +731,26 @@ with tempfile.TemporaryDirectory() as temp:
     assert [entry["target"] for entry in report["dead_links"]] == [
         "../concepts/architecture.md#ownership-model-1"
     ], report["dead_links"]
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp) / "vault"
+    wiki = root / "wiki"
+    topic = wiki / "topic"
+    attachment_only = wiki / "attachments"
+    topic.mkdir(parents=True)
+    attachment_only.mkdir()
+    (attachment_only / "image.png").write_bytes(b"attachment")
+    page = topic / "page.md"
+    page.write_text('---\ntype: note\ntitle: Topic\n---\n')
+    (wiki / "root-page.md").write_text('---\ntype: note\ntitle: Root\n---\n')
+    sync = middleware / "sync.py"
+    run(sync, root)
+    root_index = wiki / "index.md"
+    assert "[topic/](./topic/index.md)" in root_index.read_text()
+    assert "attachments/index.md" not in root_index.read_text()
+    page.unlink()
+    run(sync, root)
+    assert not (topic / "index.md").exists()
+    assert "topic/index.md" not in root_index.read_text()
 
 print("wiki middleware boundary regressions PASS")

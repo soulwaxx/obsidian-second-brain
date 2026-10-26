@@ -78,29 +78,36 @@ class HistoryMigrationTests(unittest.TestCase):
 
     def test_recovery_from_before_and_after_publication(self):
         planned = wiki_history.plan(self.vault.resolve(), wiki_history.selected_config(str(self.config), self.vault.resolve()))
-        real_replace = os.replace
-        def fail_log_replace(src, dst, **kwargs):
-            if dst == "log.md":
+        real_link = os.link
+        def fail_log_link(src, dst, **kwargs):
+            if dst == "log.md" and str(src).startswith(".log-"):
                 raise OSError("injected before publication")
-            return real_replace(src, dst, **kwargs)
-        with patch.object(wiki_history.os, "replace", side_effect=fail_log_replace):
-            with self.assertRaises(OSError):
+            return real_link(src, dst, **kwargs)
+        with patch.object(wiki_history.os, "link", side_effect=fail_log_link):
+            with self.assertRaises(wiki_history.HistoryError):
                 wiki_history.apply(self.vault.resolve(), planned["config"], planned["planHash"])
         wiki_history.apply(self.vault.resolve(), planned["config"], planned["planHash"], recovery=True)
         self.assertEqual(self.log.read_bytes(), planned["_after"])
 
-        self.log.write_bytes(planned["_before"])
-        planned = wiki_history.plan(self.vault.resolve(), planned["config"])
+        vault_after = Path(self.temp.name) / "vault-after"
+        (vault_after / "wiki").mkdir(parents=True)
+        (vault_after / "wiki/target.md").write_text("---\ntype: note\ntitle: Target\n---\n# Target\n")
+        log_after = vault_after / "wiki/log.md"
+        log_after.write_bytes(planned["_before"])
+        config_after = Path(self.temp.name) / "config-after.json"
+        config_after.write_text(json.dumps({"vaultPath": str(vault_after)}))
+        planned = wiki_history.plan(vault_after.resolve(), wiki_history.selected_config(str(config_after), vault_after.resolve()))
+
         def publish_then_crash(src, dst, **kwargs):
-            real_replace(src, dst, **kwargs)
-            if dst == "log.md":
+            real_link(src, dst, **kwargs)
+            if dst == "log.md" and str(src).startswith(".log-"):
                 raise OSError("injected after publication")
-        with patch.object(wiki_history.os, "replace", side_effect=publish_then_crash):
-            with self.assertRaises(OSError):
-                wiki_history.apply(self.vault.resolve(), planned["config"], planned["planHash"])
-        retried = wiki_history.apply(self.vault.resolve(), planned["config"], planned["planHash"], recovery=True)
+        with patch.object(wiki_history.os, "link", side_effect=publish_then_crash):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(vault_after.resolve(), planned["config"], planned["planHash"])
+        retried = wiki_history.apply(vault_after.resolve(), planned["config"], planned["planHash"], recovery=True)
         self.assertTrue(retried["alreadyApplied"])
-        self.assertEqual(self.log.read_bytes(), planned["_after"])
+        self.assertEqual(log_after.read_bytes(), planned["_after"])
 
     def test_pending_writer_blocks_and_nested_reserved_untouched(self):
         nested = self.vault / "wiki" / "sub"
@@ -159,13 +166,13 @@ class HistoryMigrationTests(unittest.TestCase):
 
     def test_case_check_runs_on_journal_replay(self):
         plan = self.preview()
-        real_replace = os.replace
-        def fail_log_replace(src, dst, **kwargs):
-            if dst == "log.md":
+        real_link = os.link
+        def fail_log_link(src, dst, **kwargs):
+            if dst == "log.md" and str(src).startswith(".log-"):
                 raise OSError("injected before publication")
-            return real_replace(src, dst, **kwargs)
-        with patch.object(wiki_history.os, "replace", side_effect=fail_log_replace):
-            with self.assertRaises(OSError):
+            return real_link(src, dst, **kwargs)
+        with patch.object(wiki_history.os, "link", side_effect=fail_log_link):
+            with self.assertRaises(wiki_history.HistoryError):
                 wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
         real_listdir = os.listdir
         wiki_info = (self.vault / "wiki").stat()
@@ -205,19 +212,19 @@ class HistoryMigrationTests(unittest.TestCase):
         plan = self.preview()
         wiki = self.vault.resolve() / "wiki"
         original = self.log.read_bytes()
-        real_replace = os.replace
+        real_link = os.link
         switched = False
-        def replace_then_switch(src, dst, **kwargs):
+        def link_then_switch(src, dst, **kwargs):
             nonlocal switched
-            result = real_replace(src, dst, **kwargs)
-            if dst == "log.md" and not switched:
+            result = real_link(src, dst, **kwargs)
+            if dst == "log.md" and str(src).startswith(".log-") and not switched:
                 switched = True
                 wiki.rename(wiki.with_name("wiki-detached"))
                 wiki.mkdir()
                 (wiki / "target.md").write_bytes((self.vault / "wiki-detached/target.md").read_bytes())
                 (wiki / "log.md").write_bytes(original)
             return result
-        with patch.object(wiki_history.os, "replace", side_effect=replace_then_switch):
+        with patch.object(wiki_history.os, "link", side_effect=link_then_switch):
             with self.assertRaisesRegex(wiki_history.HistoryError, "recoverable"):
                 wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
         self.assertEqual((wiki / "log.md").read_bytes(), original)
@@ -234,6 +241,296 @@ class HistoryMigrationTests(unittest.TestCase):
             with self.assertRaises(wiki_history.HistoryError):
                 wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
         self.assertTrue(self.log.read_bytes().endswith(b"concurrent\n"))
+
+    def test_atomic_log_replacement_at_displacement_boundary_is_preserved(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        concurrent = b"owner replacement immediately before displacement\n"
+        replacement = self.vault / "wiki" / "owner-replacement.tmp"
+        replacement.write_bytes(concurrent)
+        real_rename = wiki_history.rename_noreplace
+        injected = False
+
+        def replace_before_displacement(parent, src, dst):
+            nonlocal injected
+            if src == "log.md" and not injected:
+                injected = True
+                os.replace(replacement, self.log)
+            return real_rename(parent, src, dst)
+
+        with patch.object(wiki_history, "rename_noreplace", side_effect=replace_before_displacement):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertTrue(injected)
+        self.assertEqual(self.log.read_bytes(), concurrent)
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        conflict = self.vault / "wiki" / f".history-log-{plan['planHash']}.conflict"
+        self.assertEqual(retained.read_bytes(), original)
+        self.assertEqual(conflict.read_bytes(), concurrent)
+        journal = wiki_history.journal_path(self.vault.resolve(), plan["planHash"])
+        self.assertTrue(journal.exists())
+        with self.assertRaises(wiki_history.HistoryError):
+            wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertEqual(self.log.read_bytes(), concurrent)
+        self.assertEqual(retained.read_bytes(), original)
+
+    def test_concurrent_edit_at_publication_boundary_is_preserved(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        concurrent = original + b"owner entry at publication\n"
+        real_link = os.link
+
+        def edit_before_quarantine(src, dst, **kwargs):
+            if src == "log.md" and str(dst).endswith(".recovery"):
+                self.log.write_bytes(concurrent)
+            return real_link(src, dst, **kwargs)
+
+        with patch.object(wiki_history.os, "link", side_effect=edit_before_quarantine):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertEqual(self.log.read_bytes(), concurrent)
+        with self.assertRaises(wiki_history.HistoryError):
+            wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertEqual(self.log.read_bytes(), concurrent)
+
+    def test_recovery_after_interruption_with_history_displaced(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        real_link = os.link
+
+        def interrupt_after_quarantine(src, dst, **kwargs):
+            result = real_link(src, dst, **kwargs)
+            if src == "log.md" and str(dst).endswith(".recovery"):
+                raise KeyboardInterrupt("simulated process interruption")
+            return result
+
+        with patch.object(wiki_history.os, "link", side_effect=interrupt_after_quarantine):
+            with self.assertRaises(KeyboardInterrupt):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.log.unlink()
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        concurrent = original + b"owner edit to retained history\n"
+        retained.write_bytes(concurrent)
+        with self.assertRaisesRegex(wiki_history.HistoryError, "retained history changed"):
+            wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertFalse(self.log.exists())
+        self.assertEqual(retained.read_bytes(), concurrent)
+        retained.write_bytes(original)
+        wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertEqual(self.log.read_bytes(), original.replace(b"/target.md", b"./target.md"))
+        self.assertEqual(len(list((self.vault / "wiki").glob(".history-log-*.recovery"))), 1)
+
+    def test_displacement_artifact_arrival_is_not_overwritten(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        displaced = self.vault / "wiki" / f".history-log-{plan['planHash']}.displaced"
+        owner_bytes = b"owner retained history\\n"
+        real_rename = wiki_history.rename_noreplace
+
+        def arrive_before_displacement(parent, src, dst):
+            if src == "log.md" and ".displaced" in dst:
+                displaced.write_bytes(owner_bytes)
+            return real_rename(parent, src, dst)
+
+        with patch.object(wiki_history, "rename_noreplace", side_effect=arrive_before_displacement):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertEqual(displaced.read_bytes(), owner_bytes)
+        self.assertEqual(self.log.read_bytes(), original)
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        self.assertEqual(retained.read_bytes(), original)
+        self.assertTrue(wiki_history.journal_path(self.vault.resolve(), plan["planHash"]).exists())
+
+    def test_displaced_artifact_substitution_after_validation_is_retained(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        displaced = self.vault / "wiki" / f".history-log-{plan['planHash']}.displaced"
+        owner_bytes = b"owner substituted history\n"
+        real_read = wiki_history.read_bytes
+        substituted = False
+
+        def read_then_substitute(parent, name="log.md"):
+            nonlocal substituted
+            data = real_read(parent, name)
+            if name == displaced.name and not substituted:
+                substituted = True
+                replacement = displaced.with_name("owner-history.tmp")
+                replacement.write_bytes(owner_bytes)
+                os.replace(replacement, displaced)
+            return data
+
+        with patch.object(wiki_history, "read_bytes", side_effect=read_then_substitute):
+            result = wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertTrue(substituted)
+        self.assertTrue(result["applied"])
+        self.assertEqual(displaced.read_bytes(), owner_bytes)
+        self.assertEqual(self.log.read_bytes(), original.replace(b"/target.md", b"./target.md"))
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        self.assertEqual(retained.read_bytes(), original)
+        journal = wiki_history.journal_path(self.vault.resolve(), plan["planHash"])
+        self.assertTrue(journal.exists())
+        retried = wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertTrue(retried["alreadyApplied"])
+        self.assertEqual(displaced.read_bytes(), owner_bytes)
+        self.assertEqual(retained.read_bytes(), original)
+        self.assertTrue(journal.exists())
+
+    def test_displaced_artifact_substitution_during_cleanup_is_retained(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        displaced = self.vault / "wiki" / f".history-log-{plan['planHash']}.displaced"
+        owner_bytes = b"owner substituted history\\n"
+        real_stat = os.stat
+        real_move = wiki_history.rename_noreplace
+        moved = False
+        substituted = False
+
+        def mark_displacement(parent, src, dst):
+            nonlocal moved
+            result = real_move(parent, src, dst)
+            if src == "log.md" and dst == displaced.name:
+                moved = True
+            return result
+
+        def substitute_before_artifact_validation(path, *args, **kwargs):
+            nonlocal substituted
+            if path == displaced.name and moved and not substituted:
+                substituted = True
+                replacement = displaced.with_name("owner-history.tmp")
+                replacement.write_bytes(owner_bytes)
+                os.replace(replacement, displaced)
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(wiki_history, "rename_noreplace", side_effect=mark_displacement), \
+                patch.object(wiki_history.os, "stat", side_effect=substitute_before_artifact_validation):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertTrue(substituted)
+        self.assertEqual(displaced.read_bytes(), owner_bytes)
+        self.assertEqual(self.log.read_bytes(), owner_bytes)
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        self.assertEqual(retained.read_bytes(), original)
+        self.assertTrue(wiki_history.journal_path(self.vault.resolve(), plan["planHash"]).exists())
+
+    def test_recovery_after_interruption_during_public_displacement(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        real_rename = wiki_history.rename_noreplace
+
+        def displace_then_interrupt(parent, src, dst):
+            result = real_rename(parent, src, dst)
+            if src == "log.md" and dst.endswith(".displaced"):
+                raise KeyboardInterrupt("simulated interruption after displacement")
+            return result
+
+        with patch.object(wiki_history, "rename_noreplace", side_effect=displace_then_interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertFalse(self.log.exists())
+        wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertEqual(self.log.read_bytes(), original.replace(b"/target.md", b"./target.md"))
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        self.assertEqual(retained.read_bytes(), original)
+
+    def test_open_writer_append_after_displacement_is_retained(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        writer = os.open(self.log, os.O_WRONLY | os.O_APPEND)
+        real_link = os.link
+
+        def append_before_publication(src, dst, **kwargs):
+            if dst == "log.md" and str(src).startswith(".log-"):
+                os.write(writer, b"late owner entry\n")
+            return real_link(src, dst, **kwargs)
+
+        try:
+            with patch.object(wiki_history.os, "link", side_effect=append_before_publication):
+                with self.assertRaisesRegex(wiki_history.HistoryError, "retained bytes"):
+                    wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        finally:
+            os.close(writer)
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        expected_after = original.replace(b"/target.md", b"./target.md")
+        self.assertEqual(self.log.read_bytes(), expected_after)
+        self.assertEqual(retained.read_bytes(), original + b"late owner entry\n")
+        journal = wiki_history.journal_path(self.vault.resolve(), plan["planHash"])
+        data = json.loads(journal.read_text())
+        self.assertEqual(bytes.fromhex(data["beforeHex"]), original)
+        self.assertEqual(bytes.fromhex(data["afterHex"]), expected_after)
+        retried = wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertTrue(retried["alreadyApplied"])
+        self.assertEqual(retained.read_bytes(), original + b"late owner entry\n")
+
+    def test_recovery_name_collision_is_refused_without_overwrite(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        owner_bytes = b"owner retained original\n"
+        real_link = os.link
+
+        def create_collision_then_link(src, dst, **kwargs):
+            if src == "log.md" and dst == retained.name:
+                retained.write_bytes(owner_bytes)
+            return real_link(src, dst, **kwargs)
+
+        with patch.object(wiki_history.os, "link", side_effect=create_collision_then_link):
+            with self.assertRaises(wiki_history.HistoryError):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertEqual(self.log.read_bytes(), original)
+        self.assertEqual(retained.read_bytes(), owner_bytes)
+        journal = wiki_history.journal_path(self.vault.resolve(), plan["planHash"])
+        self.assertTrue(journal.exists())
+
+    def test_recovery_resumes_after_link_before_quarantine_cleanup(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        real_link_for_quarantine = os.link
+
+        def interrupt_after_quarantine_link(src, dst, **kwargs):
+            result = real_link_for_quarantine(src, dst, **kwargs)
+            if src == "log.md" and str(dst).endswith(".recovery"):
+                raise KeyboardInterrupt("simulated process interruption")
+            return result
+
+        with patch.object(wiki_history.os, "link", side_effect=interrupt_after_quarantine_link):
+            with self.assertRaises(KeyboardInterrupt):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.log.unlink()
+        real_link = os.link
+
+        def restore_then_interrupt(src, dst, **kwargs):
+            result = real_link(src, dst, **kwargs)
+            if src.endswith(".recovery") and dst == "log.md":
+                raise KeyboardInterrupt("simulated interruption after restore link")
+            return result
+
+        with patch.object(wiki_history.os, "link", side_effect=restore_then_interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"], recovery=True)
+        self.assertEqual(self.log.read_bytes(), original.replace(b"/target.md", b"./target.md"))
+        retained = self.vault / "wiki" / f".history-log-{plan['planHash']}.recovery"
+        self.assertEqual(retained.read_bytes(), original)
+
+    def test_concurrent_arrival_preserves_public_and_quarantined_history(self):
+        plan = self.preview()
+        original = self.log.read_bytes()
+        concurrent = b"owner replacement during publication\n"
+        real_link = os.link
+
+        def arrive_before_publication(src, dst, **kwargs):
+            if dst == "log.md" and str(src).startswith(".log-"):
+                self.log.write_bytes(concurrent)
+            return real_link(src, dst, **kwargs)
+
+        with patch.object(wiki_history.os, "link", side_effect=arrive_before_publication):
+            with self.assertRaisesRegex(wiki_history.HistoryError, "recover prior history at"):
+                wiki_history.apply(self.vault.resolve(), plan["config"], plan["planHash"])
+        self.assertEqual(self.log.read_bytes(), concurrent)
+        retained = list((self.vault / "wiki").glob(".history-log-*.recovery"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_bytes(), original)
+        self.assertFalse(list((self.vault / "wiki").glob(".log-*")))
 
     def test_pending_own_and_foreign_capture_and_state_preservation(self):
         plan = self.preview()

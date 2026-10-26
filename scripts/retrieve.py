@@ -130,7 +130,8 @@ def rerank(query, results, vault, endpoint, model, timeout):
         path = vault / candidate
         if not _index_module.eligible(path, vault):
             raise ValueError("index contains a reserved, hidden, or unsafe candidate")
-        inputs.append(path.read_text(encoding="utf-8", errors="replace")[:MAX_DOCUMENT_CHARS])
+        source = _index_module.projection.read_source(path)
+        inputs.append(_index_module.projection.current(source)[:MAX_DOCUMENT_CHARS])
     vectors = embeddings(inputs, url, model, timeout)
     q = vectors[0]
     qnorm = math.sqrt(sum(x * x for x in q))

@@ -100,6 +100,7 @@ def _authority_path(authority: str, rel: PurePosixPath) -> None:
 
 def _validate_paths(operations: list[dict], authority: str) -> None:
     folded: dict[str, str] = {}
+    directory_spellings: dict[str, str] = {}
     parts_by_path = []
     for op in operations:
         raw = op["path"]
@@ -111,6 +112,13 @@ def _validate_paths(operations: list[dict], authority: str) -> None:
         if key in folded:
             raise BatchError(f"duplicate or case-colliding destinations: {folded[key]} and {raw}")
         folded[key] = raw
+        for depth in range(1, len(rel.parts)):
+            prefix = rel.parts[:depth]
+            folded_prefix = "/".join(part.casefold() for part in prefix)
+            spelling = "/".join(prefix)
+            prior = directory_spellings.setdefault(folded_prefix, spelling)
+            if prior != spelling:
+                raise BatchError(f"case-insensitive directory collision: {prior} and {spelling}")
         parts_by_path.append((raw, tuple(part.casefold() for part in rel.parts)))
     for i, (left, left_parts) in enumerate(parts_by_path):
         for right, right_parts in parts_by_path[i + 1:]:
@@ -282,7 +290,9 @@ def _load_journal(vault: Path, batch_id: str) -> dict:
             raise BatchError("journal authority is invalid")
         if data.get("phase") not in {"approved", "recorded", "finalizing", "complete", "rollback-conflict", "rolled-back"}:
             raise BatchError("journal phase is invalid")
-        for op, entry in zip(bundle["operations"], entries):
+        for index, (op, entry) in enumerate(zip(bundle["operations"], entries)):
+            if type(entry.get("index")) is not int or entry["index"] != index:
+                raise BatchError("journal operation indexes do not match approved bundle order")
             content = op["content"].encode("utf-8")
             before = base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None
             if (entry["path"] != op["path"] or entry["afterHash"] != sha(content)
@@ -579,7 +589,15 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
                 latest = _read_at(parent, name)
                 if (sha(latest) if latest is not None else None) != entry["beforeHash"]:
                     raise BatchError(f"target changed immediately before publication: {entry['path']}")
-                os.replace(temp_name, name, src_dir_fd=parent, dst_dir_fd=parent)
+                if entry["beforeHash"] is None:
+                    try:
+                        os.link(temp_name, name, src_dir_fd=parent, dst_dir_fd=parent,
+                                follow_symlinks=False)
+                    except FileExistsError as exc:
+                        raise BatchError(f"create-only target appeared immediately before publication; preserving concurrent bytes: {entry['path']}") from exc
+                    os.unlink(temp_name, dir_fd=parent)
+                else:
+                    os.replace(temp_name, name, src_dir_fd=parent, dst_dir_fd=parent)
                 os.fsync(parent)
             finally:
                 if fd >= 0:

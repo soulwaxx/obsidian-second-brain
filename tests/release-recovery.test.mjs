@@ -8,7 +8,8 @@ import { assertNpmRelease, githubCommand, npmCommand, recoverRelease, releaseVer
 const input = { tag: "v2.0.1", sha: "a".repeat(40), name: "@soulwaxx/obsidian-second-brain", repository: "soulwaxx/obsidian-second-brain" };
 function fixture(npmExists, githubExists, latest = "2.0.0") {
   const state = { info: npmExists ? { version: "2.0.1", gitHead: input.sha } : undefined,
-    release: githubExists ? { tag_name: input.tag } : undefined, latest, calls: [] };
+    release: githubExists ? { tag_name: input.tag } : undefined,
+    latestRelease: latest ? { tag_name: `v${latest}`, prerelease: false } : undefined, latest, calls: [] };
   const deps = {
     npm(command, ...args) {
       state.calls.push(["npm", command, ...args]);
@@ -18,7 +19,7 @@ function fixture(npmExists, githubExists, latest = "2.0.0") {
     },
     github(method, route, fields) {
       state.calls.push(["github", method, route, fields]);
-      if (method === "GET") return state.release;
+      if (method === "GET") return route.endsWith("/releases/latest") ? state.latestRelease : state.release;
       if (route.endsWith("generate-notes")) return { body: "Recovered release notes" };
       state.release = fields;
       return fields;
@@ -74,14 +75,41 @@ test("first-release recovery never compares to a later GitHub release", async ()
   assert.ok(!state.calls.some((call) => call[2]?.endsWith("generate-notes")));
   assert.equal(state.release.body, "# v2.0.1\n\nFirst release complete details");
   assert.equal(state.latest, "3.0.0");
+  assert.equal(state.release.make_latest, "false");
 });
 
-test("recovering an older release never downgrades latest", async () => {
+test("recovering an older release never downgrades npm or GitHub latest", async () => {
   const { state, deps } = fixture(false, false, "3.0.0");
   await recoverRelease(input, deps);
   assert.equal(state.latest, "3.0.0");
+  assert.equal(state.release.make_latest, "false");
   assert.deepEqual(state.calls.find((call) => call[1] === "publish").slice(-2), ["--tag", "recovered"]);
   assert.ok(!state.calls.some((call) => call[1] === "dist-tag"));
+});
+
+test("newest stable recovery explicitly advances GitHub latest", async () => {
+  const { state, deps } = fixture(false, false, "2.0.0");
+  await recoverRelease(input, deps);
+  assert.equal(state.release.make_latest, "true");
+  const latestLookup = state.calls.findIndex((call) => call[0] === "github" && call[2].endsWith("/releases/latest"));
+  const create = state.calls.findIndex((call) => call[0] === "github" && call[1] === "POST" && call[2].endsWith("/releases"));
+  assert.ok(latestLookup >= 0 && latestLookup < create, "latest ordering must be checked before create");
+});
+
+test("equal or unrecognized latest release is never displaced", async () => {
+  for (const latestTag of ["v2.0.1", "release-candidate"]) {
+    const { state, deps } = fixture(false, false, undefined);
+    state.latestRelease = { tag_name: latestTag, prerelease: false };
+    await recoverRelease(input, deps);
+    assert.equal(state.release.make_latest, "false", latestTag);
+  }
+});
+
+test("a repository with only prereleases can promote its first stable release", async () => {
+  const { state, deps } = fixture(false, false, undefined);
+  state.latestRelease = undefined;
+  await recoverRelease(input, deps);
+  assert.equal(state.release.make_latest, "true");
 });
 
 test("existing npm source mismatch refuses all writes", async () => {

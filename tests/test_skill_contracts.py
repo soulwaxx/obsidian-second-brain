@@ -2,6 +2,8 @@
 """Keep focused wiki skills aligned with their shared contract."""
 
 from pathlib import Path
+import json
+import os
 import re
 import subprocess
 import sys
@@ -119,4 +121,92 @@ with tempfile.TemporaryDirectory() as temp:
         result = subprocess.run([sys.executable, str(validator), str(page)],
                                 text=True, capture_output=True)
         assert result.returncode == 0, (example, result.stderr)
+transport_path = ROOT / 'skills/wiki/references/cli-transport.md'
+transport_cli = transport_path.read_text()
+transport_cli_flat = ' '.join(transport_cli.split())
+for boundary in ('vaults verbose', 'vault info=path', 'compare the returned path exactly',
+                 'Never fall back to whichever vault happens to be active',
+                 'vault="$NATIVE_VAULT" search', 'vault="$NATIVE_VAULT" read'):
+    assert boundary in transport_cli_flat, boundary
+assert 'vault=<name-or-id>' in transport_cli
+for document in ('skills/wiki/SKILL.md', 'docs/setup.md'):
+    text = (ROOT / document).read_text()
+    for line in text.splitlines():
+        if 'scripts/' in line and line.rstrip().endswith('\\\\'):
+            assert len(line) - len(line.rstrip('\\\\')) == 1, (document, line)
+for line in transport_cli.splitlines():
+    if (line.startswith('obsidian-cli ') and not line.startswith('obsidian-cli vaults ')
+            and '<command>' not in line):
+        assert ' vault="$NATIVE_VAULT" ' in line or 'vault="$NATIVE_VAULT" vault info=path' in line, line
+
+# Execute the configured-vault preflight with a recording fake CLI. A mismatch
+# or unavailable CLI must stop before any content query; a matching vault runs
+# the explicitly selected command.
+preflight = next(block for block in re.findall(r'^```bash\n(.*?)\n```$', transport_cli, re.S | re.M)
+                if 'vaults verbose' in block)
+cli_stub_dir = tempfile.TemporaryDirectory()
+cli_stub = Path(cli_stub_dir.name) / 'obsidian-cli'
+cli_stub.write_text(f'''#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["CLI_CALLS"], "a", encoding="utf-8") as out:
+    out.write(json.dumps(args) + "\\n")
+if args == ["vaults", "verbose"]:
+    print("A /vault/A\\nB /vault/B")
+elif args[:2] == ["vault=B", "vault"]:
+    print(os.environ.get("NATIVE_PATH", "/vault/B"))
+''')
+cli_stub.chmod(0o755)
+try:
+    for configured_path, native_path, available, expected_queries in (
+            ('/vault/B', '/vault/A', True, 0),
+            ('/vault/B', '/vault/B', True, 1),
+            ('/vault/B', '/vault/B', False, 0)):
+        with tempfile.TemporaryDirectory() as temp:
+            calls = Path(temp) / 'calls.jsonl'
+            env = dict(os.environ, PATH=(cli_stub_dir.name if available else temp),
+                       CLI_CALLS=str(calls), NATIVE_PATH=native_path)
+            script = (preflight.replace("'<verified vault name or ID>'", "'B'")
+                      .replace("'<configured absolute vault root>'", "'/vault/B'")
+                      + '\nobsidian-cli vault="$NATIVE_VAULT" read path="wiki/test.md"\n')
+            result = subprocess.run(['/bin/bash', '-c', script], text=True, capture_output=True, env=env,
+                                    cwd=temp, input=None)
+            recorded = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+            queries = [args for args in recorded if args[1:2] == ['read']]
+            assert len(queries) == expected_queries, (native_path, available, recorded, result.stderr)
+            if expected_queries:
+                assert queries == [['vault=B', 'read', 'path=wiki/test.md']], queries
+                assert result.returncode == 0, result.stderr
+            else:
+                assert result.returncode != 0, (available, native_path, result.stdout)
+finally:
+    cli_stub_dir.cleanup()
+
+# Run both semantic command blocks through a harmless python3 recorder, proving
+# shell continuation passes the intended options in exactly two invocations.
+for document in ('skills/wiki/SKILL.md', 'docs/setup.md'):
+    text = (ROOT / document).read_text()
+    blocks = re.findall(r'^```sh\n(.*?)\n```$', text, re.S | re.M)
+    example = next(block for block in blocks if '--semantic-chunks' in block and '--hybrid' in block)
+    example = (example.replace('<package-dir>', 'PACKAGE_DIR')
+               .replace('<vault-root>', 'VAULT_ROOT')
+               .replace('<installed-model>', 'MODEL'))
+    with tempfile.TemporaryDirectory() as temp:
+        calls = Path(temp) / 'python-calls.jsonl'
+        stub = Path(temp) / 'python3'
+        stub.write_text(f'''#!{sys.executable}
+import json, os, sys
+with open(os.environ["PYTHON_CALLS"], "a", encoding="utf-8") as out:
+    out.write(json.dumps(sys.argv[1:]) + "\\n")
+''')
+        stub.chmod(0o755)
+        env = dict(os.environ, PATH=temp + os.pathsep + os.environ['PATH'], PYTHON_CALLS=str(calls))
+        result = subprocess.run(['/bin/sh', '-c', example], cwd=temp, env=env, text=True, capture_output=True)
+        assert result.returncode == 0, (document, result.stderr)
+        invocations = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert len(invocations) == 2, (document, invocations)
+        assert invocations[0] == ['PACKAGE_DIR/scripts/obsidian-second-brain.py', 'build', '--vault', 'VAULT_ROOT', '--semantic-chunks', '--ollama-model', 'MODEL'], (document, invocations)
+        assert invocations[1] == ['PACKAGE_DIR/scripts/retrieve.py', 'query terms', '--vault', 'VAULT_ROOT', '--hybrid', '--ollama-model', 'MODEL'], (document, invocations)
+        assert all('\\\\' not in arg for invocation in invocations for arg in invocation)
+
 print('Focused wiki skill contracts PASS')
