@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import retrieval_projection as P
 from module_loading import load_source
 B = load_source("projection_bm25", str(ROOT / "scripts/bm25-index.py"))
+R = load_source("projection_retrieve", str(ROOT / "scripts/retrieve.py"))
 C = load_source("projection_chunks", str(ROOT / "scripts/semantic-chunks.py"))
 CLI = load_source("projection_cli", str(ROOT / "scripts/obsidian-second-brain.py"))
 
@@ -80,6 +81,112 @@ class ProjectionTests(unittest.TestCase):
             self.assertTrue(all("Old quota" not in result["excerpt"] for result in hybrid["results"]))
             self.assertIn("Current quota is twenty", hybrid["results"][0]["excerpt"])
             self.assertEqual(path.read_bytes(), original)
+
+    def test_structured_search_excerpt_matches_qualifiers_not_page_title_or_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp).resolve()
+            (vault / "wiki").mkdir()
+            source = ("# Cashflow Manager\n"
+                      "## 2026-04-25 — auth and forecast\n"
+                      "Cashflow Manager authentication setup.\n"
+                      "## 2026-04-25 — billing migration\n"
+                      "Billing migration evidence.\n")
+            (vault / "wiki/cashflow.md").write_text(source)
+            B.build(vault)
+
+            result = CLI.search(vault, "cashflow manager 2026-04-25 billing migration", 10)
+
+            self.assertEqual(result["results"][0]["match"], "canonical-date-section")
+            self.assertIn("Billing migration evidence.", result["results"][0]["excerpt"])
+            self.assertNotIn("authentication setup", result["results"][0]["excerpt"])
+            self.assertEqual((result["results"][0]["lineStart"], result["results"][0]["lineEnd"]), (5, 5))
+
+    def test_dated_page_title_does_not_override_relevant_child_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp).resolve()
+            (vault / "wiki").mkdir()
+            source = ("# Cashflow Manager 2026-04-25\n"
+                      "## 2026-04-25 — auth and forecast\n"
+                      "Authentication migration setup.\n\n\n"
+                      "## 2026-04-25 — billing migration\n"
+                      "Billing migration evidence.\n")
+            (vault / "wiki/cashflow.md").write_text(source)
+            B.build(vault)
+
+            result = CLI.search(vault, "cashflow manager 2026-04-25 billing migration", 10)
+
+            self.assertIn("Billing migration evidence.", result["results"][0]["excerpt"])
+            self.assertNotIn("Authentication migration setup.", result["results"][0]["excerpt"])
+            self.assertEqual((result["results"][0]["lineStart"], result["results"][0]["lineEnd"]), (7, 7))
+
+    def test_historical_excerpt_uses_relevant_dated_section_and_ends_at_boundary(self):
+        source = ("# Cashflow Manager\n"
+                  "## 2026-04-25 — auth and forecast\nAuth forecast discussion.\n"
+                  "## 2026-04-25 — billing migration\nBilling migration evidence.\n"
+                  "## 2026-04-26 — unrelated\nLater evidence.\n")
+        excerpt, start, end = P.excerpt(source, ["cashflow", "manager", "2026-04-25", "billing", "migration"],
+                                        historical=True, iso_date="2026-04-25")
+        self.assertIn("Billing migration evidence", excerpt)
+        self.assertNotIn("Auth forecast", excerpt)
+        self.assertNotIn("Later evidence", excerpt)
+        self.assertEqual((start, end), (5, 5))
+
+    def test_legacy_rerank_projects_superseded_spans_before_embedding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp).resolve()
+            (vault / "wiki").mkdir()
+            page = vault / "wiki/archive.md"
+            page.write_text("# Archive\n~~Quota was ten~~\nCurrent quota is twenty.\n")
+            sent = []
+            with patch.object(R, "embeddings", side_effect=lambda inputs, *args: (sent.extend(inputs) or [[1.0, 0.0] for _ in inputs])):
+                R.rerank("quota", [("wiki/archive.md", 1.0)], vault, "http://127.0.0.1:11434", "fixture", 1)
+            self.assertIn("Current quota is twenty", sent[1])
+            self.assertNotIn("Quota was ten", sent[1])
+
+    def test_discovery_resolution_error_preserves_cache_and_freshness_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp).resolve()
+            (vault / "wiki").mkdir()
+            page = vault / "wiki/blocked.md"
+            page.write_text("distinctive evidence")
+            B.build(vault)
+            index = vault / B.DEFAULT_INDEX
+            before = index.read_bytes()
+            original = Path.resolve
+
+            def failing_resolve(path, *args, **kwargs):
+                if path == page:
+                    raise PermissionError("fixture cannot resolve discovered page")
+                return original(path, *args, **kwargs)
+
+            with patch.object(Path, "resolve", failing_resolve):
+                with self.assertRaisesRegex(PermissionError, "fixture cannot resolve discovered page"):
+                    B.build(vault)
+                freshness = CLI.freshness(index, ["wiki/blocked.md"], vault)
+            self.assertEqual(index.read_bytes(), before)
+            self.assertNotEqual(freshness, "current-by-hash")
+
+    def test_traversal_error_preserves_previous_manifest_and_freshness_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp).resolve()
+            (vault / "wiki/restricted").mkdir(parents=True)
+            (vault / "wiki/open.md").write_text("open note")
+            (vault / "wiki/restricted/hidden.md").write_text("hidden note")
+            B.build(vault)
+            index = vault / B.DEFAULT_INDEX
+            before = index.read_bytes()
+            original = B.os.scandir
+            def failing_scandir(path):
+                if Path(path) == vault / "wiki/restricted":
+                    raise PermissionError("fixture unreadable subtree")
+                return original(path)
+            with patch.object(B.os, "scandir", side_effect=failing_scandir):
+                with self.assertRaisesRegex(PermissionError, "fixture unreadable subtree"):
+                    B.build(vault)
+                with self.assertRaisesRegex(PermissionError, "fixture unreadable subtree"):
+                    CLI.INDEX_MODULE.source_manifest(vault)
+            self.assertEqual(index.read_bytes(), before)
+            self.assertIn("wiki/restricted/hidden.md", B.load_index(index)["sourceHashes"])
 
     def test_crlf_source_hashes_and_character_coordinates_remain_original(self):
         with tempfile.TemporaryDirectory() as tmp:

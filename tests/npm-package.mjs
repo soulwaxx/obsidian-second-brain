@@ -16,13 +16,13 @@ try {
   const [archive] = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", work], { encoding: "utf8" }));
   const files = new Set(archive.files.map((file) => file.path));
   for (const resource of [
-    "package.json", "README.md", "LICENSE", "NOTICE.md", "properties.example.json",
+    "package.json", "requirements.txt", "README.md", "LICENSE", "NOTICE.md", "properties.example.json",
     ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
     "extensions/obsidian.ts", "hooks/obsidian-session.sh", "hooks/hooks.json",
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
-    "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py", "scripts/provision-retrieval.py",
+    "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
-    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs",
+    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/evidence_reports.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
@@ -35,13 +35,14 @@ try {
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
+  assert.ok(!files.has("scripts/provision-retrieval.py"), "retired helper-copy provisioner must not ship");
   for (const name of fs.readdirSync(path.join(root, "skills/wiki/references"))) {
     if (name.endsWith(".md")) assert.ok(files.has(`skills/wiki/references/${name}`), `missing skill reference: ${name}`);
   }
   for (const file of files) {
     assert.doesNotMatch(file, /(^|\/)(tests|\.github|node_modules|__pycache__|\.vault-meta)(\/|$)|\.pyc$|\.tgz$|(^|\/)AGENTS\.md$|^(?!scripts\/obsidian-second-brain\.mjs$)scripts\/.*\.mjs$/);
     assert.ok(
-      /^(package\.json|README\.md|LICENSE|NOTICE\.md|properties\.example\.json)$/.test(file)
+      /^(package\.json|requirements\.txt|README\.md|LICENSE|NOTICE\.md|properties\.example\.json)$/.test(file)
       || /^(\.claude-plugin|agents|docs|extensions|hooks|scripts|skills)\//.test(file),
       `unexpected npm resource: ${file}`,
     );

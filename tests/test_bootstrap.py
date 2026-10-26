@@ -485,6 +485,9 @@ with tempfile.TemporaryDirectory() as temp:
     spec = importlib.util.spec_from_file_location("bootstrap_vault", SCRIPT)
     bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap)
+    selected_home = root / "selected-home"
+    with mock.patch.dict(os.environ, {"HOME": str(selected_home), "OBSIDIAN_AGENT_CONFIG": "~/.config/isolated/properties.json"}):
+        assert bootstrap.config_path() == selected_home / ".config/isolated/properties.json"
 
     # Ancestor symlinks to the same pinned inode are still unsafe: the public
     # path chain must remain symlink-free for both create success and rollback.

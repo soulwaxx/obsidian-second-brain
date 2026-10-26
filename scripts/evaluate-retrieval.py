@@ -124,6 +124,15 @@ def combine_labels(labels):
     return "unjudgeable"
 
 
+def span_bounds(source, span):
+    """Return the non-whitespace bounds of this span in the selected view."""
+    text = source[span["start"]:span["end"]]
+    if not text.strip():
+        return None
+    return (span["start"] + len(text) - len(text.lstrip()),
+            span["start"] + len(text.rstrip()))
+
+
 def judged_context(source, start, end, spans):
     """A fact substring does not judge the rest of an exposed/source passage."""
     intervals, labels = [], []
@@ -134,8 +143,10 @@ def judged_context(source, start, end, spans):
         intervals.append((left, right))
         if not source[left:right].strip():
             continue
-        trimmed_start = span["start"] + len(span["text"]) - len(span["text"].lstrip())
-        trimmed_end = span["end"] - len(span["text"]) + len(span["text"].rstrip())
+        bounds = span_bounds(source, span)
+        if bounds is None:
+            continue
+        trimmed_start, trimmed_end = bounds
         if span["label"] == "neither" or start <= trimmed_start <= trimmed_end <= end:
             labels.append(span["label"])
         else:
@@ -167,13 +178,14 @@ def evidence_metrics(results, case, vault):
             lines = source.splitlines(keepends=True)
             start = sum(map(len, lines[:result["lineStart"] - 1]))
             end = sum(map(len, lines[:result["lineEnd"]]))
-        spans = [s for s in target["evidence"] if start <= s["start"] and s["end"] <= end]
+        spans = target["evidence"]
         view = CLI.INDEX_MODULE.projection.view(source, case["queries"]["en"])
         expected, visible_end = CLI.INDEX_MODULE.projection.render_span(view, start, end)
         # Bind exposure to this occurrence's coordinates, not a matching copy
         # elsewhere in the excerpt. Unknown rendering cannot establish KU.
-        visible = [s for s in spans if s["end"] - (len(s["text"]) - len(s["text"].rstrip())) <= visible_end
-                   and " ".join(s["text"].split()) in result["excerpt"]] if expected == result["excerpt"] else []
+        visible = [s for s in spans if (bounds := span_bounds(view, s)) is not None
+                   and start <= bounds[0] and bounds[1] <= visible_end
+                   and " ".join(view[s["start"]:s["end"]].split()) in result["excerpt"]] if expected == result["excerpt"] else []
         full.append(judged_context(source, start, end, target["evidence"]))
         exposed.append(judged_context(view, start, visible_end, target["evidence"]) if expected == result["excerpt"] else "unjudgeable")
         # Human judgments, not substring heuristics, determine usefulness. A
@@ -326,7 +338,8 @@ def evaluate(vault, gold, *, live=False, model="qwen3-embedding:4b", endpoint="h
             data = CLI.INDEX_MODULE.load_index(vault / CLI.DEFAULT_INDEX)
             full_lexical = [(p, s) for p, s in CLI.INDEX_MODULE.query(data, query)
                             if CLI.INDEX_MODULE.eligible(vault / p, vault)]
-            methods = {"bm25": response["results"][:cutoff]}
+            result_depth = max(cutoff, *ks)
+            methods = {"bm25": response["results"][:result_depth]}
             latencies = []
             legacy_latencies = []
             fixed_coverage = {}
@@ -346,10 +359,22 @@ def evaluate(vault, gold, *, live=False, model="qwen3-embedding:4b", endpoint="h
                         latencies.append(time.perf_counter() - before)
                     if not semantic:
                         raise ValueError("query vector has no compatible current semantic candidates")
-                    compatible_pages = sum(any(len(c["vector"]) == len(vector) for c in chunks) for chunks in pages.values())
-                    semantic_status = "partial" if compatible_pages < len(manifest) else "complete"
+                    compatible = {path: [chunk for chunk in chunks if len(chunk["vector"]) == len(vector)]
+                                  for path, chunks in pages.items()}
+                    compatible_pages = sum(bool(chunks) for chunks in compatible.values())
+                    covered_pages = set()
+                    for path, chunks in compatible.items():
+                        if not chunks or path not in manifest:
+                            continue
+                        source = CHUNKS.projection.read_source(vault / path)
+                        settings = caches["chunks.json"].get("settings") or {}
+                        units = CHUNKS.text_units(CHUNKS.projection.current(source), settings.get("maxChars", 1800))
+                        if all(any(chunk["start"] <= unit["start"] and chunk["end"] >= unit["end"]
+                                       for chunk in chunks) for unit in units):
+                            covered_pages.add(path)
+                    semantic_status = "complete" if covered_pages == set(manifest) else "partial"
                     def rendered(lex, sem):
-                        output = R.hybrid_results(query, data, vault, lex, endpoint, model, timeout, cutoff, semantic=sem)
+                        output = R.hybrid_results(query, data, vault, lex, endpoint, model, timeout, result_depth, semantic=sem)
                         return [{**r, "path": r["page"], "charStart": r["start"], "charEnd": r["end"]} for r in output]
                     methods["rrf"] = rendered(full_lexical, semantic)
                     methods["semantic-only"] = rendered([], semantic)
@@ -364,7 +389,7 @@ def evaluate(vault, gold, *, live=False, model="qwen3-embedding:4b", endpoint="h
                         methods[f"fixed-cosine-{size}"] = rendered([], fixed_semantic)
                     if legacy:
                         before = time.perf_counter()
-                        ranked = R.rerank(query, lexical[:cutoff], vault, endpoint, model, timeout)
+                        ranked = R.rerank(query, lexical[:result_depth], vault, endpoint, model, timeout)
                         # The legacy CLI exposes page ranks, not an answer
                         # passage. Its document representation is the page head.
                         methods["legacy-page-head"] = [{"path": p, "score": score, "charStart": 0,
@@ -379,7 +404,7 @@ def evaluate(vault, gold, *, live=False, model="qwen3-embedding:4b", endpoint="h
             acceptable = [t["path"] for t in case["targets"]]
             scored = {name: {"results": result, "metrics": page_metrics(result, acceptable, ks, cutoff),
                              "canonicalMetrics": page_metrics(result, case.get("canonicalPages") or acceptable, ks, cutoff),
-                             "evidence": evidence_metrics(result, case, vault)} for name, result in methods.items()}
+                             "evidence": evidence_metrics(result[:cutoff], case, vault)} for name, result in methods.items()}
             rows.append({"id": case["id"], "language": language, "category": case["category"], "split": case["split"],
                          "intent": case["intent"], "query": query, "methods": scored,
                          "candidateCoverage": page_metrics(response["results"], acceptable, candidate_sizes, cutoff),

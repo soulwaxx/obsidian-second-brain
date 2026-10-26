@@ -139,10 +139,35 @@ def excerpt(source, terms, *, historical=False, iso_date=None, max_chars=360):
     body = [i for i in range(body_start, len(lines)) if lines[i].strip() and not lines[i].lstrip().startswith("#")]
     selected = next((i for i in body if any(term in lines[i].casefold() for term in folded)),
                     body[0] if body else min(body_start, len(lines) - 1))
+    section_end = len(lines)
     if historical and iso_date:
-        selected = next((i for i in range(body_start, len(lines)) if iso_date in lines[i]), selected)
+        headings = [(i, len(match.group(1)), match.group(2))
+                    for i, line in enumerate(lines)
+                    if (match := re.match(r"^(#{1,6})\s+(.+)$", line))]
+        date_sections = []
+        title = next((match.group(1) for line in lines
+                      if (match := re.match(r"^#\s+(.+?)\s*#*\s*$", line))), "")
+        title_terms = {term.casefold() for term in re.findall(r"[\w]+", title)}
+        date_terms = {term.casefold() for term in re.findall(r"[\w]+", iso_date)}
+        query_terms = set(folded) - title_terms - date_terms
+        for index, (line_no, level, title) in enumerate(headings):
+            if iso_date not in title:
+                continue
+            end_line = next((following for following, next_level, _ in headings[index + 1:]
+                             if next_level <= level), len(lines))
+            section_text = " ".join(lines[line_no:end_line]).casefold()
+            score = sum(term in section_text for term in query_terms)
+            date_sections.append((score, level, line_no, end_line))
+        if date_sections:
+            _, _, heading_line, section_end = max(date_sections, key=lambda item: (item[0], item[1], -item[2]))
+            section_body = [i for i in range(heading_line, section_end)
+                            if i >= body_start and lines[i].strip()
+                            and not lines[i].lstrip().startswith("#")]
+            selected = next((i for i in section_body
+                             if any(term in lines[i].casefold() for term in query_terms)),
+                            section_body[0] if section_body else heading_line)
     original_lines = text.splitlines(keepends=True)
     start = sum(map(len, original_lines[:selected]))
-    end = sum(map(len, original_lines[:selected + 3]))
+    end = sum(map(len, original_lines[:min(selected + 3, section_end)]))
     value, _ = render_span(text, start, end, max_chars)
-    return value, selected + 1, min(len(lines), selected + 3)
+    return value, selected + 1, min(len(lines), selected + 3, section_end)

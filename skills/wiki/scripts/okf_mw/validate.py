@@ -74,7 +74,7 @@ def _parse_frontmatter_yaml(content: str) -> tuple[dict | None, str | None]:
 
     try:
         data = yaml.safe_load(yaml_str)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, ValueError) as e:
         line_info = ""
         # problem_mark and problem are dynamic attributes on YAMLError
         mark = getattr(e, "problem_mark", None)

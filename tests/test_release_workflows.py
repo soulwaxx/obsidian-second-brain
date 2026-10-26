@@ -144,8 +144,8 @@ assert npm_versions[0] == npm_versions[1]
 assert tuple(map(int, npm_versions[0].split('.'))) >= (11, 21, 1)
 ci_steps = checks['jobs']['test']['steps']
 cli_index = next(index for index, step in enumerate(ci_steps) if 'CLAUDE_VERSION' in step.get('env', {}))
-assert any('node tests/claude-effort-contract.mjs' in step.get('run', '')
-           for step in ci_steps[cli_index + 1:])
+for command in ('npm run test:pi-runtime -- --require-runtime', 'node tests/claude-effort-contract.mjs'):
+    assert any(command in step.get('run', '') for step in ci_steps[cli_index + 1:])
 assert job['permissions'] == {'contents': 'write', 'pull-requests': 'read', 'id-token': 'write'}
 assert 'environment' not in job
 trusted_checkout, preserve, artifact_checkout = job['steps'][:3]

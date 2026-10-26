@@ -46,24 +46,19 @@ class ModuleLoadingTests(unittest.TestCase):
             self.assertEqual(module.value, 42)
             self.assertEqual(module.__package__, "module_loading_package")
 
-    def test_legacy_provisioned_helpers_run_without_checkout_imports(self):
+    def test_package_helpers_run_without_vault_local_copies(self):
         with tempfile.TemporaryDirectory() as temporary:
             vault = Path(temporary).resolve()
             (vault / "wiki").mkdir()
             (vault / "wiki/topic.md").write_text("# Topic\n\nlexical fixture evidence\n")
-            provision = [sys.executable, str(ROOT / "scripts/provision-retrieval.py"), "--vault", str(vault)]
-            preview = subprocess.run(provision, check=True, capture_output=True, text=True)
-            import json
-            plan = json.loads(preview.stdout)
-            subprocess.run([*provision, "--apply", "--confirm", plan["planHash"]],
-                           check=True, capture_output=True)
             env = {**os.environ, "PYTHONPATH": "", "PYTHONWARNINGS": "error::DeprecationWarning"}
-            subprocess.run([sys.executable, str(vault / "scripts/bm25-index.py"), "build", "--vault", str(vault)],
+            subprocess.run([sys.executable, str(ROOT / "scripts/bm25-index.py"), "build", "--vault", str(vault)],
                            cwd=temporary, env=env, check=True, capture_output=True)
-            result = subprocess.run([sys.executable, str(vault / "scripts/retrieve.py"), "lexical", "--vault", str(vault)],
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/retrieve.py"), "lexical", "--vault", str(vault)],
                                     cwd=temporary, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("wiki/topic.md", result.stdout)
+            self.assertFalse((vault / "scripts").exists())
 
     def test_runtime_modules_import_with_deprecations_as_errors(self):
         paths = ["obsidian-second-brain.py", "retrieve.py", "semantic-chunks.py",

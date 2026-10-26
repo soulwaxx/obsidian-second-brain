@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-const configPath = path.resolve(process.env.OBSIDIAN_AGENT_CONFIG?.trim() || path.join(os.homedir(), ".config/obsidian-second-brain/properties.json"));
+const configPath = path.resolve(resolveHome(process.env.OBSIDIAN_AGENT_CONFIG?.trim()) || path.join(os.homedir(), ".config/obsidian-second-brain/properties.json"));
 type Config = { vaultPath?: string | null; features?: { guard?: boolean | null; autoCommit?: boolean | null; toc?: boolean | null; retrievalRefresh?: boolean | null } };
 let config: Config = {};
 let configError: string | null = null;
@@ -62,6 +62,7 @@ async function refreshConfig(): Promise<void> {
 
 function resolveHome(p: string | undefined | null): string | null {
 	if (!p) return null;
+	if (p === "~") return os.homedir();
 	if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
 	return p;
 }
@@ -85,9 +86,22 @@ function canonicalPath(p: string, cwd: string): string | null {
 	}
 }
 
+// Match Pi's file-tool normalization before any boundary or lifecycle decision.
+// Do not canonicalize here: the guard must still see symlinks and traversal.
+function toolPath(p: string): string {
+	let normalized = p.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+	if (normalized.startsWith("@")) normalized = normalized.slice(1);
+	normalized = resolveHome(normalized) ?? normalized;
+	return normalized.startsWith("file://") ? fileURLToPath(normalized) : normalized;
+}
+
 function canonicalReadPath(p: string, cwd: string): string {
-	const target = path.resolve(cwd, p);
-	return canonicalPath(p, cwd) ?? path.join(canonicalDirectory(path.dirname(target)) ?? path.dirname(target), path.basename(target));
+	let target = path.resolve(cwd, p);
+	// Pi's read tool also tries these filename variants, in this order.
+	for (const candidate of [target, target.replace(/ (AM|PM)\./gi, "\u202F$1."), target.normalize("NFD"), target.replace(/'/g, "\u2019"), target.normalize("NFD").replace(/'/g, "\u2019")]) {
+		if (fs.existsSync(candidate)) { target = candidate; break; }
+	}
+	return canonicalPath(target, cwd) ?? path.join(canonicalDirectory(path.dirname(target)) ?? path.dirname(target), path.basename(target));
 }
 
 function canonicalPotentialPath(target: string): string {
@@ -111,6 +125,25 @@ function wikiWriteCandidate(rawPath: unknown, cwd: string): string | null {
 	const name = path.basename(target).toLowerCase();
 	if (name === "index.md" || name === "log.md" || name === "_plan.md") return null;
 	return target;
+}
+
+function isNavigationPath(target: string, vault: string): boolean {
+	if (path.basename(target).toLowerCase() !== "index.md") return false;
+	const wiki = path.join(vault, "wiki");
+	try {
+		const canonicalWiki = fs.realpathSync(wiki);
+		const parent = fs.realpathSync(path.dirname(target));
+		const wikiPrefix = canonicalWiki + path.sep;
+		const relative = parent.toLowerCase() === canonicalWiki.toLowerCase()
+			? ""
+			: parent.toLowerCase().startsWith(wikiPrefix.toLowerCase()) ? parent.slice(wikiPrefix.length) : null;
+		if (relative === null) return false;
+		const expectedParent = path.join(canonicalWiki, relative);
+		const parentStat = fs.statSync(parent);
+		const expectedStat = fs.statSync(expectedParent);
+		if (!parentStat.isDirectory() || parentStat.dev !== expectedStat.dev || parentStat.ino !== expectedStat.ino) return false;
+		return !fs.existsSync(target) || fs.statSync(target).isFile();
+	} catch { return false; }
 }
 
 function touchedWikiPath(rawPath: unknown, cwd: string): string | null {
@@ -229,14 +262,17 @@ export default function (pi: ExtensionAPI) {
 		await refreshConfig();
 		const isWrite = event.toolName === "write" || event.toolName === "edit";
 		const isRead = event.toolName === "read";
+		let inputPath = event.input.path;
+		if ((isWrite || isRead) && typeof inputPath === "string") {
+			try { inputPath = toolPath(inputPath); }
+			catch { return { block: true, reason: "Obsidian cannot safely resolve this file-tool path" }; }
+		}
 		const eventVault = knownVault;
 		if (eventVault) rememberVault(owner, eventVault);
-		const readPath = typeof event.input.path === "string" && eventVault
-			? canonicalReadPath(event.input.path, ctx.cwd)
+		const readPath = typeof inputPath === "string" && eventVault
+			? canonicalReadPath(inputPath, ctx.cwd)
 			: null;
-		const isNavigationRead = Boolean(isRead && readPath && eventVault
-			&& readPath.startsWith(path.join(eventVault, "wiki") + path.sep)
-			&& path.basename(readPath).toLowerCase() === "index.md");
+		const isNavigationRead = Boolean(isRead && readPath && eventVault && isNavigationPath(readPath, eventVault));
 		let pendingId: string | undefined;
 		let candidate: string | null = null;
 		if (isNavigationRead && eventVault) {
@@ -245,10 +281,6 @@ export default function (pi: ExtensionAPI) {
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			if ([...pendingWikiWrites.values()].some((entry) => entry.vault === eventVault)) {
 				return { block: true, reason: "wiki tool write is still in flight; retry navigation after its writer settles" };
-			}
-			const syncFailure = pendingSyncFailures.get(eventVault);
-			if (syncFailure) {
-				return { block: true, reason: syncFailure };
 			}
 			const finalized = await runHook("finalize", ctx.cwd, ["--owner", owner], eventVault);
 			if (finalized.error || (finalized.output !== "synced" && finalized.output !== "clean")) {
@@ -264,7 +296,7 @@ export default function (pi: ExtensionAPI) {
 			if (finalized.retrievalPending) reportRetrievalPending(ctx, diagnosticKey);
 		}
 		if (isWrite && eventVault) {
-			candidate = wikiWriteCandidate(event.input.path, ctx.cwd);
+			candidate = wikiWriteCandidate(inputPath, ctx.cwd);
 			if (candidate) {
 				if (!owner || typeof event.toolCallId !== "string" || !event.toolCallId) {
 					return { block: true, reason: "Obsidian writer session/tool identity is unavailable; refusing an untracked wiki write" };
@@ -276,13 +308,13 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		await refreshConfig();
-		if (configError && isWrite && eventVault && await selectedConfigRepairTarget(event.input.path, ctx.cwd)) return;
+		if (configError && isWrite && eventVault && await selectedConfigRepairTarget(inputPath, ctx.cwd)) return;
 		if (pendingId && eventVault !== knownVault) {
 			pendingWikiWrites.delete(pendingId);
 			return { block: true, reason: "Obsidian vault boundary changed during write; retry after revalidation" };
 		}
 		if (!isWrite || !knownVault) return;
-		const rawPath = event.input.path;
+		const rawPath = inputPath;
 		if (typeof rawPath !== "string" || !rawPath) {
 			if (pendingId) pendingWikiWrites.delete(pendingId);
 			return { block: true, reason: "obsidian write path is missing" };
@@ -333,7 +365,7 @@ export default function (pi: ExtensionAPI) {
 			if (pending) pendingWikiWrites.delete(pendingId);
 			return;
 		}
-		const touchedPath = pending?.path ?? touchedWikiPath(event.input.path, ctx.cwd) ?? null;
+		const touchedPath = pending?.path ?? touchedWikiPath(typeof event.input.path === "string" ? toolPath(event.input.path) : event.input.path, ctx.cwd) ?? null;
 		if (!touchedPath) {
 			if (pending) pendingWikiWrites.delete(pendingId);
 			return;

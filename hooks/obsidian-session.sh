@@ -10,6 +10,10 @@ canonical_dir() {
 }
 
 properties=${OBSIDIAN_AGENT_CONFIG:-$HOME/.config/obsidian-second-brain/properties.json}
+case "$properties" in
+  '~') properties=$HOME ;;
+  '~/'*) properties="$HOME/${properties#\~/}" ;;
+esac
 script_root=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 config_data='{}'
 config_error=
@@ -242,14 +246,29 @@ finalize|finalize-read)
     [[ "$target" = /* ]] || target="$invocation_cwd/$target"
     if ! python3 - "$vault" "$target" <<'PY'
 import os, sys
-vault, target = map(os.path.realpath, sys.argv[1:])
-try:
-    selected_wiki = os.path.join(vault, "wiki")
-    is_index = os.path.basename(target).lower() == "index.md"
-    inside = os.path.commonpath([selected_wiki, target]) == selected_wiki
-except ValueError:
-    inside = False
-raise SystemExit(0 if is_index and inside else 1)
+vault, raw_target = sys.argv[1:]
+target = os.path.abspath(raw_target)
+inside = False
+if os.path.basename(target).casefold() == "index.md":
+    selected_wiki = os.path.join(os.path.realpath(vault), "wiki")
+    try:
+        canonical_wiki = os.path.realpath(selected_wiki)
+        parent = os.path.realpath(os.path.dirname(target))
+        wiki_prefix = canonical_wiki + os.sep
+        if parent.casefold() == canonical_wiki.casefold():
+            relative = ""
+        elif parent.casefold().startswith(wiki_prefix.casefold()):
+            relative = parent[len(wiki_prefix):]
+        else:
+            relative = None
+        expected_parent = os.path.join(canonical_wiki, relative) if relative is not None else ""
+        inside = relative is not None and os.path.isdir(parent) and os.path.samefile(parent, expected_parent)
+        if inside and os.path.exists(target):
+            resolved_target = os.path.realpath(target)
+            inside = os.path.isfile(resolved_target) and os.path.samefile(os.path.dirname(resolved_target), expected_parent)
+    except (OSError, ValueError):
+        inside = False
+raise SystemExit(0 if inside else 1)
 PY
     then exit 0; fi
     if [ -z "$owner" ]; then
