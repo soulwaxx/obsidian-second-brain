@@ -71,4 +71,8 @@ for path in (root / 'agents/claude/wiki-vault.md', root / 'agents/pi/wiki-vault.
     assert 'ask the caller to start there' not in body
     assert 'Obsidian Git owns commits, pulls, and pushes' in body
     assert 'Keep one wiki writer at a time' in body
+    # Both specialists inherit one shared policy, not independent safety rules.
+    assert "shared skill's Trust Boundary and Wiki-First Answering sections" in body
+    assert 'including focused workflows' in body
+    assert 'do not define separate permissions or evidence guarantees' in body
 print('Claude and Pi vault agent packaging PASS')

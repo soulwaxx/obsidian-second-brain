@@ -6,6 +6,9 @@ description: Review one user-selected local or provided source and file a bounde
 # Ingest Selected Material
 
 Follow [focused workflows](../wiki/references/focused-workflows.md) and [the wiki skill](../wiki/SKILL.md) for vault selection, page discovery, provenance, authoring, and the mandatory guard/validate/sync order.
+Apply the shared [trust boundary](../wiki/SKILL.md#trust-boundary) and
+[wiki-first answering](../wiki/SKILL.md#wiki-first-answering) rules; this focused
+intent does not create separate permissions or evidence guarantees.
 
 Work only from the source or material the user selected. Identify what it supports, what remains uncertain, and whether an existing canonical page is the right home. Make no wiki changes unless filing is authorized. Prefer a normal guarded, validated lifecycle write for a small update; for a larger coordinated multi-page change, an explicit reviewed batch is available but is not required for every edit.
 

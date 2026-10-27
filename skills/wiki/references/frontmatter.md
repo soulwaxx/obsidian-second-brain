@@ -69,8 +69,11 @@ leniently.
   `generated: { by: <actor>, at: <ISO 8601> }`. Records the last content change
   (supersedes legacy `timestamp`).
 - `verified` (mapping, or list of mappings) — `{ by: <actor>, at: <ISO 8601> }`.
-  Its presence and actor kind define the trust tier (unverified /
-  machine-confirmed / human-reviewed).
+  Its presence and actor kind describe the declared trust tier (unverified /
+  machine-confirmed / human-reviewed), not independently attested review or
+  proof of factual support/current truth. Apply the shared
+  [evidence-state distinctions](../SKILL.md#wiki-first-answering); a recent
+  `generated.at`, `verified.at`, or future `stale_after` alone verifies no claim.
 - `status` (string) — lifecycle state, e.g. `stable`, `draft`, `deprecated`.
 - `stale_after` (date) — the date past which the concept should be treated as
   stale.
