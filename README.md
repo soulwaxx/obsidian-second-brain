@@ -16,7 +16,7 @@ preserves existing notes and unrelated settings, and refuses conflicts. See
 
 ## Requirements
 
-- Claude Code or Pi; Python 3.14 or newer with PyYAML; markdown-it-py for evidence reports; `jq` for lifecycle commands.
+- Claude Code or Pi; Python 3.14 or newer with PyYAML; markdown-it-py for evidence reports, outlines, and section-selected reads; `jq` for lifecycle commands.
 - Node.js 18 or newer for the package CLI launcher. Use a supported Node.js LTS
   release; Node 18 is end-of-life. Pi has its own Node.js requirement, which can
   be higher than this package minimum.
@@ -36,9 +36,10 @@ python3 -m venv "$HOME/.venvs/obsidian-second-brain"
 python3 -m pip install -r requirements.txt
 ```
 
-`markdown-it-py` is used only by `evidence-report`; doctor and local retrieval
-remain available without it. If it is missing, the evidence command prints the
-installation command instead of silently using incomplete Markdown scanning.
+`markdown-it-py` is used by `evidence-report`, `outline`, and section-selected
+`read` commands. Doctor, search, and explicit-span reads do not require it. If a
+parser-dependent command cannot import it, the CLI prints an installation
+instruction instead of silently using incomplete Markdown scanning.
 
 On Linux, install your distribution's `python3-venv` package if necessary. Keep
 the environment active when running Python commands.
