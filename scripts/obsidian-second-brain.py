@@ -21,6 +21,7 @@ LIFECYCLE_MODULE = load_source("obsidian_cli_lifecycle", str(Path(__file__).with
 DEFAULT_CONFIG = Path.home() / ".config/obsidian-second-brain/properties.json"
 DEFAULT_INDEX = Path(".vault-meta/retrieval/bm25.json")
 MAX_EXCERPT = 360
+READS_MODULE = load_source("obsidian_cli_retrieval_reads", str(Path(__file__).with_name("retrieval_reads.py")))
 
 
 def config_path(explicit: str | None) -> Path:
@@ -182,9 +183,17 @@ def freshness(index: Path, pages: list[str], vault: Path) -> str:
         return "unknown"
 
 
-def excerpt_for(path: Path, terms: list[str], historical: bool = False, iso_date: str | None = None) -> tuple[str, int, int]:
-    text = INDEX_MODULE.projection.read_source(path)
-    return INDEX_MODULE.projection.excerpt(text, terms, historical=historical, iso_date=iso_date, max_chars=MAX_EXCERPT)
+def read_reference(vault: Path, page: str, view: str, start: int, end: int, expected_source: str) -> dict[str, Any]:
+    """Attach a ref only when its safely-opened snapshot is the excerpt's source."""
+    try:
+        raw, digest = READS_MODULE.read_snapshot(vault, page)
+        source = raw.decode("utf-8", errors="replace")
+        if source != expected_source or not 0 <= start <= end <= len(source):
+            return {}
+        return {"sourceHash": digest, "readRef": {"page": page, "expectedHash": digest,
+                "view": view, "start": start, "end": end}}
+    except (OSError, ValueError):
+        return {}
 
 
 def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
@@ -257,14 +266,22 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
                     line_start = source_text.count("\n", 0, start) + 1
                     line_end = source_text.count("\n", 0, end) + (1 if end == 0 or source_text[end - 1:end] != "\n" else 0)
                     match_type = "hybrid" if page in lexical_rank else "semantic"
-                    safe.append({"path": rel.as_posix(), "score": fused[page], "match": match_type,
-                                 "lineStart": line_start, "lineEnd": max(line_start, line_end),
-                                 "charStart": start, "charEnd": end, "semanticScore": similarity,
-                                 "excerpt": excerpt})
+                    item = {"path": rel.as_posix(), "score": fused[page], "match": match_type,
+                            "lineStart": line_start, "lineEnd": max(line_start, line_end),
+                            "charStart": start, "charEnd": end, "semanticScore": similarity,
+                            "excerpt": excerpt}
+                    item.update(read_reference(vault, rel.as_posix(), "current", start, end, source_text))
+                    safe.append(item)
                 else:
-                    excerpt, line_start, line_end = excerpt_for(source, [x.casefold() for x in INDEX_MODULE.tokens(query)])
-                    safe.append({"path": rel.as_posix(), "score": fused[page], "match": "bm25",
-                                 "lineStart": line_start, "lineEnd": line_end, "excerpt": excerpt})
+                    source_text = INDEX_MODULE.projection.read_source(source)
+                    excerpt, line_start, line_end = INDEX_MODULE.projection.excerpt(source_text, [x.casefold() for x in INDEX_MODULE.tokens(query)], max_chars=MAX_EXCERPT)
+                    item = {"path": rel.as_posix(), "score": fused[page], "match": "bm25",
+                            "lineStart": line_start, "lineEnd": line_end, "excerpt": excerpt}
+                    lines = source_text.splitlines(keepends=True)
+                    start = sum(map(len, lines[:line_start - 1]))
+                    end = sum(map(len, lines[:line_end]))
+                    item.update(read_reference(vault, rel.as_posix(), "current", start, end, source_text))
+                    safe.append(item)
         else:
             candidates = candidates[:max(0, min(limit, 100))]
         for page, score in ([] if semantic and hybrid and not date_match else candidates):
@@ -274,10 +291,16 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
             source = vault / rel
             if not INDEX_MODULE.eligible(source, vault):
                 continue
-            excerpt, line_start, line_end = excerpt_for(source, [x.casefold() for x in INDEX_MODULE.tokens(query)], historical=bool(date_match), iso_date=date_match.group() if date_match else None)
+            source_text = INDEX_MODULE.projection.read_source(source)
+            excerpt, line_start, line_end = INDEX_MODULE.projection.excerpt(source_text, [x.casefold() for x in INDEX_MODULE.tokens(query)], historical=bool(date_match), iso_date=date_match.group() if date_match else None, max_chars=MAX_EXCERPT)
             match_type = "exact-date" if page in exact else "canonical-date-section" if page in canonical else "bm25"
-            safe.append({"path": rel.as_posix(), "score": score, "match": match_type,
-                         "lineStart": line_start, "lineEnd": line_end, "excerpt": excerpt})
+            item = {"path": rel.as_posix(), "score": score, "match": match_type,
+                    "lineStart": line_start, "lineEnd": line_end, "excerpt": excerpt}
+            lines = source_text.splitlines(keepends=True)
+            start = sum(map(len, lines[:line_start - 1]))
+            end = sum(map(len, lines[:line_end]))
+            item.update(read_reference(vault, rel.as_posix(), "raw" if date_match else "current", start, end, source_text))
+            safe.append(item)
         response.update({"results": safe, "fallback": ("hybrid" if semantic and hybrid and not date_match else "bm25") if safe else "navigation",
                          "freshness": freshness_state, "reason": None if safe else "no indexed matches; use wiki/index.md navigation"})
         if semantic_error:
@@ -288,13 +311,29 @@ def search(vault: Path | None, query: str, limit: int, hybrid: bool = False,
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "search", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply"))
+    class CliParser(argparse.ArgumentParser):
+        def error(self, message: str) -> None:
+            arguments = sys.argv[1:]
+            if arguments and arguments[0] in {"read", "outline"} and "--json" in arguments:
+                print(json.dumps({"code": "invalid-read", "error": message}, ensure_ascii=False))
+                raise SystemExit(2)
+            super().error(message)
+
+    parser = CliParser(description=__doc__)
+    parser.add_argument("command", choices=("doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply"))
     parser.add_argument("query", nargs="?", help="search terms (required for search)")
     parser.add_argument("--vault", help="explicit vault root; overrides OBSIDIAN_VAULT_PATH and config")
     parser.add_argument("--config", help="config JSON path (default: OBSIDIAN_AGENT_CONFIG or standard user config)")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    parser.add_argument("--limit", type=int, default=10, help="maximum search results (0–100)")
+    parser.add_argument("--limit", type=int, default=10, help="maximum search results or outline entries (outline: 1–100)")
+    parser.add_argument("--offset", type=int, default=0, help="outline entry offset")
+    parser.add_argument("--start", type=int, help="read range start character offset (zero-based)")
+    parser.add_argument("--end", type=int, help="read range end character offset (zero-based, exclusive)")
+    parser.add_argument("--section", help="read an outline section ID")
+    parser.add_argument("--expected-hash", help="raw source SHA-256 from outline or search readRef")
+    parser.add_argument("--view", choices=("raw", "current"), default="raw", help="read raw or current-projected content")
+    parser.add_argument("--max-chars", type=int, default=READS_MODULE.MAX_CHARS_DEFAULT, help="read budget (1–12000 decoded characters)")
+    parser.add_argument("--cursor", type=int, help="absolute continuation cursor within the original selection")
     parser.add_argument("--hybrid", action="store_true", help="opt in to cached semantic chunk + BM25 rank fusion")
     parser.add_argument("--semantic-chunks", action="store_true", help="manual input-incremental semantic document build; never installs a model; requires build")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="loopback Ollama URL (semantic operations only)")
@@ -308,6 +347,46 @@ def main() -> int:
     parser.add_argument("--source", action="append", default=[], help="explicit absolute local text source; repeat to select multiple")
     parser.add_argument("--page", action="append", default=[], help="existing wiki page to link; repeat as wiki-relative path")
     args = parser.parse_args()
+    if args.command in {"read", "outline"}:
+        try:
+            if args.config is not None:
+                raise ValueError("read and outline do not load or accept --config")
+            if not args.vault:
+                raise ValueError(f"{args.command} requires --vault")
+            if args.page is None or len(args.page) != 1:
+                raise ValueError(f"{args.command} requires exactly one --page")
+            if args.query is not None:
+                raise ValueError(f"{args.command} does not accept query terms")
+            if args.semantic_chunks or args.hybrid or args.source or args.bundle:
+                raise ValueError(f"unsupported option for {args.command}")
+            reads = load_source("obsidian_cli_retrieval_reads", str(Path(__file__).with_name("retrieval_reads.py")))
+            vault_root = Path(args.vault).expanduser()
+            if args.command == "outline":
+                if any(value is not None for value in (args.section, args.start, args.end, args.cursor)):
+                    raise ValueError("outline does not accept read selectors or cursor")
+                if args.offset and not args.expected_hash:
+                    raise ValueError("paginated outline continuation requires --expected-hash")
+                result = reads.outline_page(vault_root, args.page[0], expected_hash=args.expected_hash,
+                                            limit=args.limit, offset=args.offset)
+            else:
+                if args.offset != 0 or args.limit != 10:
+                    raise ValueError("read does not accept --offset or --limit")
+                result = reads.read_page(vault_root, args.page[0], args.expected_hash or "",
+                                         section=args.section, start=args.start, end=args.end,
+                                         view=args.view, max_chars=args.max_chars, cursor=args.cursor)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        except ModuleNotFoundError as exc:
+            if exc.name in {"markdown_it", "mdurl"}:
+                message = "read/outline requires markdown-it-py; install requirements.txt"
+            else:
+                message = str(exc)
+            print(json.dumps({"error": message, "code": "dependency-missing"}) if args.json else f"obsidian-second-brain: {message}", file=sys.stderr if not args.json else sys.stdout)
+            return 1
+        except (OSError, UnicodeError, ValueError) as exc:
+            payload = {"error": str(exc), "code": "source-changed" if type(exc).__name__ == "SourceChanged" else "invalid-read"}
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True) if args.json else f"obsidian-second-brain: {exc}", file=sys.stderr if not args.json else sys.stdout)
+            return 1
     config_file = config_path(args.config)
     config, error = load_config(config_file)
     write_commands = {"batch-inspect", "batch-apply", "batch-recover", "batch-rollback",

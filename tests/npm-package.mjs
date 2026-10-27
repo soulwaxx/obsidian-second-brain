@@ -22,7 +22,7 @@ try {
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
-    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/evidence_reports.py",
+    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/evidence_reports.py", "scripts/retrieval_reads.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
@@ -103,6 +103,49 @@ try {
   ], { cwd: work, encoding: "utf8" }));
   assert.equal(packageRelativeDoctor.vault, fs.realpathSync(cliVault));
   assert.equal(packageRelativeDoctor.retrieval.indexExists, false, "package-relative doctor must remain read-only");
+
+  const readPage = path.join(cliVault, "wiki/read-page.md");
+  const readSource = "---\ntype: Note\n---\n# Evidence 😀\nSelected text.\n";
+  fs.writeFileSync(readPage, readSource);
+  const sourceHash = createHash("sha256").update(fs.readFileSync(readPage)).digest("hex");
+  const readOutlineArgs = ["outline", "--json", "--vault", cliVault, "--page", "wiki/read-page.md"];
+  const binOutline = JSON.parse(run(cli, readOutlineArgs, { cwd: work, encoding: "utf8" }));
+  assert.equal(binOutline.sourceHash, sourceHash);
+  const headingId = `heading:${readSource.indexOf("#")}`;
+  assert.equal(binOutline.entries.find((item) => item.kind === "heading").id, headingId);
+  const binRead = JSON.parse(run(cli, ["read", "--json", "--vault", cliVault, "--page", "wiki/read-page.md",
+    "--expected-hash", sourceHash, "--section", headingId], { cwd: work, encoding: "utf8" }));
+  assert.match(binRead.text, /Selected text/);
+  const packageOutline = JSON.parse(run(process.execPath, [path.join(packageRootFromSkill, "scripts/obsidian-second-brain.mjs"),
+    ...readOutlineArgs], { cwd: work, encoding: "utf8" }));
+  assert.equal(packageOutline.sourceHash, sourceHash);
+  const packageRead = JSON.parse(run(process.execPath, [path.join(packageRootFromSkill, "scripts/obsidian-second-brain.mjs"),
+    "read", "--json", "--vault", cliVault, "--page", "wiki/read-page.md", "--expected-hash", sourceHash,
+    "--start", "0", "--end", String(Array.from(readSource).length)], { cwd: work, encoding: "utf8" }));
+  assert.equal(packageRead.text, readSource);
+  run("python3", [path.join(installed, "scripts/bm25-index.py"), "build", "--vault", cliVault], { cwd: work });
+  const indexPath = path.join(cliVault, ".vault-meta/retrieval/bm25.json");
+  const readSnapshot = (file) => ({ bytes: fs.readFileSync(file), mtimeNs: fs.statSync(file).mtimeNs });
+  const sourceBeforeSearch = readSnapshot(readPage);
+  const indexBeforeSearch = readSnapshot(indexPath);
+  for (const searchCommand of [
+    [cli, ["search", "Selected text", "--json", "--vault", cliVault]],
+    [process.execPath, [path.join(packageRootFromSkill, "scripts/obsidian-second-brain.mjs"),
+      "search", "Selected text", "--json", "--vault", cliVault]],
+  ]) {
+    const searchResult = JSON.parse(run(searchCommand[0], searchCommand[1], { cwd: work, encoding: "utf8" }));
+    const match = searchResult.results.find((item) => item.path === "wiki/read-page.md");
+    assert.ok(match?.readRef, "packed search must include a usable source reference");
+    assert.equal(match.sourceHash, sourceHash);
+    const roundtrip = JSON.parse(run(searchCommand[0], [
+      ...(searchCommand[0] === cli ? [] : [searchCommand[1][0]]),
+      "read", "--json", "--vault", cliVault, "--page", match.readRef.page,
+      "--expected-hash", match.readRef.expectedHash, "--start", String(match.readRef.start), "--end", String(match.readRef.end),
+    ], { cwd: work, encoding: "utf8" }));
+    assert.match(roundtrip.text, /Selected text/);
+    assert.deepEqual(readSnapshot(readPage), sourceBeforeSearch, "search/read must not rewrite source page");
+    assert.deepEqual(readSnapshot(indexPath), indexBeforeSearch, "search/read must not rewrite index/cache");
+  }
 
   const evaluatorHelp = run("python3", [path.join(installed, "scripts/evaluate-retrieval.py"), "--help"], { cwd: work, encoding: "utf8" });
   assert.match(evaluatorHelp, /--vault/);

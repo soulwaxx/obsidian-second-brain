@@ -162,7 +162,8 @@ Search reports structured results, fallback, and freshness without rebuilding
 an index. Doctor reports
 configuration, dependency, vault, cache-exclusion, lifecycle, and retrieval
 status; it does not repair anything. `obsidian-second-brain evidence-report
---json` is an additional read-only report. Optional source/claim ledgers are
+--json` is an additional read-only report. For direct, hash-bound page reads
+without an index, see the [retrieval read/outline commands](retrieval-reads.md). Optional source/claim ledgers are
 canonical wiki data and are never migrated or required; the report describes
 structure and declared metadata, not factual verification. Use the generated index hierarchy if
 search is unavailable or unhelpful. See the

@@ -413,8 +413,38 @@ class HybridRetrievalTests(unittest.TestCase):
         target = next(item for item in response["results"] if item["path"] == "wiki/semantic-target.md")
         self.assertEqual(response["fallback"], "hybrid")
         self.assertEqual(target["match"], "semantic")
+        self.assertEqual({key: value for key, value in target.items() if key not in {"sourceHash", "readRef"}},
+                         {"path": "wiki/semantic-target.md", "score": target["score"], "match": "semantic",
+                          "lineStart": 1, "lineEnd": 2, "charStart": 0, "charEnd": len(self.target_text),
+                          "semanticScore": 1.0, "excerpt": "# Semantic Target uncomplicated cure explanation"})
+        self.assertAlmostEqual(target["score"], 1 / 61)
         self.assertEqual(target["lineStart"], 1)
         self.assertGreater(target["charEnd"], target["charStart"])
+        self.assertEqual(target["readRef"]["start"], target["charStart"])
+        self.assertEqual(target["readRef"]["end"], target["charEnd"])
+        self.assertEqual(target["readRef"]["view"], "current")
+        page = self.vault / target["path"]
+        self.assertEqual(target["sourceHash"], target["readRef"]["expectedHash"])
+        from retrieval_reads import read_page
+        from retrieval_projection import current
+        focused = read_page(self.vault, target["path"], target["sourceHash"],
+                            start=target["charStart"], end=target["charEnd"], view="current")
+        source = page.read_bytes().decode("utf-8", errors="replace")
+        self.assertEqual(focused["text"], current(source)[target["charStart"]:target["charEnd"]])
+        self.assertIn("uncomplicated cure explanation", focused["text"])
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            module = load_source("hybrid_ref_drift_cli", str(CLI))
+        drift_bytes = b"concurrently changed"
+        with patch.object(module.READS_MODULE, "read_snapshot",
+                          return_value=(drift_bytes, hashlib.sha256(drift_bytes).hexdigest())):
+            drift_response = module.search(self.vault.resolve(), "paraphrase solution", 10,
+                                           hybrid=True, ollama_url=self.url, ollama_model="fixture")
+        drift_target = next(item for item in drift_response["results"] if item["path"] == target["path"])
+        self.assertNotIn("sourceHash", drift_target)
+        self.assertNotIn("readRef", drift_target)
+        legacy = {key: value for key, value in target.items() if key not in {"sourceHash", "readRef"}}
+        self.assertEqual({key: value for key, value in drift_target.items() if key not in {"sourceHash", "readRef"}}, legacy)
+
 
     def test_forged_unsafe_cache_path_never_becomes_candidate(self):
         cache_path = self.vault / ".vault-meta/retrieval/chunks.json"

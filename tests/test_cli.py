@@ -62,13 +62,46 @@ class CliTests(unittest.TestCase):
         response = json.loads(result.stdout)
         self.assertEqual(response["fallback"], "bm25", response)
         self.assertEqual(response["results"][0]["path"], "wiki/coffee.md")
+        legacy = {key: value for key, value in response["results"][0].items()
+                  if key not in {"sourceHash", "readRef"}}
+        self.assertEqual({key: value for key, value in legacy.items() if key != "score"},
+                         {"path": "wiki/coffee.md", "match": "bm25", "lineStart": 3,
+                          "lineEnd": 3, "excerpt": "Espresso beans and careful roasting."})
+        self.assertAlmostEqual(legacy["score"], 0.28768207245178085)
         self.assertGreaterEqual(response["results"][0]["lineStart"], 1)
         self.assertIn("Espresso", response["results"][0]["excerpt"])
         self.assertEqual(response["freshness"], "current-by-hash")
+        reference = response["results"][0]["readRef"]
+        self.assertEqual(reference["page"], "wiki/coffee.md")
+        self.assertEqual(reference["expectedHash"], response["results"][0]["sourceHash"])
+        focused = self.run_cli("read", "--json", "--vault", str(self.vault), "--page", reference["page"],
+                               "--expected-hash", reference["expectedHash"], "--start", str(reference["start"]),
+                               "--end", str(reference["end"]), cwd=other)
+        self.assertEqual(focused.returncode, 0, focused.stderr)
+        self.assertIn("Espresso", json.loads(focused.stdout)["text"])
         (self.vault / "wiki" / "new.md").write_text("new material\n", encoding="utf-8")
         stale = self.run_cli("search", "espresso", "--json", cwd=other)
         self.assertEqual(json.loads(stale.stdout)["freshness"], "stale")
         self.assertEqual(index.read_bytes(), old_index)
+
+    def test_search_read_refs_preserve_current_and_dated_raw_views(self):
+        dated = self.vault / "wiki/meeting-2026-05-12.md"
+        dated.write_text("# Meeting 2026-05-12\ncurrent phrase and ~~historic phrase~~\n", encoding="utf-8")
+        built = subprocess.run([sys.executable, str(ROOT / "scripts/bm25-index.py"), "build", "--vault", str(self.vault)],
+                               text=True, capture_output=True)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        for query, expected_view, term in (("current phrase", "current", "current phrase"),
+                                           ("meeting 2026-05-12", "raw", "historic phrase")):
+            result = self.run_cli("search", query, "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            hit = next(item for item in json.loads(result.stdout)["results"] if item["path"] == "wiki/meeting-2026-05-12.md")
+            reference = hit["readRef"]
+            self.assertEqual(reference["view"], expected_view)
+            focused = self.run_cli("read", "--json", "--vault", str(self.vault), "--page", reference["page"],
+                                   "--expected-hash", reference["expectedHash"], "--start", str(reference["start"]),
+                                   "--end", str(reference["end"]), "--view", reference["view"])
+            self.assertEqual(focused.returncode, 0, focused.stderr)
+            self.assertIn(term, json.loads(focused.stdout)["text"])
 
     def test_doctor_reports_malformed_lifecycle_roots_as_structured_unavailable(self):
         state_path = self.vault / ".vault-meta/lifecycle/state.json"
