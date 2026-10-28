@@ -69,7 +69,7 @@
   },
   "scripts": {
     "test:package": "node tests/npm-package.mjs",
-    "test:pi-runtime": "node --test tests/pi-runtime-paths.test.mjs && node tests/pi-runtime-contract.mjs && node tests/pi-tools-launcher.mjs && python3 tests/test_pi_wiki_tools.py",
+    "test:pi-runtime": "node --test tests/pi-runtime-paths.test.mjs && node tests/pi-tools-launcher.mjs && python3 tests/test_pi_wiki_tools.py && node tests/pi-runtime-contract.mjs",
     "test:claude-runtime": "node tests/claude-runtime-contract.mjs && node tests/claude-cli-fallback-contract.mjs && node tests/claude-effort-contract.mjs",
     "test:release": "node --test tests/release*.test.mjs && python3 tests/test_release_workflows.py",
     "release:check": "node .github/release-tools/release.mjs check",
