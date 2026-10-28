@@ -180,6 +180,11 @@ Git handles version control independently, including for legacy configs with
 
 ## Query and diagnose
 
+Pi also registers four direct, read-only `wiki_search`, `wiki_outline`,
+`wiki_read`, and `wiki_doctor` tools. They invoke the currently installed
+package's Python retrieval/read operations and do not inject wiki content into
+prompts; see [the Pi tool contract](docs/pi-tools.md).
+
 When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
 for read-only structured search and doctor commands from any folder:
 

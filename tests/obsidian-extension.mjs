@@ -25,14 +25,35 @@ try {
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: path.join(tmp, "other-vault") }));
   process.env.OBSIDIAN_VAULT_PATH = vault;
   const importLine = 'import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";';
+  const typeImport = 'import { Type } from "@earendil-works/pi-ai";';
+  const typeStub = `const Type = { Object: (properties, options) => ({ kind: "object", properties, options }), String: (options) => ({ kind: "string", options }), Boolean: () => ({ kind: "boolean" }), Record: (key, value) => ({ kind: "record", key, value }), Unknown: () => ({ kind: "unknown" }), Optional: (schema) => ({ kind: "optional", schema }), Integer: (options) => ({ kind: "integer", options }), Number: (options) => ({ kind: "number", options }), Union: (schemas) => ({ kind: "union", schemas }), Null: () => ({ kind: "null" }), Literal: (value) => ({ kind: "literal", value }) };`;
   const text = fs.readFileSync(source, "utf8");
   assert.ok(text.includes(importLine));
-  fs.writeFileSync(path.join(tmp, "extensions", "obsidian.ts"), text.replace(importLine,
-    'type ExtensionAPI = unknown;'));
+  assert.ok(text.includes(typeImport));
+  const fixtureSource = text.replace(importLine, 'type ExtensionAPI = unknown;').replace(typeImport, typeStub);
+  const register = (handlers, tools = []) => ({ on: (event, handler) => handlers.set(event, handler), registerTool: (tool) => tools.push(tool) });
+  fs.writeFileSync(path.join(tmp, "extensions", "obsidian.ts"), fixtureSource);
   process.env.WIKI_MIDDLEWARE_DIR = path.resolve(middleware);
   const handlers = new Map();
+  const registeredTools = [];
   const { default: extension } = await import(pathToFileURL(path.join(tmp, "extensions", "obsidian.ts")));
-  extension({ on: (event, handler) => handlers.set(event, handler) });
+  extension(register(handlers, registeredTools));
+  assert.deepEqual(registeredTools.map((tool) => tool.name), ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"]);
+  for (const tool of registeredTools) {
+    assert.equal(tool.exposure, undefined, "default direct exposure leaves user's other selection alone");
+    assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    assert.equal(tool.outputSchema.options.additionalProperties, false);
+    assert.equal(tool.parameters.options.additionalProperties, false);
+    assert.equal(typeof tool.execute, "function");
+  }
+  assert.deepEqual(registeredTools.map((tool) => tool.parameters.properties.vault.kind), ["optional", "optional", "optional", "optional"]);
+  const nativeSearch = registeredTools.find((tool) => tool.name === "wiki_search");
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  const preAbortedResult = await nativeSearch.execute("pre-aborted", { query: "fixture" }, alreadyAborted.signal, undefined, { cwd: vault });
+  assert.equal(preAbortedResult.structuredContent.code, "aborted");
+  const failedLauncherResult = await nativeSearch.execute("missing-launcher", { query: "fixture" }, undefined, undefined, { cwd: vault });
+  assert.equal(failedLauncherResult.structuredContent.code, "invalid-process-output", "launcher startup failure closes the tool without leaking a child");
   const ctx = { cwd: vault, sessionManager: { getSessionId: () => "pi-writer-session" }, ui: { notify: () => {} } };
   const call = (p, toolName = "write") => handlers.get("tool_call")({ toolName, input: { path: p } }, ctx);
   assert.equal(await call("wiki/topic/attachment.bin"), undefined);
@@ -80,11 +101,11 @@ try {
     }
     fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault }));
     const tildeCopy = path.join(tmp, "extensions/obsidian-tilde.ts");
-    fs.writeFileSync(tildeCopy, text.replace(importLine, "type ExtensionAPI = unknown;"));
+    fs.writeFileSync(tildeCopy, fixtureSource);
     process.env.OBSIDIAN_AGENT_CONFIG = "~/properties.json";
     delete process.env.OBSIDIAN_VAULT_PATH;
     const tildeHandlers = new Map();
-    (await import(pathToFileURL(tildeCopy))).default({ on: (name, handler) => tildeHandlers.set(name, handler) });
+    (await import(pathToFileURL(tildeCopy))).default(register(tildeHandlers));
     assert.match((await tildeHandlers.get("before_agent_start")({}, ctx)).message.content, /Configured Obsidian wiki:/);
     assert.match(execFileSync("bash", [hook, "start"], { cwd: tmp, encoding: "utf8", env: process.env }), /Configured Obsidian wiki:/);
   } finally {
@@ -124,10 +145,10 @@ try {
   // Broken-config repair is limited to the exact selected regular config file.
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard: "bad" }, custom: { preserve: true } }));
   const repairCopy = path.join(tmp, "extensions", "obsidian-repair.ts");
-  fs.writeFileSync(repairCopy, text.replace(importLine, "type ExtensionAPI = unknown;"));
+  fs.writeFileSync(repairCopy, fixtureSource);
   const repairHandlers = new Map();
   const { default: repairExtension } = await import(pathToFileURL(repairCopy));
-  repairExtension({ on: (event, handler) => repairHandlers.set(event, handler) });
+  repairExtension(register(repairHandlers));
   const otherCwd = path.join(tmp, "outside");
   fs.mkdirSync(otherCwd);
   const outsideDiagnostic = await repairHandlers.get("before_agent_start")({}, { cwd: otherCwd });
@@ -178,10 +199,10 @@ try {
   for (const config of ["{invalid", "null", "[]", JSON.stringify({ vaultPath: 42 })]) {
     fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, config);
     const copy = path.join(tmp, "extensions", `obsidian-${Math.random()}.ts`);
-    fs.writeFileSync(copy, text.replace(importLine, "type ExtensionAPI = unknown;"));
+    fs.writeFileSync(copy, fixtureSource);
     const { default: invalidExtension } = await import(pathToFileURL(copy));
     const invalidHandlers = new Map();
-    invalidExtension({ on: (event, handler) => invalidHandlers.set(event, handler) });
+    invalidExtension(register(invalidHandlers));
     const warnings = [];
     await invalidHandlers.get("session_start")({}, { ...ctx, ui: { notify: (message) => warnings.push(message) } });
     assert.match(warnings.join(" "), /(?:cannot load|invalid) .*properties\.json/);
@@ -195,20 +216,20 @@ try {
   process.env.OBSIDIAN_VAULT_PATH = "";
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard: false } }));
   const reloadCopy = path.join(tmp, "extensions", "obsidian-reload.ts");
-  fs.writeFileSync(reloadCopy, text.replace(importLine, "type ExtensionAPI = unknown;"));
+  fs.writeFileSync(reloadCopy, fixtureSource);
   const reloadHandlers = new Map();
   const { default: reloadExtension } = await import(pathToFileURL(reloadCopy));
-  reloadExtension({ on: (event, handler) => reloadHandlers.set(event, handler) });
+  reloadExtension(register(reloadHandlers));
   assert.equal(await reloadHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard: true } }));
   assert.equal((await reloadHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx))?.block, true);
 
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard: false, autoCommit: false } }));
   const featureCopy = path.join(tmp, "extensions", "obsidian-features.ts");
-  fs.writeFileSync(featureCopy, text.replace(importLine, "type ExtensionAPI = unknown;"));
+  fs.writeFileSync(featureCopy, fixtureSource);
   const featureHandlers = new Map();
   const { default: featureExtension } = await import(pathToFileURL(featureCopy));
-  featureExtension({ on: (event, handler) => featureHandlers.set(event, handler) });
+  featureExtension(register(featureHandlers));
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
   const simulateWrite = async (event, context) => {
     const result = await featureHandlers.get("tool_call")(event, context);
@@ -450,7 +471,7 @@ try {
   delete process.env.OBSIDIAN_VAULT_PATH;
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { retrievalRefresh: false } }));
   const reselectHandlers = new Map();
-  featureExtension({ on: (event, handler) => reselectHandlers.set(event, handler) });
+  featureExtension(register(reselectHandlers));
   const reselectWarnings = [];
   const reselectCtx = { ...ctx, cwd: otherCwd, ui: { notify: (message) => reselectWarnings.push(message) } };
   await reselectHandlers.get("session_start")({}, reselectCtx);
@@ -480,7 +501,7 @@ try {
   process.env.OBSIDIAN_VAULT_PATH = vault;
 
   const readerHandlers = new Map();
-  featureExtension({ on: (event, handler) => readerHandlers.set(event, handler) });
+  featureExtension(register(readerHandlers));
   const readerNotifications = [];
   const readerCtx = { ...ctx, sessionManager: { getSessionId: () => "pi-reader-session" }, ui: { notify: (message) => readerNotifications.push(message) } };
   const lifecycleStatePath = path.join(vault, ".vault-meta/lifecycle/state.json");
@@ -754,7 +775,7 @@ try {
   process.env.OBSIDIAN_VAULT_PATH = refreshVault;
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: refreshVault }));
   const refreshHandlers = new Map();
-  featureExtension({ on: (event, handler) => refreshHandlers.set(event, handler) });
+  featureExtension(register(refreshHandlers));
   const refreshWarnings = [];
   const refreshCtx = { ...ctx, ui: { notify: (message) => refreshWarnings.push(message) } };
   await refreshHandlers.get("session_start")({}, refreshCtx);

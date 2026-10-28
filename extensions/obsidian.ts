@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execFile } from "node:child_process";
+import { Type } from "@earendil-works/pi-ai";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -15,6 +16,100 @@ let knownVault: string | null = null;
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_HELPER = path.join(REPO, "scripts/config_contract.py");
 const execFileAsync = promisify(execFile);
+const TOOL_OUTPUT = Type.Object({
+	operation: Type.Union([Type.Literal("search"), Type.Literal("outline"), Type.Literal("read"), Type.Literal("doctor")]),
+	ok: Type.Boolean(),
+	payload: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	code: Type.Optional(Type.String()),
+	message: Type.Optional(Type.String()),
+	processStatus: Type.Optional(Type.Object({ code: Type.Union([Type.Integer(), Type.Null()]), signal: Type.Union([Type.String(), Type.Null()]) }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+async function runNativeTool(operation: string, params: Record<string, unknown>, signal: AbortSignal | undefined, cwd: string) {
+	const failure = (code: string, message: string) => ({ operation, ok: false, code, message });
+	const validResult = (value: unknown): value is Record<string, unknown> => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+		const result = value as Record<string, unknown>;
+		if (Object.keys(result).some((key) => !["operation", "ok", "payload", "code", "message", "processStatus"].includes(key))) return false;
+		if (result.operation !== operation || typeof result.ok !== "boolean") return false;
+		if (Object.hasOwn(result, "payload") && (!result.payload || typeof result.payload !== "object" || Array.isArray(result.payload))) return false;
+		if (Object.hasOwn(result, "code") && (typeof result.code !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(result.code))) return false;
+		if (Object.hasOwn(result, "message") && (typeof result.message !== "string" || result.message.length > 1000)) return false;
+		if (Object.hasOwn(result, "processStatus")) {
+			const status = result.processStatus as Record<string, unknown> | null;
+			if (!status || typeof status !== "object" || Array.isArray(status)
+				|| Object.keys(status).some((key) => key !== "code" && key !== "signal")
+				|| !(status.code === null || Number.isInteger(status.code))
+				|| !(status.signal === null || typeof status.signal === "string")) return false;
+		}
+		return true;
+	};
+	if (signal?.aborted) return failure("aborted", "Wiki operation was cancelled");
+	const launcher = path.join(REPO, "scripts/obsidian-second-brain.mjs");
+	return await new Promise<Record<string, unknown>>((resolve) => {
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(process.execPath, [launcher, "--pi-tool", operation, JSON.stringify(params)], {
+				cwd,
+				stdio: ["ignore", "pipe", "ignore"],
+				detached: process.platform !== "win32",
+				env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+			});
+		} catch {
+			resolve(failure("process-start", "Unable to start the packaged wiki tool"));
+			return;
+		}
+		let output = Buffer.alloc(0);
+		let failureCode: string | null = null;
+		let stopTimer: NodeJS.Timeout | undefined;
+		let watchdog: NodeJS.Timeout | undefined;
+		let settled = false;
+		const signalLauncher = (name: NodeJS.Signals) => {
+			try { if (child.pid && process.platform !== "win32") process.kill(-child.pid, name); else child.kill(name); } catch { /* already exited */ }
+		};
+		const stop = (code: string) => {
+			if (failureCode) return;
+			failureCode = code;
+			signalLauncher("SIGTERM");
+			stopTimer = setTimeout(() => signalLauncher("SIGKILL"), 1500);
+		};
+		const onAbort = () => stop("aborted");
+		child.once("error", () => { failureCode ??= "process-start"; });
+		child.stdout.on("data", (chunk: Buffer) => {
+			if (failureCode) return;
+			if (output.length + chunk.length > 64 * 1024) {
+				stop("output-limit");
+				return;
+			}
+			output = Buffer.concat([output, chunk]);
+		});
+		const finish = (result: Record<string, unknown>) => {
+			if (settled) return;
+			settled = true;
+			if (watchdog) clearTimeout(watchdog);
+			if (stopTimer) clearTimeout(stopTimer);
+			signal?.removeEventListener("abort", onAbort);
+			resolve(result);
+		};
+		child.once("close", () => {
+			if (failureCode) {
+				const message = failureCode === "aborted" ? "Wiki operation was cancelled"
+					: failureCode === "timeout" ? "Wiki operation exceeded the 30-second deadline"
+					: failureCode === "output-limit" ? "Tool result exceeded 64 KiB; request fewer results or a smaller read"
+					: "Unable to complete the packaged wiki tool process";
+				return finish(failure(failureCode, message));
+			}
+			try {
+				const result: unknown = JSON.parse(output.toString("utf8").trim());
+				finish(validResult(result) ? result : failure("invalid-process-output", "Packaged wiki tool returned an invalid result envelope"));
+			} catch { finish(failure("invalid-process-output", "Packaged wiki tool returned invalid structured output")); }
+		});
+		if (signal?.aborted) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
+		watchdog = setTimeout(() => stop("timeout"), 31_000);
+	});
+}
+
 async function selectedConfigRepairTarget(rawPath: unknown, cwd: string): Promise<boolean> {
 	if (typeof rawPath !== "string" || !configError) return false;
 	try {
@@ -186,6 +281,20 @@ async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverr
 }
 
 export default function (pi: ExtensionAPI) {
+	const common = { namespace: { name: "obsidian-wiki", description: "Read-only tools for locating and inspecting pages in the selected Obsidian wiki." }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, outputSchema: TOOL_OUTPUT };
+	const vaultSchema = Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }));
+	const registerWikiTool = (name: string, label: string, description: string, parameters: ReturnType<typeof Type.Object>, operation: string) => {
+		pi.registerTool({ ...common, name, label, description, parameters,
+			execute: async (_id, params, signal, _onUpdate, ctx) => {
+				const result = await runNativeTool(operation, params as Record<string, unknown>, signal, ctx.cwd);
+				return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined, structuredContent: result, isError: result.ok !== true };
+			},
+		});
+	};
+	registerWikiTool("wiki_search", "Wiki search", "Search the selected wiki's existing BM25 index. Hybrid Ollama reranking is opt-in and uses only a bounded loopback endpoint; results report fallback and freshness without building or refreshing indexes.", Type.Object({ query: Type.String({ minLength: 1, maxLength: 4000 }), vault: vaultSchema, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), hybrid: Type.Optional(Type.Boolean()), ollamaUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })), ollamaModel: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), timeout: Type.Optional(Type.Number({ minimum: 0.1, maximum: 30 })) }, { additionalProperties: false }), "search");
+	registerWikiTool("wiki_outline", "Wiki outline", "Return hash-bound outline labels and source coordinates for one visible wiki Markdown page; use expectedHash for pagination.", Type.Object({ page: Type.String({ minLength: 6, maxLength: 1024 }), vault: vaultSchema, expectedHash: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000000 })) }, { additionalProperties: false }), "outline");
+	registerWikiTool("wiki_read", "Wiki read", "Read a bounded hash-verified raw or current-projected section/span from one visible wiki Markdown page; continuation never extends the original selection.", Type.Object({ page: Type.String({ minLength: 6, maxLength: 1024 }), vault: vaultSchema, expectedHash: Type.String({ pattern: "^[0-9a-f]{64}$" }), section: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), start: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000000 })), end: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000000 })), view: Type.Optional(Type.Union([Type.Literal("raw"), Type.Literal("current")])), maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })), cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000000 })) }, { additionalProperties: false }), "read");
+	registerWikiTool("wiki_doctor", "Wiki doctor", "Inspect selected integration configuration, vault, retrieval freshness and lifecycle status without writing, repairing, indexing, or settling anything.", Type.Object({ vault: vaultSchema }, { additionalProperties: false }), "doctor");
 	let toc = "";
 	let locatorVault: string | null = null;
 	const injectedLocators = new Map<string, string>();
