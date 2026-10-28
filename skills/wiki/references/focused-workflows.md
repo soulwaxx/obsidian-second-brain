@@ -47,6 +47,13 @@ wrapper/copy, or change package versions merely to query.
 
 ## Query
 
+Pi also exposes `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor` as
+read-only model tools. Use them for native Pi queries; they preserve hash-bound
+read coordinates and existing retrieval diagnostics without injecting wiki
+content into unrelated prompts. Their input, output, selection, and bounded
+process contract is documented in [Pi wiki tools](../../../docs/pi-tools.md).
+They do not replace the CLI procedure below, write tools, or evidence-report.
+
 For a question answered by existing wiki knowledge, search first, then read the
 most relevant pages and answer with honest page citations. When the bin is on
 `PATH`, run `obsidian-second-brain search "query terms" --json`; otherwise use

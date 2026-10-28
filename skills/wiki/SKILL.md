@@ -120,7 +120,10 @@ the same session before resuming wiki work. If the vault/config selection is
 ambiguous, ask; do not guess.
 
 The package-owned `obsidian-second-brain` CLI provides read-only diagnostics
-(`doctor --json`) and structured search (`search "query terms" --json`). Both
+(`doctor --json`) and structured search (`search "query terms" --json`). Pi also
+registers native read-only `wiki_search`, `wiki_outline`, `wiki_read`, and
+`wiki_doctor` tools, documented in [the Pi tool reference](../../docs/pi-tools.md).
+Both CLI operations
 use the selected vault, or accept an explicit `--vault <vault-root>`; search
 does not build an index. A client plugin installation does not necessarily add
 the npm bin to shell `PATH`: use the bin only when

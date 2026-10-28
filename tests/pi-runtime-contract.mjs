@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -17,7 +19,27 @@ const sdkUrl = pathToFileURL(path.join(packageRoot, "dist/index.js")).href;
 const [aiUrl, typeboxUrl] = resolveRuntimeDependencies(packageRoot);
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkUrl);
 const { createAssistantMessageEventStream } = await import(aiUrl);
+const { Check: checkSchema } = await import(new URL("./value/index.mjs", typeboxUrl));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-pi-runtime-"));
+function processGroup(pid) {
+  if (!pid) return null;
+  const result = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" });
+  return Number(result.stdout.trim()) || null;
+}
+function liveGroupMembers(group) {
+  if (!group || process.platform === "win32") return false;
+  const result = spawnSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8" });
+  return result.stdout.split("\n").some((line) => {
+    const match = line.trim().match(/^(\d+)\s+(\S+)/);
+    return match && Number(match[1]) === group && !match[2].startsWith("Z");
+  });
+}
+async function assertGroupGone(group, label) {
+  if (!group || process.platform === "win32") return;
+  const deadline = Date.now() + 3000;
+  while (liveGroupMembers(group) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(liveGroupMembers(group), false, `${label} exited before tool completion`);
+}
 const vault = path.join(tmp, "vault");
 const home = path.join(tmp, "home");
 fs.mkdirSync(path.join(vault, "wiki", "runtime"), { recursive: true });
@@ -59,6 +81,26 @@ modelRuntime.registerProvider("m1-stub", {
         assert.doesNotMatch(JSON.stringify(context.messages), /Action required before considering wiki work complete/,
           "successful nested navigation finalization suppresses obsolete settle diagnostics");
         message.content.push({ type: "text", text: "The repaired page was published and the invalidation was resolved." });
+        message.stopReason = "stop";
+        stream.push({ type: "text_start", contentIndex: 0, partial: message });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: message.content[0].text, partial: message });
+        stream.push({ type: "text_end", contentIndex: 0, content: message.content[0].text, partial: message });
+        stream.push({ type: "done", reason: "stop", message });
+      }
+    } else if (scenario === "native-wiki-tools") {
+      if (requests === 1) {
+        const call = { type: "toolCall", id: "m1-native-check", name: "m1_native_wiki_check", arguments: {} };
+        message.content.push(call);
+        stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+        stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: call, partial: message });
+        message.stopReason = "toolUse";
+        stream.push({ type: "done", reason: "toolUse", message });
+      } else {
+        const results = context.messages.filter((entry) => entry.role === "toolResult");
+        const check = results.find((entry) => entry.toolName === "m1_native_wiki_check");
+        assert.ok(check, "model-called deterministic helper executes native tool checks");
+        assert.match(JSON.stringify(check), /all four native wiki tools/i);
+        message.content.push({ type: "text", text: "All four read-only native wiki tools returned structured results." });
         message.stopReason = "stop";
         stream.push({ type: "text_start", contentIndex: 0, partial: message });
         stream.push({ type: "text_delta", contentIndex: 0, delta: message.content[0].text, partial: message });
@@ -217,7 +259,146 @@ try {
   } finally {
     repairSession.dispose();
   }
-  console.log("Pi installed-SDK runtime contract PASS: bounded invalid/sibling repair, same-session A-B-A context, and nested same-turn invalid→repair→index-read finalization.");
+  const nativeVault = path.join(tmp, "native tools vault");
+  fs.mkdirSync(path.join(nativeVault, "wiki"), { recursive: true });
+  const nativePage = path.join(nativeVault, "wiki/native-tool.md");
+  const nativeSource = "---\ntype: note\n---\n# Synthetic native wiki\nA local fixture.\n\n## Details\nSecond section.\n";
+  fs.writeFileSync(nativePage, nativeSource);
+  process.env.PI_NATIVE_TEST_HASH = createHash("sha256").update(nativeSource).digest("hex");
+  process.env.OBSIDIAN_VAULT_PATH = "";
+  fs.writeFileSync(config, JSON.stringify({ vaultPath: nativeVault, features: { guard: true } }));
+  execFileSync("python3", [path.resolve("scripts/bm25-index.py"), "build", "--vault", nativeVault], { stdio: "ignore" });
+  const pendingState = path.join(nativeVault, ".vault-meta/lifecycle/state.json");
+  fs.mkdirSync(path.dirname(pendingState), { recursive: true });
+  const captureRoot = path.join(nativeVault, ".raw/agent-captures");
+  fs.mkdirSync(captureRoot, { recursive: true });
+  fs.writeFileSync(path.join(captureRoot, "pending-fixture.txt"), "Synthetic pending capture bytes.\n");
+  fs.writeFileSync(path.join(captureRoot, "pending-fixture.md"), "Synthetic pending capture record.\n");
+  fs.writeFileSync(pendingState, JSON.stringify({ version: 1, vault: nativeVault, pending: { "wiki/pending-native.md": { changed: true }, ".raw/agent-captures/pending-fixture.md": { changed: true } } }));
+  const nativeSnapshot = () => Object.fromEntries([...fs.readdirSync(nativeVault, { recursive: true })].map((entry) => path.join(nativeVault, entry)).filter((entry) => fs.statSync(entry).isFile()).map((entry) => [path.relative(nativeVault, entry), [fs.readFileSync(entry).toString("base64"), fs.statSync(entry, { bigint: true }).mtimeNs.toString()]]).concat([["config", [fs.readFileSync(config).toString("base64"), fs.statSync(config, { bigint: true }).mtimeNs.toString()]]]));
+  const beforeNativeTools = nativeSnapshot();
+  const nativeCheck = (pi) => {
+    const info = pi.getAllTools().filter((tool) => ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"].includes(tool.name));
+    assert.equal(info.length, 4, "Pi discovers exactly the four extension-native tools");
+    assert.ok(info.every((tool) => tool.exposure === "direct"), "native tools default to direct model exposure");
+    assert.ok(info.every((tool) => tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint === false && tool.annotations?.idempotentHint === true && tool.annotations?.openWorldHint === false));
+    assert.ok(["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"].every((name) => pi.getActiveTools().includes(name)), "native tools are default active without replacing other selections");
+    pi.registerTool({
+    name: "m1_native_wiki_check", label: "Native wiki check",
+    description: "Deterministic runtime contract for native read-only wiki tools.",
+    parameters: Type.Object({}),
+    execute: async (_id, _params, _signal, _update, ctx) => {
+      const names = ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"];
+      for (const name of names) {
+        const tool = ctx.tools.find((entry) => entry.name === name);
+        assert.ok(tool, `${name} is directly discoverable and callable in the installed Pi runtime`);
+        assert.equal(tool.annotations.readOnlyHint, true);
+        assert.equal(tool.annotations.destructiveHint, false);
+        assert.equal(tool.annotations.idempotentHint, true);
+        assert.equal(tool.annotations.openWorldHint, false);
+        assert.ok(tool.outputSchema?.properties?.operation, `${name} declares the shared result envelope schema`);
+      }
+      const checkResult = (outcome, operation) => {
+        const value = outcome.result.structuredContent;
+        assert.equal(value.operation, operation);
+        assert.equal(typeof value.ok, "boolean");
+        const toolSchema = ctx.tools.find((entry) => entry.name === `wiki_${operation}`).outputSchema;
+        assert.equal(checkSchema(toolSchema, value), true, `${operation} structured result matches its declared output schema`);
+        return value;
+      };
+      const search = checkResult(await ctx.executeTool("wiki_search", { query: "synthetic native wiki" }), "search");
+      assert.equal(search.ok, true);
+      assert.equal(search.payload.results[0].path, "wiki/native-tool.md");
+      const outlineFirst = checkResult(await ctx.executeTool("wiki_outline", { page: "wiki/native-tool.md", limit: 1 }), "outline");
+      assert.equal(outlineFirst.ok, true);
+      assert.equal(outlineFirst.payload.nextOffset, 1);
+      assert.equal(outlineFirst.payload.continuation.expectedHash, process.env.PI_NATIVE_TEST_HASH);
+      const outlineNext = checkResult(await ctx.executeTool("wiki_outline", { page: "wiki/native-tool.md", limit: 1, offset: outlineFirst.payload.nextOffset, expectedHash: outlineFirst.payload.continuation.expectedHash }), "outline");
+      assert.equal(outlineNext.ok, true);
+      const section = outlineNext.payload.entries.find((entry) => entry.kind === "heading");
+      assert.ok(section);
+      const sectionRead = checkResult(await ctx.executeTool("wiki_read", { page: "wiki/native-tool.md", expectedHash: process.env.PI_NATIVE_TEST_HASH, section: section.id }), "read");
+      assert.equal(sectionRead.ok, true);
+      assert.match(sectionRead.payload.text, /Synthetic native wiki/);
+      const readStart = nativeSource.indexOf("Synthetic native wiki");
+      const readEnd = nativeSource.length;
+      const partial = checkResult(await ctx.executeTool("wiki_read", { page: "wiki/native-tool.md", expectedHash: process.env.PI_NATIVE_TEST_HASH, start: readStart, end: readEnd, maxChars: 12 }), "read");
+      assert.equal(partial.ok, true);
+      assert.ok(partial.payload.continuation);
+      const continued = checkResult(await ctx.executeTool("wiki_read", { page: "wiki/native-tool.md", expectedHash: partial.payload.continuation.expectedHash, start: readStart, end: readEnd, cursor: partial.payload.continuation.cursor, maxChars: 80 }), "read");
+      assert.equal(continued.ok, true);
+      assert.ok(continued.payload.returned.start >= partial.payload.returned.end);
+      const stale = await ctx.executeTool("wiki_outline", { page: "wiki/native-tool.md", expectedHash: "0".repeat(64), offset: 1 });
+      assert.equal(stale.isError, true);
+      assert.equal(stale.result.structuredContent.code, "source-changed");
+      const extra = await ctx.executeTool("wiki_doctor", { rawArgs: ["doctor"] });
+      assert.equal(extra.isError, true, "closed-world parameter schema rejects passthrough fields");
+      const doctor = checkResult(await ctx.executeTool("wiki_doctor", {}), "doctor");
+      assert.equal(doctor.ok, true);
+      assert.equal(doctor.payload.vault, nativeVault);
+
+      const fakePython = path.join(tmp, "term-ignoring-python.sh");
+      const launcherPidFile = path.join(tmp, "cancel-launcher.pid");
+      const descendantPidFile = path.join(tmp, "cancel-descendant.pid");
+      fs.writeFileSync(fakePython, `#!/bin/sh\nprintf '%s\\n' "$PPID" > '${launcherPidFile}'\nsh -c 'trap "" TERM; echo $$ > "${descendantPidFile}"; while :; do sleep 1; done' &\nwait\n`);
+      fs.chmodSync(fakePython, 0o755);
+      const previousPython = process.env.PYTHON;
+      process.env.PYTHON = fakePython;
+      let cancelPromise;
+      let activeController;
+      let launcherCancelGroup;
+      let descendantCancelGroup;
+      const controller = new AbortController();
+      try {
+        controller.abort();
+        const preAborted = await ctx.executeTool("wiki_search", { query: "synthetic native wiki" }, { signal: controller.signal });
+        assert.equal(preAborted.isError, true);
+        assert.equal(preAborted.result.structuredContent.code, "aborted");
+        assert.equal(fs.existsSync(launcherPidFile), false, "pre-aborted call does not spawn the launcher/Python");
+
+        activeController = new AbortController();
+        cancelPromise = ctx.executeTool("wiki_search", { query: "synthetic native wiki" }, { signal: activeController.signal });
+        const startDeadline = Date.now() + 3000;
+        while (!fs.existsSync(descendantPidFile) && Date.now() < startDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.ok(fs.existsSync(descendantPidFile), "registered tool started TERM-ignoring Python descendant");
+        const launcherPid = Number(fs.readFileSync(launcherPidFile, "utf8"));
+        const descendantPid = Number(fs.readFileSync(descendantPidFile, "utf8"));
+        launcherCancelGroup = processGroup(launcherPid);
+        descendantCancelGroup = processGroup(descendantPid);
+        activeController.abort();
+        const cancelled = await cancelPromise;
+        assert.equal(cancelled.isError, true);
+        assert.equal(cancelled.result.structuredContent.code, "aborted");
+        await assertGroupGone(launcherCancelGroup, "extension-launched node launcher");
+        await assertGroupGone(descendantCancelGroup, "extension-launched Python descendant/process group");
+      } finally {
+        activeController?.abort();
+        for (const group of [launcherCancelGroup, descendantCancelGroup]) {
+          if (group && process.platform !== "win32" && liveGroupMembers(group)) {
+            try { process.kill(-group, "SIGKILL"); } catch { /* already exited */ }
+          }
+        }
+        if (cancelPromise) await cancelPromise.catch(() => undefined);
+        if (previousPython === undefined) delete process.env.PYTHON; else process.env.PYTHON = previousPython;
+      }
+      return { content: [{ type: "text", text: "All four native wiki tools passed structured-result, schema, hash, continuation, and cancellation checks." }], details: undefined };
+    },
+  });
+  };
+  const nativeResources = new DefaultResourceLoader({ cwd: nativeVault, agentDir: path.join(home, ".pi", "agent"), additionalExtensionPaths: [path.resolve("extensions/obsidian.ts")], extensionFactories: [nativeCheck] });
+  await nativeResources.reload();
+  const { session: nativeSession } = await createAgentSession({ cwd: nativeVault, agentDir: path.join(home, ".pi", "agent"), model, modelRuntime, resourceLoader: nativeResources, sessionManager: SessionManager.inMemory(nativeVault), settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }) });
+  try {
+    await nativeSession.bindExtensions({});
+    scenario = "native-wiki-tools";
+    requests = 0;
+    await nativeSession.prompt("Run the deterministic native wiki tools contract.");
+    assert.equal(requests, 2, "native-tool calls complete in one tool turn and one deterministic response");
+    assert.deepEqual(nativeSnapshot(), beforeNativeTools, "startup, native reads, pending freshness, and doctor leave vault/config bytes and mtimes unchanged");
+  } finally {
+    nativeSession.dispose();
+  }
+  console.log("Pi installed-SDK runtime contract PASS: lifecycle regressions plus all four native read-only wiki tools and structured outputs.");
 } finally {
   session.dispose();
   fs.rmSync(tmp, { recursive: true, force: true });

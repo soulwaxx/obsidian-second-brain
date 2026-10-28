@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-npm-package-")));
@@ -22,7 +22,7 @@ try {
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
-    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/evidence_reports.py", "scripts/retrieval_reads.py",
+    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/retrieval_reads.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
@@ -31,7 +31,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/link-migration.md",
+    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -103,6 +103,49 @@ try {
   ], { cwd: work, encoding: "utf8" }));
   assert.equal(packageRelativeDoctor.vault, fs.realpathSync(cliVault));
   assert.equal(packageRelativeDoctor.retrieval.indexExists, false, "package-relative doctor must remain read-only");
+  const nativeDoctor = JSON.parse(run(process.execPath, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "--pi-tool", "doctor", JSON.stringify({ vault: cliVault })], { cwd: work, encoding: "utf8" }));
+  assert.equal(nativeDoctor.operation, "doctor");
+  assert.equal(nativeDoctor.payload.vault, fs.realpathSync(cliVault), "packed native tool uses explicit vault without npm bin lookup");
+  const binSearchPath = process.env.PATH.split(path.delimiter).filter((entry) => path.resolve(entry) !== path.resolve(path.join(prefix, "node_modules/.bin"))).join(path.delimiter);
+  assert.ok(!binSearchPath.split(path.delimiter).some((entry) => path.resolve(entry) === path.resolve(path.join(prefix, "node_modules/.bin"))));
+  const unrelatedCwd = path.join(work, "caller cwd ü space");
+  const relativeVault = path.join(unrelatedCwd, "relative vault ü");
+  fs.mkdirSync(path.join(relativeVault, "wiki"), { recursive: true });
+  fs.mkdirSync(unrelatedCwd, { recursive: true });
+  const packageFixture = path.join(work, "packed package fixture ü");
+  fs.cpSync(installed, packageFixture, { recursive: true });
+  const extensionPath = path.join(packageFixture, "extensions/pi-tools-package-test.ts");
+  const extensionSource = fs.readFileSync(path.join(packageFixture, "extensions/obsidian.ts"), "utf8")
+    .replace('import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";', "type ExtensionAPI = unknown;")
+    .replace('import { Type } from "@earendil-works/pi-ai";', 'const Type = { Object: (properties, options) => ({ properties, options }), String: (options) => ({ options }), Boolean: () => ({}), Record: () => ({}), Unknown: () => ({}), Optional: (schema) => ({ schema }), Integer: (options) => ({ options }), Number: (options) => ({ options }), Union: (schemas) => ({ schemas }), Null: () => ({}), Literal: (value) => ({ value }) };');
+  fs.writeFileSync(extensionPath, extensionSource);
+  const savedConfig = process.env.OBSIDIAN_AGENT_CONFIG;
+  const savedVaultOverride = process.env.OBSIDIAN_VAULT_PATH;
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = binSearchPath;
+    process.env.OBSIDIAN_VAULT_PATH = "";
+    process.env.OBSIDIAN_AGENT_CONFIG = path.join(work, "blocked-config-directory");
+    fs.mkdirSync(process.env.OBSIDIAN_AGENT_CONFIG);
+    const { default: packedExtension } = await import(`${pathToFileURL(extensionPath).href}?package-native-tools`);
+    const packedTools = new Map();
+    packedExtension({ on: () => {}, registerTool: (tool) => packedTools.set(tool.name, tool) });
+    const packedPage = path.join(cliVault, "wiki/packed ü.md");
+    const packedSource = "# Packed native page\nBody.\n";
+    fs.writeFileSync(packedPage, packedSource);
+    const packedHash = createHash("sha256").update(packedSource).digest("hex");
+    const packedRead = await packedTools.get("wiki_read").execute("packed-read", { vault: cliVault, page: "wiki/packed ü.md", expectedHash: packedHash, start: 0, end: packedSource.length }, undefined, undefined, { cwd: unrelatedCwd });
+    assert.equal(packedRead.structuredContent.ok, true, JSON.stringify(packedRead.structuredContent));
+    process.env.OBSIDIAN_AGENT_CONFIG = path.join(work, "relative-selection.json");
+    fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: path.basename(relativeVault) }));
+    const packedDoctor = await packedTools.get("wiki_doctor").execute("packed-doctor", {}, undefined, undefined, { cwd: unrelatedCwd });
+    assert.equal(packedDoctor.structuredContent.payload.vault, fs.realpathSync(relativeVault), "packed extension uses caller cwd for a relative config vault");
+  } finally {
+    if (savedConfig === undefined) delete process.env.OBSIDIAN_AGENT_CONFIG; else process.env.OBSIDIAN_AGENT_CONFIG = savedConfig;
+    if (savedVaultOverride === undefined) delete process.env.OBSIDIAN_VAULT_PATH; else process.env.OBSIDIAN_VAULT_PATH = savedVaultOverride;
+    if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    fs.rmSync(packageFixture, { recursive: true, force: true });
+  }
 
   const readPage = path.join(cliVault, "wiki/read-page.md");
   const readSource = "---\ntype: Note\n---\n# Evidence 😀\nSelected text.\n";
