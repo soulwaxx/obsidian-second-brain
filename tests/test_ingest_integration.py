@@ -137,7 +137,10 @@ class IngestIntegrationTests(unittest.TestCase):
                 for command in commands:
                     result = self.cli(*command)
                     self.assertNotEqual(result.returncode, 0, command)
-                    self.assertIn("config", result.stderr.lower())
+                    self.assertEqual(result.stderr, "")
+                    error = json.loads(result.stdout)
+                    self.assertEqual(error["code"], "command-error")
+                    self.assertIn("config", error["error"].lower())
                 self.assertFalse((self.vault / "wiki/blocked.md").exists())
                 self.assertFalse((self.vault / ".raw").exists())
                 self.assertFalse((self.vault / ".vault-meta").exists())
@@ -175,7 +178,10 @@ class IngestIntegrationTests(unittest.TestCase):
         beta.write_text("concurrent Obsidian edit\n", encoding="utf-8")
         blocked = self.cli("batch-recover", "--batch-id", journal["batchId"], "--vault", self.vault, "--json")
         self.assertNotEqual(blocked.returncode, 0)
-        self.assertIn("conflict", blocked.stderr)
+        self.assertEqual(blocked.stderr, "")
+        error = json.loads(blocked.stdout)
+        self.assertEqual(error["code"], "command-error")
+        self.assertIn("conflict", error["error"])
         self.assertEqual(beta.read_text(encoding="utf-8"), "concurrent Obsidian edit\n")
 
         beta.write_text(PAGE_B, encoding="utf-8")

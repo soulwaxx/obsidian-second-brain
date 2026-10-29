@@ -314,8 +314,28 @@ def main() -> int:
     class CliParser(argparse.ArgumentParser):
         def error(self, message: str) -> None:
             arguments = sys.argv[1:]
-            if arguments and arguments[0] in {"read", "outline"} and "--json" in arguments:
-                print(json.dumps({"code": "invalid-read", "error": message}, ensure_ascii=False))
+            # Options may precede the command. Skip their values so a path or
+            # search query named "read"/"outline" cannot select the error format.
+            remaining = iter(arguments)
+            command = None
+            for argument in remaining:
+                if argument == "--":
+                    command = next(remaining, None)
+                    break
+                option, separator, _ = argument.partition("=")
+                action = self._option_string_actions.get(option)
+                if action is not None:
+                    if action.nargs != 0 and not separator:
+                        next(remaining, None)
+                elif not argument.startswith("-"):
+                    command = argument
+                    break
+            if "--json" in arguments:
+                if command in {"read", "outline"}:
+                    code = "invalid-read"
+                else:
+                    code = "invalid-arguments"
+                print(json.dumps({"code": code, "error": message}, ensure_ascii=False))
                 raise SystemExit(2)
             super().error(message)
 
@@ -347,6 +367,14 @@ def main() -> int:
     parser.add_argument("--source", action="append", default=[], help="explicit absolute local text source; repeat to select multiple")
     parser.add_argument("--page", action="append", default=[], help="existing wiki page to link; repeat as wiki-relative path")
     args = parser.parse_args()
+
+    def fail(message: str, code: str = "command-error") -> int:
+        if args.json:
+            print(json.dumps({"code": code, "error": message}, ensure_ascii=False, sort_keys=True))
+        else:
+            print(f"obsidian-second-brain: {message}", file=sys.stderr)
+        return 1
+
     if args.command in {"read", "outline"}:
         try:
             if args.config is not None:
@@ -392,8 +420,7 @@ def main() -> int:
     write_commands = {"batch-inspect", "batch-apply", "batch-recover", "batch-rollback",
                       "capture-inspect", "capture-apply"}
     if args.command in write_commands and error:
-        print(f"obsidian-second-brain: invalid selected integration config: {error}", file=sys.stderr)
-        return 1
+        return fail(f"invalid selected integration config: {error}")
     vault = resolve_vault(args.vault, config)
     if args.command == "evidence-report":
         try:
@@ -407,15 +434,13 @@ def main() -> int:
             return 0
         except ModuleNotFoundError as exc:
             if exc.name in {"markdown_it", "mdurl"}:
-                print("obsidian-second-brain: evidence-report requires markdown-it-py; "
-                      "install it with python3 -m pip install 'markdown-it-py>=4.2.0,<5' "
-                      "or install the package's requirements.txt", file=sys.stderr)
-            else:
-                print(f"obsidian-second-brain: {exc}", file=sys.stderr)
-            return 1
+                message = ("evidence-report requires markdown-it-py; install it with "
+                           "python3 -m pip install 'markdown-it-py>=4.2.0,<5' "
+                           "or install the package's requirements.txt")
+                return fail(message, "dependency-missing")
+            return fail(str(exc), "dependency-missing")
         except (OSError, UnicodeError, ValueError) as exc:
-            print(f"obsidian-second-brain: {exc}", file=sys.stderr)
-            return 1
+            return fail(str(exc))
     if args.as_of is not None:
         parser.error("--as-of requires evidence-report")
     if args.command in {"capture-inspect", "capture-apply"}:
@@ -430,9 +455,10 @@ def main() -> int:
                       capture_module.apply(vault, [Path(item) for item in args.source], config_file, args.plan_hash or "", args.page))
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
+        except ModuleNotFoundError as exc:
+            return fail(str(exc), "dependency-missing")
         except (OSError, ValueError, capture_module.CaptureError, capture_module.BATCH.BatchError) as exc:
-            print(f"obsidian-second-brain: {exc}", file=sys.stderr)
-            return 1
+            return fail(str(exc))
     batch_commands = {"batch-inspect", "batch-apply", "batch-recover", "batch-rollback"}
     if args.command in batch_commands:
         try:
@@ -454,9 +480,10 @@ def main() -> int:
                           else batch_module.rollback(vault, args.batch_id, config_file))
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
+        except ModuleNotFoundError as exc:
+            return fail(str(exc), "dependency-missing")
         except (OSError, ValueError, batch_module.BatchError) as exc:
-            print(f"obsidian-second-brain: {exc}", file=sys.stderr)
-            return 1
+            return fail(str(exc))
     if args.command == "search" and not args.query:
         parser.error("search requires query terms")
     if args.command != "search" and args.query is not None:

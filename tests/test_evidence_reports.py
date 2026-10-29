@@ -133,8 +133,11 @@ class EvidenceReportTests(unittest.TestCase):
             env=env, text=True, capture_output=True, timeout=3,
         )
         self.assertEqual(report.returncode, 1)
-        self.assertIn("evidence-report requires markdown-it-py", report.stderr)
-        self.assertIn("pip install 'markdown-it-py>=4.2.0,<5'", report.stderr)
+        self.assertEqual(report.stderr, "")
+        report_error = json.loads(report.stdout)
+        self.assertEqual(report_error["code"], "dependency-missing")
+        self.assertIn("evidence-report requires markdown-it-py", report_error["error"])
+        self.assertIn("pip install 'markdown-it-py>=4.2.0,<5'", report_error["error"])
         doctor = subprocess.run(
             [sys.executable, str(CLI), "doctor", "--vault", str(self.vault), "--json"],
             env=env, text=True, capture_output=True, timeout=3,
@@ -164,7 +167,16 @@ class EvidenceReportTests(unittest.TestCase):
         self.assertFalse((self.vault / ".vault-meta").exists())
         bad = subprocess.run([sys.executable, str(CLI), "evidence-report", "--as-of", "not-a-date",
                               "--vault", str(self.vault), "--json"], env=env, text=True, capture_output=True)
-        self.assertNotEqual(bad.returncode, 0)
+        self.assertEqual(bad.returncode, 1)
+        self.assertEqual(bad.stderr, "")
+        bad_error = json.loads(bad.stdout)
+        self.assertEqual(bad_error["code"], "command-error")
+        self.assertIn("date", bad_error["error"])
+        legacy = subprocess.run([sys.executable, str(CLI), "evidence-report", "--as-of", "not-a-date",
+                                "--vault", str(self.vault)], env=env, text=True, capture_output=True)
+        self.assertEqual(legacy.returncode, 1)
+        self.assertEqual(legacy.stdout, "")
+        self.assertIn("obsidian-second-brain: ", legacy.stderr)
 
     def test_ledger_namespace_ancestors_and_entries_never_follow_symlinks(self):
         outside = self.root / "outside"

@@ -210,6 +210,13 @@ try {
     ...args, "--config", captureConfig, "--json",
   ], { cwd: work, encoding: "utf8" }));
   const capture = (source) => captureCli("capture-inspect", "--source", source);
+  const invalidCapture = spawnSync(cli, ["capture-inspect", "--source", "relative.txt", "--config", captureConfig, "--json"],
+    { cwd: work, env, encoding: "utf8" });
+  assert.notEqual(invalidCapture.status, 0);
+  assert.equal(invalidCapture.stderr, "");
+  const captureError = JSON.parse(invalidCapture.stdout);
+  assert.equal(captureError.code, "command-error");
+  assert.match(captureError.error, /absolute paths/);
   const publish = (source, reviewed) => captureCli("capture-apply", "--source", source,
     "--plan-hash", reviewed.planHash);
   const reviewA = capture(captureSources[0]);
@@ -306,7 +313,10 @@ try {
     "--authority", "wiki-ledger", "--plan-hash", updatePreview.planHash, "--config", evidenceConfig, "--json"],
   { cwd: work, env, encoding: "utf8" });
   assert.notEqual(drift.status, 0);
-  assert.match(drift.stderr, /target precondition mismatch/);
+  assert.equal(drift.stderr, "");
+  const driftError = JSON.parse(drift.stdout);
+  assert.equal(driftError.code, "command-error");
+  assert.match(driftError.error, /target precondition mismatch/);
   assert.equal(fs.readFileSync(supportPath, "utf8"), "concurrent edit\n");
   fs.writeFileSync(supportPath, supportBytes);
   const acceptedUpdate = evidenceCli("batch-apply", "--vault", evidenceVault, "--bundle", updateBundle,
@@ -350,11 +360,17 @@ try {
     const before = nestedSnapshot();
     const inspected = nestedCli("batch-inspect", bundle);
     assert.notEqual(inspected.status, 0);
-    assert.match(inspected.stderr, /canonical evidence ledger path/);
+    assert.equal(inspected.stderr, "");
+    const inspectError = JSON.parse(inspected.stdout);
+    assert.equal(inspectError.code, "command-error");
+    assert.match(inspectError.error, /canonical evidence ledger path/);
     assert.equal(nestedSnapshot(), before);
     const applied = nestedCli("batch-apply", bundle, ["--plan-hash", "a".repeat(64)]);
     assert.notEqual(applied.status, 0);
-    assert.match(applied.stderr, /canonical evidence ledger path/);
+    assert.equal(applied.stderr, "");
+    const applyError = JSON.parse(applied.stdout);
+    assert.equal(applyError.code, "command-error");
+    assert.match(applyError.error, /canonical evidence ledger path/);
     assert.equal(nestedSnapshot(), before);
   }
   const mixedNested = evidenceBundle("nested-later-target", [
@@ -365,7 +381,10 @@ try {
   for (const [command, args] of [["batch-inspect", []], ["batch-apply", ["--plan-hash", "b".repeat(64)]]]) {
     const result = nestedCli(command, mixedNested, args);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /canonical evidence ledger path/);
+    assert.equal(result.stderr, "");
+    const batchError = JSON.parse(result.stdout);
+    assert.equal(batchError.code, "command-error");
+    assert.match(batchError.error, /canonical evidence ledger path/);
     assert.equal(nestedSnapshot(), beforeMixed);
   }
   assert.ok(!fs.existsSync(path.join(nestedVault, "wiki/meta")), "rejected nested ledger bundles must not create any ledger directories");

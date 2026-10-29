@@ -56,6 +56,19 @@ existing ranking, excerpt, and score fields while adding `sourceHash` and a
 source snapshot can be verified. Copy those values into `read` to inspect the
 full underlying span. Hash identity is not factual freshness.
 
+With `--json`, argument-parsing failures return a JSON error on stdout and keep
+their nonzero exit status, including when options precede the command. `read` and
+`outline` use `{"code": "invalid-read", "error": "..."}`; other command
+argument failures use `{"code": "invalid-arguments", "error": "..."}`. Runtime,
+validation, and dependency failures in standalone commands use
+`{"code": "command-error", "error": "..."}` (or `dependency-missing` for a
+missing optional dependency). Existing structured diagnostic payloads are retained:
+`doctor` reports invalid configuration in `config.error`, and `build` retains its
+`vault`, `indexed`, `semantic`, and `error` fields on failure. Error diagnostics
+are not also written to stderr. Without `--json`, the existing text diagnostics
+and exit statuses remain in use.
+Callers should check the exit status even when the output is valid JSON.
+
 Pages with hidden components, symlink components, ambiguous case/Unicode
 normalization aliases, hardlinks, non-regular files, or reserved `index.md`,
 `log.md`, and `_plan.md` names are refused. Read-only operation does not require
