@@ -160,36 +160,49 @@ Node 24 and Python 3.14 setup check for the latest matching patch rather than
 using an older runner-cached version. This can add a download to the job. Release
 also disables pip's version-update notice, matching PR CI.
 
-**Temporary approved audit policy:** print the full audit report and block
-critical findings. High/moderate findings remain visible and unresolved; a
-passing gate is not a vulnerability-free claim. Authentication or audit-service
-failures still fail the job. Revisit this policy when compatible upstream fixes
-are available; do not run `npm audit fix --force` just to make the report green.
+**Deferred high-severity gate (owner-approved):** print the full audit report
+and retain the critical threshold while the upstream npm bundle remains
+vulnerable. High/moderate findings remain visible and unresolved; a passing gate
+is not a vulnerability-free claim. Authentication or audit-service failures
+still fail the job. Do not run `npm audit fix --force` just to make the report
+green.
 
-The locked toolset keeps `handlebars` at 4.7.10 to resolve the critical
-JavaScript-injection advisories affecting 4.7.9. Updating both the publishing CLI
-and the lockfile's transitive npm to 11.21.1 replaces vulnerable bundled copies
-of `brace-expansion`, `http-cache-semantics`, `undici`, `ip-address`, and
-`postcss-selector-parser`. An installed-tree check and the release-plugin check
-verify the refresh; updating the global CLI alone does not update the locked
-release tool's npm.
+The shipped package has no npm runtime dependencies or bundled dependencies;
+release tooling is excluded from the npm artifact. The locked release toolset
+keeps `handlebars` at 4.7.10 to resolve its earlier critical advisories. The
+compatible `undici` copies now use 6.29.1 under `@actions/http-client` and 7.30.1
+under `@semantic-release/github`, addressing the current TLS-validation,
+redirect-disclosure, and denial-of-service advisories without major upgrades.
 
-The audit now reports seven high-severity affected package entries, with no
-moderate or critical entries in the reviewed tree. These seven entries trace
-back to [`braces` GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm),
-which has no patched upstream release; 3.0.3 remains the latest. Its recursive
-AST walkers can exhaust the stack on deeply nested patterns. The finding
-propagates through `micromatch` to semantic-release and its plugins; these are
-not seven independent root vulnerabilities. Release branch/rule patterns are
-repository-owned constants, reducing exposure to attacker-supplied patterns
-without proving safety. npm's suggested semantic-release 15.14.0 downgrade is
-not a compatible remediation.
+The reviewed installed release-tool tree still reports **one high and one
+moderate affected package entry**, both bundled inside npm 11.21.1:
 
-Do not suppress these findings, adopt unreviewed forks, patch installed files
-ad hoc, or declare them harmless. Keep the full audit visible and reassess both
-installed dependency versions and the release-plugin check when upstream fixes
-arrive. Renovate maintains the direct tool pins and lockfile through reviewed
-PRs. The preset remains below v10 until the changelog writer is compatible.
+- `undici` 6.29.0: high, including
+  [TLS certificate-validation bypass](https://github.com/advisories/GHSA-2m5v-pch6-74hx).
+  The patched 6.x release is 6.29.1.
+- `ip-address` 10.7.2: moderate,
+  [quadratic-time IPv6 zone parsing](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5).
+  The patched release is 10.7.4 or newer.
+
+These bundled copies cannot be replaced by an ordinary transitive update or
+root npm override. A trial of npm 12.2.1 retained the same vulnerable copies, so
+it was not adopted. An `npm audit` suggestion that a fix is available is not
+proof that `npm ci` installs a repaired bundle. Updating the global CLI alone
+also does not update the locked release tool's npm.
+
+The earlier [`braces` advisory GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+was withdrawn upstream on 2026-10-23 and is no longer an active audit finding;
+no local advisory suppression is used.
+
+Revisit the threshold when an upstream npm release ships patched bundled
+copies. Update the publishing CLI and locked npm together, verify the actual
+installed tree with `npm ci`, and require both the release-plugin check and
+`npm audit --prefix .github/release-tools --audit-level=high` to pass before
+switching all three audit invocations (PR CI, publishing, and recovery) to high.
+Do not suppress findings, adopt unreviewed forks, patch installed files ad hoc,
+or declare the remaining issues harmless. Renovate maintains direct tool pins
+and the lockfile through reviewed PRs. The preset remains below v10 until the
+changelog writer is compatible.
 
 ## Renovate credentials
 

@@ -205,6 +205,12 @@ for entry in lock['packages'].values():
 locked_npm = [entry for entry in lock['packages'].values() if 'npm' in entry.get('bin', {})]
 assert len(locked_npm) == 1
 assert tuple(map(int, locked_npm[0]['version'].split('.'))) >= (11, 21, 1)
+# Keep the patchable copies fixed; npm's bundled copy remains an upstream blocker.
+for path, minimum in {
+    'node_modules/@actions/http-client/node_modules/undici': (6, 29, 1),
+    'node_modules/undici': (7, 30, 1),
+}.items():
+    assert tuple(map(int, lock['packages'][path]['version'].split('.'))) >= minimum
 assert 'bash tests/install-smoke.sh' in commands
 assert 'tests/install-smoke.sh' in (root / '.github/release-tools/release-artifact.mjs').read_text()
 manifest = json.loads((root / 'package.json').read_text())
