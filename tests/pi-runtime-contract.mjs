@@ -277,32 +277,49 @@ try {
   fs.writeFileSync(pendingState, JSON.stringify({ version: 1, vault: nativeVault, pending: { "wiki/pending-native.md": { changed: true }, ".raw/agent-captures/pending-fixture.md": { changed: true } } }));
   const nativeSnapshot = () => Object.fromEntries([...fs.readdirSync(nativeVault, { recursive: true })].map((entry) => path.join(nativeVault, entry)).filter((entry) => fs.statSync(entry).isFile()).map((entry) => [path.relative(nativeVault, entry), [fs.readFileSync(entry).toString("base64"), fs.statSync(entry, { bigint: true }).mtimeNs.toString()]]).concat([["config", [fs.readFileSync(config).toString("base64"), fs.statSync(config, { bigint: true }).mtimeNs.toString()]]]));
   const beforeNativeTools = nativeSnapshot();
+  let nativeChecksPassed = false;
   const nativeCheck = (pi) => {
-    const info = pi.getAllTools().filter((tool) => ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"].includes(tool.name));
-    assert.equal(info.length, 4, "Pi discovers exactly the four extension-native tools");
-    assert.ok(info.every((tool) => tool.exposure === "direct"), "native tools default to direct model exposure");
-    assert.ok(info.every((tool) => tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint === false && tool.annotations?.idempotentHint === true && tool.annotations?.openWorldHint === false));
-    assert.ok(["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"].every((name) => pi.getActiveTools().includes(name)), "native tools are default active without replacing other selections");
     pi.registerTool({
     name: "m1_native_wiki_check", label: "Native wiki check",
     description: "Deterministic runtime contract for native read-only wiki tools.",
     parameters: Type.Object({}),
     execute: async (_id, _params, _signal, _update, ctx) => {
       const names = ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"];
+      const info = pi.getAllTools().filter((tool) => names.includes(tool.name));
+      assert.equal(info.length, 4, "Pi discovers exactly the four extension-native tools");
+      assert.ok(info.every((tool) => tool.exposure === "direct"), "native tools default to direct model exposure");
+      assert.ok(info.every((tool) => tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint === false && tool.annotations?.idempotentHint === true && tool.annotations?.openWorldHint === false));
+      assert.ok(names.every((name) => pi.getActiveTools().includes(name)), "native tools are default active without replacing other selections");
+      const definitions = nativeResources.getExtensions().extensions.flatMap((extension) => [...extension.tools.values()].map((tool) => tool.definition));
       for (const name of names) {
-        const tool = ctx.tools.find((entry) => entry.name === name);
-        assert.ok(tool, `${name} is directly discoverable and callable in the installed Pi runtime`);
+        assert.ok(ctx.tools.some((entry) => entry.name === name), `${name} is directly discoverable and callable in the installed Pi runtime`);
+        const tool = definitions.find((entry) => entry.name === name);
         assert.equal(tool.annotations.readOnlyHint, true);
         assert.equal(tool.annotations.destructiveHint, false);
         assert.equal(tool.annotations.idempotentHint, true);
         assert.equal(tool.annotations.openWorldHint, false);
         assert.ok(tool.outputSchema?.properties?.operation, `${name} declares the shared result envelope schema`);
       }
+      const readTool = info.find((entry) => entry.name === "wiki_read");
+      assert.match(readTool.description, /section.*(?:ID|id).*wiki_outline/);
+      const readProperties = readTool.parameters.properties;
+      assert.match(readProperties.section.description, /entry.*id.*wiki_outline/);
+      assert.match(readProperties.section.description, /metadata.*preamble.*heading:<offset>/);
+      assert.match(readProperties.section.description, /Not a heading title/);
+      assert.match(readProperties.section.description, /Mutually exclusive with start\/end/);
+      assert.match(readProperties.expectedHash.description, /sourceHash.*wiki_outline.*wiki_search.*readRef/);
+      for (const name of ["start", "end"]) {
+        assert.match(readProperties[name].description, /source character/);
+        assert.match(readProperties[name].description, /wiki_search.*readRef/);
+        assert.match(readProperties[name].description, /Mutually exclusive with section/);
+      }
+      assert.match(readProperties.start.description, /[Zz]ero-based/);
+      assert.match(readProperties.end.description, /[Ee]xclusive/);
       const checkResult = (outcome, operation) => {
         const value = outcome.result.structuredContent;
         assert.equal(value.operation, operation);
         assert.equal(typeof value.ok, "boolean");
-        const toolSchema = ctx.tools.find((entry) => entry.name === `wiki_${operation}`).outputSchema;
+        const toolSchema = definitions.find((entry) => entry.name === `wiki_${operation}`).outputSchema;
         assert.equal(checkSchema(toolSchema, value), true, `${operation} structured result matches its declared output schema`);
         return value;
       };
@@ -335,7 +352,7 @@ try {
       assert.equal(extra.isError, true, "closed-world parameter schema rejects passthrough fields");
       const doctor = checkResult(await ctx.executeTool("wiki_doctor", {}), "doctor");
       assert.equal(doctor.ok, true);
-      assert.equal(doctor.payload.vault, nativeVault);
+      assert.equal(doctor.payload.vault, fs.realpathSync(nativeVault));
 
       const fakePython = path.join(tmp, "term-ignoring-python.sh");
       const launcherPidFile = path.join(tmp, "cancel-launcher.pid");
@@ -353,7 +370,7 @@ try {
         controller.abort();
         const preAborted = await ctx.executeTool("wiki_search", { query: "synthetic native wiki" }, { signal: controller.signal });
         assert.equal(preAborted.isError, true);
-        assert.equal(preAborted.result.structuredContent.code, "aborted");
+        assert.match(JSON.stringify(preAborted.result), /aborted/i, "Pi may cancel before the tool can return a structured envelope");
         assert.equal(fs.existsSync(launcherPidFile), false, "pre-aborted call does not spawn the launcher/Python");
 
         activeController = new AbortController();
@@ -368,7 +385,7 @@ try {
         activeController.abort();
         const cancelled = await cancelPromise;
         assert.equal(cancelled.isError, true);
-        assert.equal(cancelled.result.structuredContent.code, "aborted");
+        assert.match(JSON.stringify(cancelled.result), /aborted/i, "Pi may replace the tool envelope with its own cancellation result");
         await assertGroupGone(launcherCancelGroup, "extension-launched node launcher");
         await assertGroupGone(descendantCancelGroup, "extension-launched Python descendant/process group");
       } finally {
@@ -381,18 +398,21 @@ try {
         if (cancelPromise) await cancelPromise.catch(() => undefined);
         if (previousPython === undefined) delete process.env.PYTHON; else process.env.PYTHON = previousPython;
       }
+      nativeChecksPassed = true;
       return { content: [{ type: "text", text: "All four native wiki tools passed structured-result, schema, hash, continuation, and cancellation checks." }], details: undefined };
     },
   });
   };
   const nativeResources = new DefaultResourceLoader({ cwd: nativeVault, agentDir: path.join(home, ".pi", "agent"), additionalExtensionPaths: [path.resolve("extensions/obsidian.ts")], extensionFactories: [nativeCheck] });
   await nativeResources.reload();
+  assert.deepEqual(nativeResources.getExtensions().errors, []);
   const { session: nativeSession } = await createAgentSession({ cwd: nativeVault, agentDir: path.join(home, ".pi", "agent"), model, modelRuntime, resourceLoader: nativeResources, sessionManager: SessionManager.inMemory(nativeVault), settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }) });
   try {
     await nativeSession.bindExtensions({});
     scenario = "native-wiki-tools";
     requests = 0;
     await nativeSession.prompt("Run the deterministic native wiki tools contract.");
+    assert.equal(nativeChecksPassed, true, `native wiki helper must finish all checks without a tool error: ${JSON.stringify(nativeSession.messages.filter((entry) => entry.role === "toolResult"))}`);
     assert.equal(requests, 2, "native-tool calls complete in one tool turn and one deterministic response");
     assert.deepEqual(nativeSnapshot(), beforeNativeTools, "startup, native reads, pending freshness, and doctor leave vault/config bytes and mtimes unchanged");
   } finally {

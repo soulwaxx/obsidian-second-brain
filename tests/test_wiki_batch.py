@@ -321,7 +321,10 @@ class WikiBatchTests(unittest.TestCase):
                               "--vault", str(self.vault), "--config", str(alternate), "--json"],
                              text=True, capture_output=True)
         self.assertNotEqual(cli.returncode, 0)
-        self.assertIn("config identity changed", cli.stderr)
+        self.assertEqual(cli.stderr, "")
+        error = json.loads(cli.stdout)
+        self.assertEqual(error["code"], "command-error")
+        self.assertIn("config identity changed", error["error"])
         with self.assertRaisesRegex(MODULE.BatchError, "config identity changed"):
             MODULE.recover(self.vault, journal["batchId"], alternate)
         self.config.write_text(json.dumps({"vaultPath": str(self.vault), "features": {"guard": False}}), encoding="utf-8")

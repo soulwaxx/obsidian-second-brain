@@ -311,6 +311,61 @@ class CliTests(unittest.TestCase):
         self.assertEqual(response["results"], [])
         self.assertFalse((self.vault / ".vault-meta").exists())
 
+    def test_json_failures_preserve_exit_codes_and_legacy_text_without_writes(self):
+        bundle = self.root / "invalid-bundle.json"
+        bundle.write_text("{}")
+        cases = [
+            (("search",), 2, "requires query terms"),
+            (("doctor", "--as-of", "2026-01-01"), 2, "--as-of requires"),
+            (("batch-inspect",), 2, "requires --bundle"),
+            (("batch-apply",), 2, "requires --bundle"),
+            (("batch-recover",), 2, "requires --batch-id"),
+            (("batch-rollback",), 2, "requires --batch-id"),
+            (("capture-inspect",), 2, "requires at least one --source"),
+            (("capture-apply",), 2, "requires at least one --source"),
+            (("batch-inspect", "--bundle", str(bundle)), 1, "version-1 object"),
+            (("batch-apply", "--bundle", str(bundle)), 1, "version-1 object"),
+            (("batch-recover", "--batch-id", "invalid"), 1, "invalid batch ID"),
+            (("batch-rollback", "--batch-id", "invalid"), 1, "invalid batch ID"),
+            (("capture-inspect", "--source", "relative.txt"), 1, "absolute paths"),
+            (("capture-apply", "--source", "relative.txt"), 1, "absolute paths"),
+        ]
+        before = {path.relative_to(self.vault): (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in self.vault.rglob("*") if path.is_file()}
+        for arguments, status, message in cases:
+            for json_mode in (False, True):
+                with self.subTest(arguments=arguments, json=json_mode):
+                    result = self.run_cli(*arguments, *(["--json"] if json_mode else []))
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    if json_mode:
+                        self.assertEqual(result.stderr, "")
+                        error = json.loads(result.stdout)
+                        self.assertEqual(error["code"], "invalid-arguments" if status == 2 else "command-error")
+                        self.assertIn(message, error["error"])
+                    else:
+                        self.assertEqual(result.stdout, "")
+                        self.assertIn(message, result.stderr)
+        self.assertEqual({path.relative_to(self.vault): (path.read_bytes(), path.stat().st_mtime_ns)
+                          for path in self.vault.rglob("*") if path.is_file()}, before)
+        self.assertFalse((self.vault / ".vault-meta").exists())
+
+    def test_write_commands_report_invalid_config_as_json_or_legacy_text(self):
+        self.config.write_text("{invalid")
+        for command in ("batch-inspect", "batch-apply", "batch-recover", "batch-rollback",
+                        "capture-inspect", "capture-apply"):
+            with self.subTest(command=command):
+                result = self.run_cli("--json", command)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stderr, "")
+                error = json.loads(result.stdout)
+                self.assertEqual(error["code"], "command-error")
+                self.assertIn("invalid selected integration config", error["error"])
+                legacy = self.run_cli(command)
+                self.assertEqual(legacy.returncode, 1)
+                self.assertEqual(legacy.stdout, "")
+                self.assertIn("invalid selected integration config", legacy.stderr)
+        self.assertFalse((self.vault / ".vault-meta").exists())
+
     def test_explicit_vault_takes_precedence_and_bad_config_is_diagnosed(self):
         self.config.write_text("{bad", encoding="utf-8")
         alternate = self.root / "alternate"

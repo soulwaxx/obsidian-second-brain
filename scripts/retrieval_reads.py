@@ -204,7 +204,7 @@ def read_page(vault: Path, page: str, expected_hash: str, *, section: str | None
         entries = outline_entries(source)
         selected = next((item for item in entries if item["id"] == section), None)
         if selected is None:
-            raise ReadError("unknown section ID")
+            raise ReadError("unknown section ID; use an entry id from wiki_outline (metadata, preamble, or heading:<offset>), not a heading title")
         selected_start, selected_end = selected["start"], selected["end"]
         selector = {"section": section}
     else:

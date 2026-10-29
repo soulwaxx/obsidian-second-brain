@@ -91,6 +91,27 @@ class PiWikiToolTests(unittest.TestCase):
             bridge.run("read", {"page": "wiki/topic/coffee ü.md", "expectedHash": digest,
                                  "section": "heading:0", "start": 0, "end": 2})
 
+    def test_unknown_section_id_returns_actionable_invalid_request_without_evidence(self):
+        before = self.snapshot()
+        params = {"page": "wiki/topic/coffee ü.md",
+                  "expectedHash": hashlib.sha256(self.page.read_bytes()).hexdigest()}
+        for section in ("Coffee", "heading:999", "missing"):
+            with self.subTest(section=section):
+                output = io.StringIO()
+                with patch.object(sys, "argv", ["pi_wiki_tools.py", "read", json.dumps({**params, "section": section})]), \
+                        contextlib.redirect_stdout(output):
+                    self.assertEqual(bridge.main(), 0)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["operation"], "read")
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["code"], "invalid-request")
+                self.assertIn("wiki_outline", result["message"])
+                self.assertIn("heading:<offset>", result["message"])
+                self.assertLessEqual(len(result["message"]), 1000)
+                self.assertNotIn("payload", result)
+                self.assertNotIn("Espresso evidence", output.getvalue())
+        self.assertEqual(self.snapshot(), before)
+
     def test_missing_index_is_honest_navigation_fallback_without_cache_creation(self):
         index = self.vault / ".vault-meta/retrieval/bm25.json"
         index.unlink()

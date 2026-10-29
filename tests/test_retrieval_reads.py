@@ -98,6 +98,23 @@ class RetrievalReadTests(unittest.TestCase):
         with self.assertRaises(reads.SourceChanged):
             reads.outline_page(self.vault, "wiki/example.md", offset=1, expected_hash="0" * 64)
 
+    def test_unknown_section_id_guides_outline_lookup_without_resolving_titles(self):
+        self.page.write_text("# Problem and goal\nbody\n# Problem and goal\nagain\n")
+        outline = reads.outline_page(self.vault, "wiki/example.md")
+        for section in ("Problem and goal", "heading:999", "missing"):
+            with self.subTest(section=section), self.assertRaises(reads.ReadError) as caught:
+                reads.read_page(self.vault, "wiki/example.md", outline["sourceHash"], section=section)
+            message = str(caught.exception)
+            self.assertIn("unknown section ID", message)
+            self.assertIn("wiki_outline", message)
+            self.assertIn("heading:<offset>", message)
+            self.assertIn("metadata", message)
+            self.assertIn("preamble", message)
+            self.assertLessEqual(len(message), 1000)
+        for entry in outline["entries"]:
+            result = reads.read_page(self.vault, "wiki/example.md", outline["sourceHash"], section=entry["id"])
+            self.assertEqual(result["selected"], {"start": entry["start"], "end": entry["end"]})
+
     def test_unicode_line_separator_characters_do_not_shift_commonmark_offsets(self):
         text = "preamble\u2028not a physical line\n# H\u2028# still heading text\nbody\u0085not a line\n## Child\nend\n"
         self.page.write_text(text)
@@ -429,6 +446,45 @@ class RetrievalReadTests(unittest.TestCase):
         self.assertNotEqual(malformed.returncode, 0)
         self.assertEqual(json.loads(malformed.stdout)["code"], "invalid-read")
         self.assertEqual(malformed.stderr, "")
+
+    def test_cli_json_parse_errors_do_not_depend_on_command_position(self):
+        for command, option in (("read", "--start"), ("outline", "--limit")):
+            for prefix in ([], ["--vault", str(self.vault)], [f"--vault={self.vault}"],
+                           ["--config", "read"], ["--page", "outline"]):
+                with self.subTest(command=command, prefix=prefix):
+                    result = self.cli(*prefix, command, "--json", option, "not-an-integer")
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(result.stderr, "")
+                    error = json.loads(result.stdout)
+                    self.assertEqual(error["code"], "invalid-read")
+                    self.assertIn(option, error["error"])
+            with self.subTest(command=command, invalid_option_before_command=True):
+                result = self.cli("--json", option, "not-an-integer", command)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(json.loads(result.stdout)["code"], "invalid-read")
+        for query in ("read", "outline"):
+            with self.subTest(search_query=query):
+                result = self.cli("search", query, "--json", "--limit", "not-an-integer")
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr, "")
+                error = json.loads(result.stdout)
+                self.assertEqual(error["code"], "invalid-arguments")
+                self.assertIn("--limit", error["error"])
+        for invocation, option in ((("search", "query", "--json", "--limit", "bad"), "--limit"),
+                                   (("--json", "--limit", "bad", "search", "read"), "--limit"),
+                                   (("doctor", "--json", "--timeout", "bad"), "--timeout")):
+            with self.subTest(search_parse=invocation):
+                result = self.cli(*invocation)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr, "")
+                error = json.loads(result.stdout)
+                self.assertEqual(error["code"], "invalid-arguments")
+                self.assertIn(option, error["error"])
+        human_error = self.cli("--vault", str(self.vault), "read", "--start", "not-an-integer")
+        self.assertEqual(human_error.returncode, 2)
+        self.assertEqual(human_error.stdout, "")
+        self.assertIn("--start", human_error.stderr)
 
     def test_outline_pagination_requires_hash_and_detects_drift(self):
         self.page.write_text("# one\n# two\n# three\n")
