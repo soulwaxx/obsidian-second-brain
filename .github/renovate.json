@@ -26,6 +26,13 @@
   ],
   "packageRules": [
     {
+      "description": "Preserve Python minimum-version coverage; keep newer runtimes updateable",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["python"],
+      "matchCurrentValue": "3.14",
+      "enabled": false
+    },
+    {
       "matchManagers": ["github-actions"],
       "groupName": "GitHub Actions"
     },

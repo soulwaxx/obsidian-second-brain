@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseNpmArchive } from "./npm-pack.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-npm-package-")));
@@ -13,7 +14,7 @@ const env = { ...process.env, npm_config_dry_run: "false", npm_config_cache: pat
 const run = (command, args, options = {}) => execFileSync(command, args, { cwd: root, env, ...options });
 
 try {
-  const [archive] = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", work], { encoding: "utf8" }));
+  const archive = parseNpmArchive(run("npm", ["pack", "--json", "--pack-destination", work], { encoding: "utf8" }));
   const files = new Set(archive.files.map((file) => file.path));
   for (const resource of [
     "package.json", "requirements.txt", "README.md", "LICENSE", "NOTICE.md", "properties.example.json",

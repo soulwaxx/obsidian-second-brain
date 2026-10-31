@@ -308,7 +308,7 @@ shellcheck tests/install-smoke.sh
 
 Installation tests use temporary agent settings and a disposable vault, not the
 real profile, and do not send a model prompt. CI checks macOS/Linux with Node 24
-and Python 3.14. Use Conventional Commit PR titles: `feat:` releases a minor
+and Python 3.14/3.15. Use Conventional Commit PR titles: `feat:` releases a minor
 version, a breaking change a major version, and other types a patch. Full code
 checks run before merge; title/body edits run only metadata validation. After a
 squash merge, publishing verifies that the merged tree passed PR CI, smoke-tests

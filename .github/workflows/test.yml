@@ -26,6 +26,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # Keep minimum-version coverage while Renovate advances the newest runtime.
+        python-version: ['3.14', '3.15']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -40,7 +42,7 @@ jobs:
           package-manager-cache: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python-version }}
           check-latest: true
           cache: pip
           cache-dependency-path: .github/requirements-ci.txt

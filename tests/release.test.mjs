@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { parseNpmArchive } from "./npm-pack.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -62,7 +63,7 @@ test("npm preparation versions the artifact without pinning the Git catalog", (t
   assert.equal(git("rev-parse", "HEAD"), sha);
   assert.equal(git("tag"), "");
   assert.equal(run("check").status, 0);
-  const [archive] = JSON.parse(execFileSync("npm", ["pack", "--json"], { cwd: work, env, encoding: "utf8" }));
+  const archive = parseNpmArchive(execFileSync("npm", ["pack", "--json"], { cwd: work, env, encoding: "utf8" }));
   const packed = path.join(work, "packed");
   fs.mkdirSync(packed);
   execFileSync("tar", ["-xzf", path.join(work, archive.filename), "-C", packed]);

@@ -41,7 +41,15 @@ assert {'merge_group', 'workflow_dispatch'} <= checks['on'].keys()
 assert checks['concurrency']['cancel-in-progress'] == 'true'
 assert set(checks['jobs']) == {'test', 'ci'}
 job = checks['jobs']['test']
-assert job['strategy']['matrix'] == {'os': ['ubuntu-latest', 'macos-latest']}
+matrix = job['strategy']['matrix']
+assert set(matrix) == {'os', 'python-version'}
+assert matrix['os'] == ['ubuntu-latest', 'macos-latest']
+python_versions = matrix['python-version']
+assert len(python_versions) == len(set(python_versions)) == 2
+assert python_versions[0] == '3.14', 'Keep testing the minimum supported Python version'
+assert tuple(map(int, python_versions[-1].split('.'))) >= (3, 15)
+ci_python = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/setup-python@'))
+assert ci_python['with']['python-version'] == '${{ matrix.python-version }}'
 assert job['steps'][0]['with']['ref'] == '${{ github.sha }}'
 commands = '\n'.join(step.get('run', '') for step in job['steps'])
 for command in ('npm run release:check', 'npm test', 'npm run test:release', 'npm run test:package',
@@ -158,7 +166,7 @@ assert 'git archive "$ORCHESTRATION_SHA"' in preserve['run']
 assert artifact_checkout['with']['ref'] == '${{ needs.verify.outputs.source_sha }}'
 assert artifact_checkout['with']['fetch-depth'] == '0'
 python = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/setup-python@'))
-assert python['with']['python-version'] == '3.14'
+assert python['with']['python-version'] == python_versions[-1], 'Release uses the newest tested Python'
 prerequisites = next(step for step in job['steps'] if step.get('name') == 'Install artifact-check prerequisites')
 assert 'apt-get install -y jq' in prerequisites['run']
 assert 'pip install --requirement .github/requirements-ci.txt' in prerequisites['run']
@@ -224,6 +232,11 @@ assert action['with']['token'] == '${{ secrets.RENOVATE_TOKEN }}'
 config = json.loads((root / '.github/renovate.json').read_text())
 assert 'helpers:pinGitHubActionDigests' in config['extends']
 assert config['automerge'] is False
+minimum_python = next(rule for rule in config['packageRules']
+                      if rule.get('matchPackageNames') == ['python'])
+assert minimum_python['matchManagers'] == ['github-actions']
+assert minimum_python['matchCurrentValue'] == python_versions[0]
+assert minimum_python['enabled'] is False
 assert not config.get('schedule'), 'The workflow owns scheduling so delayed/manual runs can create branches'
 pattern = re.compile(config['customManagers'][0]['matchStrings'][0].replace('(?<', '(?P<'))
 dependencies = {}

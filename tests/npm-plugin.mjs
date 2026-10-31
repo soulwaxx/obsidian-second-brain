@@ -6,6 +6,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { parseNpmArchive } from "./npm-pack.mjs";
 
 // Exercise real Claude installs and updates against a disposable loopback npm registry.
 // No public registry, credentials, model prompt, or personal agent settings are used.
@@ -27,7 +28,7 @@ assert.deepEqual(catalog.plugins[0].source, { source: "npm", package: manifest.n
 assert.ok(!Object.hasOwn(catalog.plugins[0], "version"));
 const id = `${catalog.plugins[0].name}@${catalog.name}`;
 fs.mkdirSync(work, { recursive: true });
-const [archive] = JSON.parse(await run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", work]));
+const archive = parseNpmArchive(await run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", work]));
 const current = fs.readFileSync(path.join(work, archive.filename));
 const oldRoot = path.join(work, "old");
 fs.mkdirSync(oldRoot);
@@ -38,7 +39,7 @@ for (const file of ["package.json", ".claude-plugin/plugin.json"]) {
   data.version = "0.0.0";
   fs.writeFileSync(target, JSON.stringify(data));
 }
-const [oldArchive] = JSON.parse(await run("npm", ["pack", path.join(oldRoot, "package"), "--json", "--ignore-scripts", "--pack-destination", work]));
+const oldArchive = parseNpmArchive(await run("npm", ["pack", path.join(oldRoot, "package"), "--json", "--ignore-scripts", "--pack-destination", work]));
 const old = fs.readFileSync(path.join(work, oldArchive.filename));
 let latest = "0.0.0";
 let registry;
@@ -63,7 +64,11 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 registry = `http://127.0.0.1:${server.address().port}/`;
 // HTTP is accepted only when it is the user's default npm registry.
 env.npm_config_registry = registry;
-fs.writeFileSync(env.npm_config_userconfig, `registry=${registry}\n`);
+// npm 12 pack treats its second tarball fetch as non-root, so "root" still fails.
+// Permit remote tarballs only inside this disposable loopback-registry fixture;
+// never change user settings. Revisit when npm pack propagates root status.
+env.npm_config_allow_remote = "all";
+fs.writeFileSync(env.npm_config_userconfig, `registry=${registry}\nallow-remote=all\n`);
 const catalogRoot = path.join(work, "catalog");
 fs.mkdirSync(path.join(catalogRoot, ".claude-plugin"), { recursive: true });
 const catalogFile = path.join(catalogRoot, ".claude-plugin/marketplace.json");
