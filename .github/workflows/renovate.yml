@@ -35,6 +35,6 @@ jobs:
           # A dedicated token lets update PRs trigger CI without manual approval.
           token: ${{ secrets.RENOVATE_TOKEN }}
           # renovate: datasource=docker depName=ghcr.io/renovatebot/renovate
-          renovate-version: '44.176.2'
+          renovate-version: '44.198.3'
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
