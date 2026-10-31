@@ -147,7 +147,15 @@ selection and release notes, and exercises npm preparation against disposable
 manifests without publishing. Dependency lifecycle scripts are disabled during
 installation; the owned package's version hook still runs during preparation.
 
-CI and release use the same pinned npm 11.x CLI. Agent CLI installation uses
+CI and release use the same pinned npm CLI. Archive-result parsing accepts both
+npm 11's array output and npm 12's package-name-keyed output; release, packed-runtime,
+and isolated plugin-install checks all use the same tested parser. The disposable
+loopback registry fixture explicitly permits its tarball downloads for npm 12;
+`allow-remote=root` still fails because npm pack treats its second fetch as non-root.
+The fixture's temporary environment/npmrc uses `allow-remote=all`, with all tarball
+URLs supplied by the loopback server. This permission never changes user settings
+or the workflow's script allow-list; revisit it when npm pack propagates root status.
+Agent CLI installation uses
 `--strict-allow-scripts` with a command-scoped allow-list for Claude Code's
 native-binary placement, `@google/genai`'s no-op preinstall, and `protobufjs`'s
 version-scheme check. New dependency install scripts fail the job until reviewed;
@@ -156,9 +164,14 @@ longer requires the previous `esbuild` postinstall. A transitive
 `node-domexception` deprecation can still appear during CLI installation; keep
 it visible until the upstream dependency is replaced.
 
-Node 24 and Python 3.14 setup check for the latest matching patch rather than
-using an older runner-cached version. This can add a download to the job. Release
-also disables pip's version-update notice, matching PR CI.
+CI tests Node 24 with both Python 3.14 (the supported minimum) and Python 3.15
+on macOS and Linux. Release uses the newest Python version in that tested matrix.
+The workflow guards preserve minimum-version coverage and require the release
+runtime to match the newest matrix entry, rather than rejecting every Python
+upgrade. Renovate preserves the 3.14 minimum entry while updating newer runtimes.
+Setup checks for the latest matching patch rather than using an older
+runner-cached version. This can add a download to the job. Release also disables
+pip's version-update notice, matching PR CI.
 
 **Deferred high-severity gate (owner-approved):** print the full audit report
 and retain the critical threshold while the upstream npm bundle remains
@@ -174,8 +187,9 @@ compatible `undici` copies now use 6.29.1 under `@actions/http-client` and 7.30.
 under `@semantic-release/github`, addressing the current TLS-validation,
 redirect-disclosure, and denial-of-service advisories without major upgrades.
 
-The reviewed installed release-tool tree still reports **one high and one
-moderate affected package entry**, both bundled inside npm 11.21.1:
+The reviewed installed release-tool tree reports **one high and 36 moderate
+affected package entries**, including dependent packages. The advisory-bearing
+copies below are bundled inside npm 11.21.1:
 
 - `undici` 6.29.0: high, including
   [TLS certificate-validation bypass](https://github.com/advisories/GHSA-2m5v-pch6-74hx).
@@ -183,11 +197,17 @@ moderate affected package entry**, both bundled inside npm 11.21.1:
 - `ip-address` 10.7.2: moderate,
   [quadratic-time IPv6 zone parsing](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5).
   The patched release is 10.7.4 or newer.
+- `glob` 13.0.6: moderate,
+  [cancellation bypass permitting post-timeout filesystem traversal](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4).
+- `minimatch` 10.2.5: moderate,
+  [denial of service via globparts amplification](https://github.com/advisories/GHSA-g3hv-75wg-m249).
+  The patched release is 11.0.1 or newer.
 
 These bundled copies cannot be replaced by an ordinary transitive update or
-root npm override. A trial of npm 12.2.1 retained the same vulnerable copies, so
-it was not adopted. An `npm audit` suggestion that a fix is available is not
-proof that `npm ci` installs a repaired bundle. Updating the global CLI alone
+root npm override. A trial of npm 12.2.1 retained vulnerable bundled copies;
+adopting the newer CLI is therefore not a security remediation for these findings.
+An `npm audit` suggestion that a fix is available is not proof that `npm ci`
+installs a repaired bundle. Updating the global CLI alone
 also does not update the locked release tool's npm.
 
 The earlier [`braces` advisory GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
