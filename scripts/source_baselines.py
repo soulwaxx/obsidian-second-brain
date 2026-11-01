@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
+import unicodedata
 from typing import Any
 from urllib.parse import quote
 
@@ -97,8 +98,9 @@ def _public_directory(path: Path, descriptor: int, before: tuple[int, int]) -> N
         raise SourceBaselineError("source root or parent directory changed during observation")
 
 
-def _open_selected(root: Path, relative: PurePosixPath,
-                   mapping: tuple[tuple[Path, tuple[int, int]], ...]) -> str:
+def _inspect_selected(root: Path, relative: PurePosixPath,
+                      mapping: tuple[tuple[Path, tuple[int, int]], ...], *,
+                      reject_hardlinks: bool = False, strict_aliases: bool = False) -> tuple[str, tuple[int, ...]]:
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory = getattr(os, "O_DIRECTORY", 0)
     dir_flags = os.O_RDONLY | nofollow | directory
@@ -115,7 +117,10 @@ def _open_selected(root: Path, relative: PurePosixPath,
             _assert_mapping(mapping)
             _public_directory(dirs[-1][0], fd, dirs[-1][2])
             names = os.listdir(fd)
-            matching = [name for name in names if name.casefold() == part.casefold()]
+            if strict_aliases and unicodedata.normalize("NFC", part) != part:
+                raise SourceBaselineError("source locator component is not NFC canonical")
+            folded = unicodedata.normalize("NFC", part).casefold() if strict_aliases else part.casefold()
+            matching = [name for name in names if (unicodedata.normalize("NFC", name).casefold() if strict_aliases else name.casefold()) == folded]
             if matching and matching != [part]:
                 raise SourceBaselineError("source locator has a case-insensitive path collision")
             fd = os.open(part, dir_flags, dir_fd=fd)
@@ -126,7 +131,10 @@ def _open_selected(root: Path, relative: PurePosixPath,
         _assert_mapping(mapping)
         _public_directory(dirs[-1][0], fd, dirs[-1][2])
         names = os.listdir(fd)
-        matching = [name for name in names if name.casefold() == relative.name.casefold()]
+        if strict_aliases and unicodedata.normalize("NFC", relative.name) != relative.name:
+            raise SourceBaselineError("source locator component is not NFC canonical")
+        folded = unicodedata.normalize("NFC", relative.name).casefold() if strict_aliases else relative.name.casefold()
+        matching = [name for name in names if (unicodedata.normalize("NFC", name).casefold() if strict_aliases else name.casefold()) == folded]
         if matching and matching != [relative.name]:
             raise SourceBaselineError("source locator has a case-insensitive path collision")
         try:
@@ -135,6 +143,8 @@ def _open_selected(root: Path, relative: PurePosixPath,
             raise SourceBaselineError(f"cannot inspect selected source: {exc}") from exc
         if not stat.S_ISREG(before_name.st_mode):
             raise SourceBaselineError("selected source must be a regular file")
+        if reject_hardlinks and before_name.st_nlink != 1:
+            raise SourceBaselineError("selected source has hardlink aliases")
         try:
             source_fd = os.open(relative.name, file_flags, dir_fd=fd)
         except OSError as exc:
@@ -155,7 +165,10 @@ def _open_selected(root: Path, relative: PurePosixPath,
         _assert_mapping(mapping)
         for dir_path, dir_fd, identity in dirs:
             _public_directory(dir_path, dir_fd, identity)
-        return "sha256:" + digest.hexdigest()
+        stamp = (opened_after.st_dev, opened_after.st_ino, opened_after.st_mode, opened_after.st_nlink,
+                 opened_after.st_size, opened_after.st_mtime_ns, opened_after.st_ctime_ns,
+                 *(value for _path, _fd, identity in dirs for value in identity))
+        return "sha256:" + digest.hexdigest(), stamp
     except SourceBaselineError:
         raise
     except OSError as exc:
@@ -165,6 +178,12 @@ def _open_selected(root: Path, relative: PurePosixPath,
             os.close(source_fd)
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+def _open_selected(root: Path, relative: PurePosixPath,
+                   mapping: tuple[tuple[Path, tuple[int, int]], ...]) -> str:
+    """Compatibility wrapper returning the exact-byte digest only."""
+    return _inspect_selected(root, relative, mapping)[0]
 
 
 def _git_run(root: Path, args: list[str], *, limit: int = _GIT_OUTPUT_LIMIT) -> tuple[int, bytes]:

@@ -23,7 +23,7 @@ try {
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
-    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/evidence_ledger.py", "scripts/wiki_batch.py", "scripts/source_baselines.py", "scripts/retrieval_reads.py",
+    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/evidence_ledger.py", "scripts/wiki_batch.py", "scripts/source_baselines.py", "scripts/source_drift.py", "scripts/retrieval_reads.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
@@ -32,7 +32,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/source-baselines.md",
+    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/source-baselines.md", "docs/source-drift.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -523,6 +523,139 @@ try {
   const baselineReport = baselineCli("evidence-report", "--vault", baselineVault, "--as-of", "2026-06-05");
   assert.equal(baselineReport.ledgerSummary.observations, 2);
   assert.equal(baselineReport.pages.find((item) => item.path === "wiki/selected.md").baselines[0].latest.outcome, "updated");
+
+  const driftVault = path.join(work, "drift-vault ü space");
+  const driftSourceRoot = path.join(work, "source root ü space");
+  const driftConfig = path.join(work, "drift config ü.json");
+  fs.mkdirSync(path.join(driftVault, "wiki"), { recursive: true });
+  fs.mkdirSync(path.join(driftSourceRoot, "records"), { recursive: true });
+  fs.writeFileSync(driftConfig, JSON.stringify({ vaultPath: driftVault }));
+  const driftSource = path.join(driftSourceRoot, "records/selected ü.txt");
+  fs.writeFileSync(driftSource, "recorded bytes\n");
+  const driftPage = path.join(driftVault, "wiki/claim ü.md");
+  fs.writeFileSync(driftPage, "---\ntype: Note\nclaims: [claim-packed-drift]\n---\nSelected claim page.\n");
+  const driftFixture = String.raw`import hashlib,json,sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+import evidence_ledger as ledger
+from source_baselines import _portable_source_locator
+vault, locator, page = Path(sys.argv[2]), sys.argv[3], "wiki/claim ü.md"
+raw = b"recorded bytes\n"
+asset = ledger.make_asset("asset-packed-drift", "packed-root", locator)
+source = ledger.make_source(_portable_source_locator("packed-root", locator), raw)
+observation = ledger.make_observation(asset, source, "2026-06-01T12:00:00Z")
+claim = ledger.make_claim("claim-packed-drift", "Synthetic statement must not be emitted", support=[source["id"]])
+page_bytes = (vault / page).read_bytes()
+baseline = ledger.make_baseline(page, asset["id"], [{"observationId": observation["id"], "sourceId": source["id"], "contentHash": source["contentHash"], "pageHash": "sha256:" + hashlib.sha256(page_bytes).hexdigest(), "pageBatchId": "synthetic-batch", "reconciledAt": "2026-06-01T13:00:00Z", "outcome": "updated"}])
+for record in (asset, source, observation, claim, baseline):
+ target = vault / ledger.record_path(record)
+ target.parent.mkdir(parents=True, exist_ok=True)
+ target.write_text(json.dumps(record), encoding="utf-8")`;
+  run("python3", ["-c", driftFixture, installed, driftVault, "records/selected ü.txt"], { cwd: work });
+  const driftSnapshot = () => {
+    const files = [];
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const target = path.join(directory, entry.name);
+        const info = fs.statSync(target, { bigint: true });
+        files.push([target, info.mtimeNs.toString(), info.isFile() ? fs.readFileSync(target).toString("base64") : null]);
+        if (entry.isDirectory()) walk(target);
+      }
+    };
+    walk(driftVault);
+    walk(driftSourceRoot);
+    const configStat = fs.statSync(driftConfig, { bigint: true });
+    files.push([driftConfig, configStat.mtimeNs.toString(), fs.readFileSync(driftConfig).toString("base64")]);
+    return JSON.stringify(files);
+  };
+  const driftArgs = ["source-check", "--root-id", "packed-root", "--source-root", driftSourceRoot,
+    "--config", driftConfig];
+  const driftCall = (command, args, options = {}) => spawnSync(command, args, { cwd: unrelatedCwd, env, encoding: "utf8", ...options });
+  const driftBin = path.join(prefix, "node_modules/.bin/obsidian-second-brain");
+  const driftLauncher = [process.execPath, path.join(packageRootFromSkill, "scripts/obsidian-second-brain.mjs")];
+  const beforeUnchanged = driftSnapshot();
+  const unchanged = driftCall(driftLauncher[0], [...driftLauncher.slice(1), ...driftArgs, "--json"]);
+  assert.equal(unchanged.status, 0, unchanged.stderr || unchanged.stdout);
+  const unchangedReport = JSON.parse(unchanged.stdout);
+  assert.equal(unchangedReport.complete, true);
+  assert.equal(unchangedReport.assets.find((item) => item.id === "asset-packed-drift").state, "unchanged");
+  assert.equal(unchangedReport.pages[0].baselines[0].state, "unchanged");
+  assert.equal(unchangedReport.assets[0].observations[0].state, "unchanged");
+  assert.deepEqual(driftSnapshot(), beforeUnchanged, "unchanged source-check must preserve fixture bytes and mtimeNs");
+
+  const changedSourceBytes = fs.readFileSync(driftSource);
+  const newerObservationFixture = String.raw`import json,sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+import evidence_ledger as ledger
+from source_baselines import _portable_source_locator
+vault, source_root = Path(sys.argv[2]), Path(sys.argv[3])
+asset_path = vault / "wiki/meta/evidence/asset-packed-drift.json"
+asset = json.loads(asset_path.read_text(encoding="utf-8"))
+raw = b"version two bytes\n"
+(source_root / asset["locator"]).write_bytes(raw)
+source = ledger.make_source(_portable_source_locator(asset["rootId"], asset["locator"]), raw)
+observation = ledger.make_observation(asset, source, "2026-06-02T12:00:00Z")
+for record in (source, observation):
+ target = vault / ledger.record_path(record)
+ target.write_text(json.dumps(record), encoding="utf-8")`;
+  run("python3", ["-c", newerObservationFixture, installed, driftVault, driftSourceRoot], { cwd: work });
+  const beforeNewObservationCheck = driftSnapshot();
+  const newerObservationCheck = driftCall(driftLauncher[0], [...driftLauncher.slice(1), ...driftArgs, "--json"]);
+  assert.equal(newerObservationCheck.status, 0, newerObservationCheck.stderr || newerObservationCheck.stdout);
+  const newerReport = JSON.parse(newerObservationCheck.stdout);
+  const newerAsset = newerReport.assets.find((item) => item.id === "asset-packed-drift");
+  assert.equal(newerAsset.state, "changed", "historical v1 observation remains different from current v2 bytes");
+  assert.equal(newerAsset.observations.length, 2);
+  assert.equal(newerAsset.observations[1].state, "unchanged", "v2 observation matches current source bytes");
+  assert.equal(newerReport.pages[0].baselines[0].state, "changed", "new observation does not advance the v1 page baseline");
+  assert.equal(newerReport.pages[0].baselines[0].latestSourceId, newerAsset.observations[0].sourceId);
+  assert.deepEqual(driftSnapshot(), beforeNewObservationCheck, "observation comparison remains read-only");
+  for (const invoke of [[driftBin, driftArgs], [driftLauncher[0], [...driftLauncher.slice(1), ...driftArgs]]]) {
+    const before = driftSnapshot();
+    const result = driftCall(invoke[0], [...invoke[1], "--json"]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.schema, "okf-source-drift-v1");
+    assert.equal(report.snapshotValidity, "stable");
+    assert.equal(report.assets.find((item) => item.id === "asset-packed-drift").state, "changed");
+    assert.equal(report.pages.find((item) => item.path === "wiki/claim ü.md").state, "affected");
+    assert.equal(report.claims.find((item) => item.id === "claim-packed-drift").reviewRequired, true);
+    assert.equal(report.pages[0].baselines[0].state, "changed", "latest baseline remains tied to its recorded observation");
+    assert.ok(!result.stdout.includes("Synthetic statement must not be emitted"));
+    assert.deepEqual(driftSnapshot(), before, "source-check must preserve vault/source/config bytes and mtimeNs");
+  }
+  const beforeHuman = driftSnapshot();
+  const human = driftCall(driftBin, driftArgs);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /Source check \(packed-root\): complete; snapshot stable/);
+  assert.match(human.stdout, /asset-packed-drift\tchanged/);
+  assert.match(human.stdout, /wiki\/claim ü\.md\taffected/);
+  assert.deepEqual(driftSnapshot(), beforeHuman, "human output must not mutate fixture");
+  fs.unlinkSync(driftSource);
+  const missingBefore = driftSnapshot();
+  const missing = driftCall(driftBin, [...driftArgs, "--json"]);
+  assert.equal(missing.status, 0, missing.stderr || missing.stdout);
+  assert.equal(JSON.parse(missing.stdout).assets.find((item) => item.id === "asset-packed-drift").state, "missing");
+  assert.deepEqual(driftSnapshot(), missingBefore, "missing-source check remains read-only");
+  fs.writeFileSync(driftSource, changedSourceBytes);
+  const invalidBefore = driftSnapshot();
+  const invalid = driftCall(driftBin, ["source-check", "--root-id", "packed-root", "--config", driftConfig, "--json"]);
+  assert.equal(invalid.status, 1);
+  assert.equal(invalid.stderr, "");
+  assert.equal(JSON.parse(invalid.stdout).code, "source-check-error");
+  assert.deepEqual(driftSnapshot(), invalidBefore, "invalid selection remains read-only");
+  const malformedLedger = path.join(driftVault, "wiki/meta/evidence/invalid-record.json");
+  fs.writeFileSync(malformedLedger, "{}\n");
+  const incompleteBefore = driftSnapshot();
+  const incomplete = driftCall(driftLauncher[0], [...driftLauncher.slice(1), ...driftArgs, "--json"]);
+  assert.equal(incomplete.status, 1);
+  assert.equal(incomplete.stderr, "");
+  assert.equal(JSON.parse(incomplete.stdout).complete, false);
+  assert.deepEqual(driftSnapshot(), incompleteBefore, "incomplete check remains read-only");
+  assert.equal(evidenceCli("evidence-report", "--vault", baselineVault, "--as-of", "2026-06-05").pages.find((item) => item.path === "wiki/selected.md").baselines[0].latest.outcome, "updated",
+    "source-check must not change evidence-report's declared baseline semantics");
 
   const hook = path.join(installed, "hooks/obsidian-session.sh");
   const middleware = path.join(installed, "skills/wiki/scripts/okf_mw");

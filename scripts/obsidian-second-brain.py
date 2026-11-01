@@ -340,7 +340,7 @@ def main() -> int:
             super().error(message)
 
     parser = CliParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history"))
+    parser.add_argument("command", choices=("doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history", "source-check"))
     parser.add_argument("query", nargs="?", help="search terms (required for search)")
     parser.add_argument("--vault", help="explicit vault root; overrides OBSIDIAN_VAULT_PATH and config")
     parser.add_argument("--config", help="config JSON path (default: OBSIDIAN_AGENT_CONFIG or standard user config)")
@@ -368,6 +368,7 @@ def main() -> int:
     parser.add_argument("--page", action="append", default=[], help="existing wiki page to link; repeat as wiki-relative path")
     parser.add_argument("--selection", help="strict version-1 source observation or reconciliation selection JSON")
     parser.add_argument("--source-root", help="invocation-only absolute mapping for selected local source root")
+    parser.add_argument("--root-id", help="portable root identifier for source-check")
     parser.add_argument("--observation-id", help="selected observation ID for source-history")
     parser.add_argument("--allow-move", action="store_true", help="explicitly approve review of a selected asset locator move")
     args = parser.parse_args()
@@ -426,7 +427,51 @@ def main() -> int:
                       "baseline-inspect", "baseline-apply"}
     if args.command in write_commands and error:
         return fail(f"invalid selected integration config: {error}")
+    if args.command == "source-check" and error:
+        return fail("invalid selected integration config", "invalid-config")
     vault = resolve_vault(args.vault, config)
+    if args.command == "source-check":
+        drift = None
+        try:
+            drift = load_source("obsidian_cli_source_drift", str(Path(__file__).with_name("source_drift.py")))
+            if args.query is not None:
+                raise drift.DriftInputError("source-check does not accept query terms")
+            unsupported = (args.source or args.page or args.selection or args.observation_id or args.allow_move
+                           or args.bundle or args.plan_hash or args.batch_id or args.authority != "wiki-page"
+                           or args.semantic_chunks or args.hybrid or args.as_of is not None
+                           or args.start is not None or args.end is not None or args.section is not None
+                           or args.expected_hash is not None or args.view != "raw" or args.cursor is not None
+                           or args.offset != 0 or args.limit != 10)
+            if unsupported:
+                raise drift.DriftInputError("source-check received an unsupported selector")
+            if not args.root_id:
+                raise drift.DriftInputError("source-check requires --root-id")
+            if not args.source_root:
+                raise drift.DriftInputError("source-check requires --source-root")
+            if vault is None:
+                raise drift.DriftInputError("no vault selected")
+            output = drift.check(vault, args.root_id, Path(args.source_root))
+            if args.json:
+                print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"Source check ({output['rootId']}): {'complete' if output['complete'] else 'incomplete'}; snapshot {output['snapshotValidity']}")
+                print(f"Coverage: {output['coverage']['selectedAssets']} selected assets; {output['coverage']['discoveredPages']} pages; {len(output['coverage']['unlinkedClaims'])} unlinked claims")
+                for item in output["assets"]:
+                    reason = item.get("reason", "")
+                    print(f"{item['id']}\t{item['state']}\t{reason}\t{item.get('locator', '')}")
+                for page in output["pages"]:
+                    reasons = ",".join(page.get("reviewReasons", []))
+                    print(f"{page['path']}\t{page['state']}\t{reasons}")
+                for claim in output["claims"]:
+                    if claim["reviewRequired"]:
+                        print(f"{claim['id']}\treview-suggested\t{','.join(claim['reviewReasons'])}")
+                for issue in output["issues"]:
+                    detail = ",".join(value for value in (issue.get("path"), issue.get("id"), issue.get("reason")) if value)
+                    print(f"Check issue: {issue.get('state', 'unavailable')}\t{detail}")
+            return 0 if output["complete"] else 1
+        except (OSError, UnicodeError, ValueError) as exc:
+            message = str(exc) if drift is not None and isinstance(exc, drift.DriftInputError) else "source check could not safely complete"
+            return fail(message, "source-check-error")
     if args.command in {"observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history"}:
         try:
             source_module = load_source("obsidian_cli_source_baselines", str(Path(__file__).with_name("source_baselines.py")))

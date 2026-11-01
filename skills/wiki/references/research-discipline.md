@@ -19,8 +19,11 @@ During Update Mode, `git diff HEAD~1 -- <path>` is only an investigation aid
 for recent repository changes; it is not a source baseline or proof that dirty
 bytes match a commit. For explicitly selected local assets, compare against the
 last recorded observation and the selected page's reviewed reconciliation
-baseline; see [source baselines](../../../docs/source-baselines.md). Do not
-substitute `HEAD~1` for unavailable, shallow, or rewritten source history, and
+baseline; see [source baselines](../../../docs/source-baselines.md). For an
+explicitly selected local root, `source-check` can report drift against
+recorded observations and likely declared page/claim impacts; treat results
+only as review signals and follow its [scope and limitations](../../../docs/source-drift.md).
+Do not substitute `HEAD~1` for unavailable, shallow, or rewritten source history, and
 do not imply that an observation or page hash establishes source currentness or
 factual truth. Use `git log --oneline --since=<date>` for timeboxed scoping.
 
