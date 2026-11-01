@@ -23,7 +23,7 @@ try {
     "agents/pi/wiki-vault.md", "agents/claude/wiki-vault.md",
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
-    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/retrieval_reads.py",
+    "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/evidence_ledger.py", "scripts/wiki_batch.py", "scripts/source_baselines.py", "scripts/retrieval_reads.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
@@ -32,7 +32,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md",
+    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/source-baselines.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -317,7 +317,7 @@ try {
   assert.equal(drift.stderr, "");
   const driftError = JSON.parse(drift.stdout);
   assert.equal(driftError.code, "command-error");
-  assert.match(driftError.error, /target precondition mismatch/);
+  assert.match(driftError.error, /target precondition mismatch|invalid ledger record/);
   assert.equal(fs.readFileSync(supportPath, "utf8"), "concurrent edit\n");
   fs.writeFileSync(supportPath, supportBytes);
   const acceptedUpdate = evidenceCli("batch-apply", "--vault", evidenceVault, "--bundle", updateBundle,
@@ -390,6 +390,139 @@ try {
   }
   assert.ok(!fs.existsSync(path.join(nestedVault, "wiki/meta")), "rejected nested ledger bundles must not create any ledger directories");
   assert.ok(!fs.existsSync(path.join(nestedVault, ".vault-meta")), "rejected nested ledger bundles must not create batch state");
+
+  const baselineVault = path.join(work, "baseline-vault");
+  const baselineSourceRoot = path.join(work, "baseline-source-root");
+  fs.mkdirSync(path.join(baselineVault, "wiki"), { recursive: true });
+  fs.mkdirSync(baselineSourceRoot);
+  const baselineConfig = path.join(work, "baseline-config.json");
+  fs.writeFileSync(baselineConfig, JSON.stringify({ vaultPath: baselineVault }));
+  const baselineSource = path.join(baselineSourceRoot, "selected.bin");
+  fs.writeFileSync(baselineSource, Buffer.from([0, 13, 10, 255]));
+  const baselinePage = path.join(baselineVault, "wiki/selected.md");
+  const baselinePageBytes = Buffer.from("---\ntype: Note\n---\nSelected page.\r\n");
+  fs.writeFileSync(baselinePage, baselinePageBytes);
+  const baselineCli = (...args) => JSON.parse(run(cli, [
+    ...args, "--config", baselineConfig, "--json",
+  ], { cwd: unrelatedCwd, encoding: "utf8" }));
+  const baselineSnapshot = () => {
+    const entries = [];
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const target = path.join(directory, entry.name);
+        const info = fs.lstatSync(target);
+        entries.push([path.relative(work, target), info.mtimeMs,
+          info.isFile() ? fs.readFileSync(target).toString("base64") : info.isSymbolicLink() ? fs.readlinkSync(target) : null]);
+        if (info.isDirectory()) walk(target);
+      }
+    };
+    walk(baselineVault);
+    walk(baselineSourceRoot);
+    return JSON.stringify(entries);
+  };
+  const observationSelection = path.join(work, "observation-selection.json");
+  fs.writeFileSync(observationSelection, JSON.stringify({ version: 1, rootId: "packed-root",
+    assetId: "asset-packed", locator: "selected.bin", observedAt: "2026-06-01T12:00:00Z" }));
+  const beforeObservationPreview = baselineSnapshot();
+  const observationReview = baselineCli("observe-inspect", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot);
+  assert.equal(baselineSnapshot(), beforeObservationPreview, "observe preview must not mutate the source or vault");
+  assert.equal(baselineCli("observe-apply", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot, "--plan-hash", observationReview.planHash).phase, "complete");
+  const repeatedObservation = baselineCli("observe-inspect", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot);
+  assert.equal(repeatedObservation.noop, true, "exact observation repeat is a no-op");
+  assert.equal(baselineCli("observe-apply", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot, "--plan-hash", repeatedObservation.planHash).noop, true);
+
+  const pageBundle = evidenceBundle("baseline-page-batch", [{
+    path: "wiki/selected.md", expectedHash: evidenceHash(baselinePageBytes), content: baselinePageBytes.toString("utf8"),
+  }]);
+  const beforePagePreview = baselineSnapshot();
+  const pageReview = baselineCli("batch-inspect", "--vault", baselineVault, "--bundle", pageBundle,
+    "--authority", "wiki-page");
+  assert.equal(baselineSnapshot(), beforePagePreview, "page batch preview must not mutate source or vault");
+  const pageReceipt = baselineCli("batch-apply", "--vault", baselineVault, "--bundle", pageBundle,
+    "--authority", "wiki-page", "--plan-hash", pageReview.planHash);
+  assert.equal(pageReceipt.phase, "complete");
+
+  const reconciliationSelection = path.join(work, "reconciliation-selection.json");
+  const observationRecord = fs.readdirSync(path.join(baselineVault, "wiki/meta/evidence"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(baselineVault, "wiki/meta/evidence", name), "utf8")))
+    .find((record) => record.kind === "observation");
+  fs.writeFileSync(reconciliationSelection, JSON.stringify({ version: 1, reconciliations: [{
+    page: "wiki/selected.md", observationId: observationRecord.id, pageBatchId: pageReceipt.batchId,
+    reconciledAt: "2026-06-01T13:00:00Z", outcome: "no-change",
+  }] }));
+  const beforeBaselinePreview = baselineSnapshot();
+  const baselineReview = baselineCli("baseline-inspect", "--selection", reconciliationSelection);
+  assert.equal(baselineSnapshot(), beforeBaselinePreview, "baseline preview must not mutate the source or vault");
+  const baselineReceipt = baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", baselineReview.planHash);
+  assert.equal(baselineReceipt.phase, "complete");
+  const repeatedBaseline = baselineCli("baseline-inspect", "--selection", reconciliationSelection);
+  assert.equal(repeatedBaseline.noop, true, "exact baseline repeat is a no-op");
+  assert.equal(baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", repeatedBaseline.planHash).noop, true);
+  const baselineRecordPath = path.join(baselineVault, "wiki/meta/evidence",
+    fs.readdirSync(path.join(baselineVault, "wiki/meta/evidence")).find((name) => {
+      const record = JSON.parse(fs.readFileSync(path.join(baselineVault, "wiki/meta/evidence", name), "utf8"));
+      return record.kind === "baseline";
+    }));
+  const firstBaseline = JSON.parse(fs.readFileSync(baselineRecordPath, "utf8"));
+  const firstHistory = firstBaseline.history.slice();
+
+  fs.writeFileSync(baselineSource, Buffer.from("Second selected source version.\n"));
+  fs.writeFileSync(observationSelection, JSON.stringify({ version: 1, rootId: "packed-root",
+    assetId: "asset-packed", locator: "selected.bin", observedAt: "2026-06-03T12:00:00Z" }));
+  const secondObservationReview = baselineCli("observe-inspect", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot);
+  assert.equal(baselineCli("observe-apply", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot, "--plan-hash", secondObservationReview.planHash).phase, "complete");
+  const secondObservationRecord = fs.readdirSync(path.join(baselineVault, "wiki/meta/evidence"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(baselineVault, "wiki/meta/evidence", name), "utf8")))
+    .find((record) => record.kind === "observation" && record.observedAt === "2026-06-03T12:00:00Z");
+  const revisedPageBytes = Buffer.from("---\ntype: Note\n---\nSelected page revised.\r\n");
+  const revisedPageBundle = evidenceBundle("baseline-page-update", [{
+    path: "wiki/selected.md", expectedHash: evidenceHash(baselinePageBytes), content: revisedPageBytes.toString("utf8"),
+  }]);
+  const beforeRevisedPagePreview = baselineSnapshot();
+  const revisedPageReview = baselineCli("batch-inspect", "--vault", baselineVault, "--bundle", revisedPageBundle,
+    "--authority", "wiki-page");
+  assert.equal(baselineSnapshot(), beforeRevisedPagePreview, "updated page preview must remain read-only");
+  const revisedPageReceipt = baselineCli("batch-apply", "--vault", baselineVault, "--bundle", revisedPageBundle,
+    "--authority", "wiki-page", "--plan-hash", revisedPageReview.planHash);
+  assert.equal(revisedPageReceipt.phase, "complete");
+
+  fs.writeFileSync(reconciliationSelection, JSON.stringify({ version: 1, reconciliations: [{
+    page: "wiki/selected.md", observationId: secondObservationRecord.id, pageBatchId: revisedPageReceipt.batchId,
+    reconciledAt: "2026-06-04T13:00:00Z", outcome: "updated",
+  }] }));
+  const beforeSecondBaselinePreview = baselineSnapshot();
+  const secondBaselineReview = baselineCli("baseline-inspect", "--selection", reconciliationSelection);
+  assert.equal(baselineSnapshot(), beforeSecondBaselinePreview, "updated baseline preview must remain read-only");
+  assert.equal(baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", secondBaselineReview.planHash).phase, "complete");
+  const secondBaseline = JSON.parse(fs.readFileSync(baselineRecordPath, "utf8"));
+  assert.equal(secondBaseline.id, firstBaseline.id, "page/asset baseline identity remains stable across updates");
+  assert.deepEqual(secondBaseline.history.slice(0, firstHistory.length), firstHistory, "old history is retained exactly");
+  assert.equal(secondBaseline.history.length, 2);
+  assert.equal(secondBaseline.history[1].outcome, "updated");
+  const repeatedUpdate = baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", secondBaselineReview.planHash);
+  assert.equal(repeatedUpdate.noop, true, "approved updated reconciliation retry is idempotent");
+  const updatedNoop = baselineCli("baseline-inspect", "--selection", reconciliationSelection);
+  assert.equal(updatedNoop.noop, true, "updated reconciliation repeat is a verified no-op");
+  assert.equal(baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", updatedNoop.planHash).noop, true);
+
+  const historyResult = baselineCli("source-history", "--observation-id", secondObservationRecord.id,
+    "--source-root", baselineSourceRoot);
+  assert.equal(historyResult.observationId, secondObservationRecord.id);
+  assert.equal(historyResult.status, "no-commit-recorded");
+  const baselineReport = baselineCli("evidence-report", "--vault", baselineVault, "--as-of", "2026-06-05");
+  assert.equal(baselineReport.ledgerSummary.observations, 2);
+  assert.equal(baselineReport.pages.find((item) => item.path === "wiki/selected.md").baselines[0].latest.outcome, "updated");
 
   const hook = path.join(installed, "hooks/obsidian-session.sh");
   const middleware = path.join(installed, "skills/wiki/scripts/okf_mw");

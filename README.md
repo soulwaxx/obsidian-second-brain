@@ -149,10 +149,12 @@ paths when necessary. Ordinary relative coding paths keep their
 current-directory meaning. Larger coordinated wiki edits may optionally use the
 reviewed recoverable batch CLI; small edits retain the normal lifecycle. An
 explicitly selected local UTF-8 text source may also be preserved through a
-separate reviewed, immutable capture into `.raw/agent-captures/`. Neither is
-mandatory, and capture does not provide web/media extraction or authorize wiki
-filing. See the [focused workflow reference](skills/wiki/references/focused-workflows.md)
-for exact approval and recovery commands.
+separate reviewed, immutable capture into `.raw/agent-captures/`; selected
+sources can optionally use reviewed byte observations and page reconciliation
+baselines without archiving source content. Neither is mandatory, and capture
+does not provide web/media extraction or authorize wiki filing. See the
+[focused workflow reference](skills/wiki/references/focused-workflows.md) and
+[baseline contract](docs/source-baselines.md) for approval and recovery details.
 
 Startup supplies a small vault locator rather than injecting the entire
 personal index into unrelated work. The skill searches and reads relevant

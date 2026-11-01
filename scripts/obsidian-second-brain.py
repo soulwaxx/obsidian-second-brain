@@ -340,7 +340,7 @@ def main() -> int:
             super().error(message)
 
     parser = CliParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply"))
+    parser.add_argument("command", choices=("doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history"))
     parser.add_argument("query", nargs="?", help="search terms (required for search)")
     parser.add_argument("--vault", help="explicit vault root; overrides OBSIDIAN_VAULT_PATH and config")
     parser.add_argument("--config", help="config JSON path (default: OBSIDIAN_AGENT_CONFIG or standard user config)")
@@ -366,6 +366,10 @@ def main() -> int:
     parser.add_argument("--authority", choices=("wiki-page", "source-capture", "wiki-ledger"), default="wiki-page")
     parser.add_argument("--source", action="append", default=[], help="explicit absolute local text source; repeat to select multiple")
     parser.add_argument("--page", action="append", default=[], help="existing wiki page to link; repeat as wiki-relative path")
+    parser.add_argument("--selection", help="strict version-1 source observation or reconciliation selection JSON")
+    parser.add_argument("--source-root", help="invocation-only absolute mapping for selected local source root")
+    parser.add_argument("--observation-id", help="selected observation ID for source-history")
+    parser.add_argument("--allow-move", action="store_true", help="explicitly approve review of a selected asset locator move")
     args = parser.parse_args()
 
     def fail(message: str, code: str = "command-error") -> int:
@@ -418,10 +422,75 @@ def main() -> int:
     config_file = config_path(args.config)
     config, error = load_config(config_file)
     write_commands = {"batch-inspect", "batch-apply", "batch-recover", "batch-rollback",
-                      "capture-inspect", "capture-apply"}
+                      "capture-inspect", "capture-apply", "observe-inspect", "observe-apply",
+                      "baseline-inspect", "baseline-apply"}
     if args.command in write_commands and error:
         return fail(f"invalid selected integration config: {error}")
     vault = resolve_vault(args.vault, config)
+    if args.command in {"observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history"}:
+        try:
+            source_module = load_source("obsidian_cli_source_baselines", str(Path(__file__).with_name("source_baselines.py")))
+            batch_module = load_source("source_baselines_batch", str(Path(__file__).with_name("wiki_batch.py")))
+            if vault is None:
+                raise source_module.SourceBaselineError("no vault selected")
+            if args.command in {"observe-inspect", "observe-apply", "source-history"} and not args.source_root:
+                raise source_module.SourceBaselineError("--source-root requires an explicit absolute mapped root")
+            if args.command == "source-history":
+                if not args.observation_id:
+                    raise source_module.SourceBaselineError("source-history requires --observation-id")
+                records = source_module._ledger_records(vault)
+                pair = records.get(args.observation_id)
+                if pair is None or pair[0].get("kind") != "observation":
+                    raise source_module.SourceBaselineError("selected observation is unavailable")
+                context = pair[0].get("gitContext", {})
+                result = source_module.history_availability(Path(args.source_root), context.get("head"))
+                result["observationId"] = args.observation_id
+            else:
+                if not args.selection:
+                    raise source_module.SourceBaselineError(f"{args.command} requires --selection")
+                selection = json.loads(Path(args.selection).read_text(encoding="utf-8"))
+                baseline_command = args.command.startswith("baseline-")
+                bundle = (source_module.baseline_bundle(vault, selection) if baseline_command else
+                          source_module.observation_bundle(vault, Path(args.source_root), selection, allow_move=args.allow_move))
+                inspect_command = args.command.endswith("inspect")
+                binding = {"command": "baseline" if baseline_command else "observe",
+                           "vault": str(Path(vault).resolve(strict=True)),
+                           "config": batch_module.config_identity(config_file), "selection": selection}
+                if not baseline_command:
+                    binding["sourceRootHash"] = batch_module.sha(
+                        str(Path(args.source_root).expanduser().absolute()).encode("utf-8"))
+                if not bundle["operations"]:
+                    current_records = source_module._ledger_records(vault)
+                    noop_material = {**binding, "records": {
+                        key: batch_module.sha(raw) for key, (_record, raw) in sorted(current_records.items())},
+                        "noop": True}
+                    outer_hash = batch_module.sha(batch_module.canonical_json(noop_material))
+                    if inspect_command:
+                        result = {"planHash": outer_hash, "authority": "wiki-ledger", "targets": [], "noop": True}
+                    else:
+                        replay = batch_module.completed_cli_replay(vault, args.plan_hash or "", binding, config_file)
+                        if replay is not None:
+                            result = replay
+                        elif args.plan_hash != outer_hash:
+                            raise source_module.SourceBaselineError("approval hash does not bind current no-op selection, config, and records")
+                        else:
+                            result = {"planHash": outer_hash, "phase": "complete", "noop": True}
+                else:
+                    reviewed = batch_module.inspect(vault, bundle, config_file, "wiki-ledger")
+                    approval_binding = {**binding, "ledgerPlanHash": reviewed["planHash"]}
+                    outer_hash = batch_module.sha(batch_module.canonical_json(approval_binding))
+                    if inspect_command:
+                        result = {**reviewed, "planHash": outer_hash}
+                    else:
+                        if args.plan_hash != outer_hash:
+                            raise source_module.SourceBaselineError("approval hash does not bind current selection, root mapping, config, or ledger plan")
+                        result = batch_module.apply(vault, bundle, config_file, reviewed["planHash"], "wiki-ledger",
+                                                    cli_binding=approval_binding, cli_plan_hash=outer_hash)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError,
+                source_module.SourceBaselineError, batch_module.BatchError) as exc:
+            return fail(str(exc))
     if args.command == "evidence-report":
         try:
             if vault is None:

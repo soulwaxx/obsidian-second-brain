@@ -95,6 +95,289 @@ class IngestIntegrationTests(unittest.TestCase):
         self.assertNotEqual(denied.returncode, 0)
         self.assertFalse((self.vault / ".raw/agent-captures/not-authorized.txt").exists())
 
+    def test_observation_cli_inspects_and_publishes_selected_source_records(self):
+        selection = self.root / "selection.json"
+        selection.write_text(json.dumps({"version": 1, "rootId": "research", "assetId": "asset-notes",
+                                         "locator": "selected.txt", "observedAt": "2025-01-02T03:04:05Z"}), encoding="utf-8")
+        inspected = self.cli("observe-inspect", "--selection", selection, "--source-root", self.root,
+                             "--vault", self.vault, "--config", self.config, "--json")
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        plan = json.loads(inspected.stdout)
+        self.assertEqual(plan["authority"], "wiki-ledger")
+        self.assertFalse((self.vault / ".vault-meta").exists())
+        applied = self.cli("observe-apply", "--selection", selection, "--source-root", self.root,
+                           "--vault", self.vault, "--config", self.config,
+                           "--plan-hash", plan["planHash"], "--json")
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        records = list((self.vault / "wiki/meta/evidence").glob("*.json"))
+        self.assertEqual(len(records), 3)
+        self.assertNotIn(str(self.root), " ".join(path.read_text(encoding="utf-8") for path in records))
+        journal_dir = self.vault / ".vault-meta/lifecycle/batches"
+        journal_count = len(list(journal_dir.glob("*.json")))
+        exact_replay = self.cli("observe-apply", "--selection", selection, "--source-root", self.root,
+                                "--vault", self.vault, "--config", self.config,
+                                "--plan-hash", plan["planHash"], "--json")
+        self.assertEqual(exact_replay.returncode, 0, exact_replay.stderr + exact_replay.stdout)
+        self.assertTrue(json.loads(exact_replay.stdout)["noop"])
+        self.assertEqual(len(list(journal_dir.glob("*.json"))), journal_count)
+        retry = self.cli("observe-inspect", "--selection", selection, "--source-root", self.root,
+                         "--vault", self.vault, "--config", self.config, "--json")
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        retry_plan = json.loads(retry.stdout)
+        self.assertTrue(retry_plan["noop"])
+        retry_apply = self.cli("observe-apply", "--selection", selection, "--source-root", self.root,
+                               "--vault", self.vault, "--config", self.config,
+                               "--plan-hash", retry_plan["planHash"], "--json")
+        self.assertEqual(retry_apply.returncode, 0, retry_apply.stderr)
+        self.assertTrue(json.loads(retry_apply.stdout)["noop"])
+        other_root = self.root / "other-root"
+        other_root.mkdir()
+        (other_root / "selected.txt").write_bytes(self.source.read_bytes())
+        refused = self.cli("observe-apply", "--selection", selection, "--source-root", other_root,
+                           "--vault", self.vault, "--config", self.config,
+                           "--plan-hash", plan["planHash"], "--json")
+        self.assertNotEqual(refused.returncode, 0)
+
+    def test_baseline_requires_completed_page_batch_and_accepts_no_change_receipt(self):
+        page = self.vault / "wiki/alpha.md"
+        page_content = PAGE_A
+        page.write_text(page_content, encoding="utf-8")
+        page_bundle = {"version": 1, "operations": [{"path": "wiki/alpha.md",
+                       "expectedHash": __import__("hashlib").sha256(page_content.encode()).hexdigest(),
+                       "content": page_content}]}
+        bundle_path = self.root / "page-batch.json"
+        bundle_path.write_text(json.dumps(page_bundle), encoding="utf-8")
+        page_review = self.cli("batch-inspect", "--bundle", bundle_path, "--vault", self.vault,
+                               "--config", self.config, "--json")
+        self.assertEqual(page_review.returncode, 0, page_review.stderr)
+        page_result = self.cli("batch-apply", "--bundle", bundle_path, "--vault", self.vault,
+                               "--config", self.config, "--plan-hash", json.loads(page_review.stdout)["planHash"], "--json")
+        self.assertEqual(page_result.returncode, 0, page_result.stderr)
+        observation_selection = self.root / "observation.json"
+        observation_selection.write_text(json.dumps({"version": 1, "rootId": "research", "assetId": "asset-notes",
+            "locator": "selected.txt", "observedAt": "2025-01-02T03:04:05Z"}), encoding="utf-8")
+        observation_review = self.cli("observe-inspect", "--selection", observation_selection, "--source-root", self.root,
+                                      "--vault", self.vault, "--config", self.config, "--json")
+        self.assertEqual(observation_review.returncode, 0, observation_review.stderr)
+        observation_result = self.cli("observe-apply", "--selection", observation_selection, "--source-root", self.root,
+            "--vault", self.vault, "--config", self.config, "--plan-hash", json.loads(observation_review.stdout)["planHash"], "--json")
+        self.assertEqual(observation_result.returncode, 0, observation_result.stderr + observation_result.stdout)
+        observation = next(json.loads(path.read_text()) for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                           if json.loads(path.read_text()).get("kind") == "observation")
+        ledger = load_source("baseline_bypass_test_ledger", str(ROOT / "scripts/evidence_ledger.py"))
+        invalid_entry = {"observationId": observation["id"], "sourceId": observation["sourceId"],
+                         "contentHash": observation["contentHash"], "pageHash": "sha256:" + "0" * 64,
+                         "pageBatchId": "00000000-0000-0000-0000-000000000000",
+                         "reconciledAt": "2025-01-03T03:04:05Z", "outcome": "no-change"}
+        bypass = {"version": 1, "operations": [ledger.operation(ledger.make_baseline("wiki/alpha.md",
+                  observation["assetId"], [invalid_entry]))]}
+        bypass_path = self.root / "bypass.json"
+        bypass_path.write_text(json.dumps(bypass), encoding="utf-8")
+        denied = self.cli("batch-inspect", "--bundle", bypass_path, "--vault", self.vault,
+                          "--config", self.config, "--authority", "wiki-ledger", "--json")
+        self.assertNotEqual(denied.returncode, 0)
+        selection = self.root / "baseline.json"
+        selection.write_text(json.dumps({"version": 1, "reconciliations": [{"page": "wiki/alpha.md",
+            "observationId": observation["id"], "pageBatchId": json.loads(page_result.stdout)["batchId"],
+            "reconciledAt": "2025-01-03T03:04:05Z", "outcome": "no-change"}]}), encoding="utf-8")
+        reviewed = self.cli("baseline-inspect", "--selection", selection, "--vault", self.vault,
+                            "--config", self.config, "--json")
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr + reviewed.stdout)
+        published = self.cli("baseline-apply", "--selection", selection, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(reviewed.stdout)["planHash"], "--json")
+        self.assertEqual(published.returncode, 0, published.stderr)
+        ledger_batch_count = len(list((self.vault / ".vault-meta/lifecycle/batches").glob("*.json")))
+        exact_replay = self.cli("baseline-apply", "--selection", selection, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(reviewed.stdout)["planHash"], "--json")
+        self.assertEqual(exact_replay.returncode, 0, exact_replay.stderr + exact_replay.stdout)
+        self.assertTrue(json.loads(exact_replay.stdout)["noop"])
+        self.assertEqual(len(list((self.vault / ".vault-meta/lifecycle/batches").glob("*.json"))), ledger_batch_count)
+        noop_review = self.cli("baseline-inspect", "--selection", selection, "--vault", self.vault,
+                               "--config", self.config, "--json")
+        self.assertEqual(noop_review.returncode, 0, noop_review.stderr + noop_review.stdout)
+        self.assertTrue(json.loads(noop_review.stdout)["noop"])
+        noop_apply = self.cli("baseline-apply", "--selection", selection, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(noop_review.stdout)["planHash"], "--json")
+        self.assertEqual(noop_apply.returncode, 0, noop_apply.stderr + noop_apply.stdout)
+        self.assertTrue(json.loads(noop_apply.stdout)["noop"])
+        self.assertEqual(len(list((self.vault / ".vault-meta/lifecycle/batches").glob("*.json"))), ledger_batch_count)
+        source_path = next(path for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                           if json.loads(path.read_text()).get("kind") == "source")
+        source_preimage = source_path.read_bytes()
+        selected_source = json.loads(source_preimage)
+        selected_source["contentHash"] = "sha256:" + "0" * 64
+        source_path.write_text(json.dumps(selected_source), encoding="utf-8")
+        corrupted_review = self.cli("baseline-inspect", "--selection", selection, "--vault", self.vault,
+                                    "--config", self.config, "--json")
+        self.assertNotEqual(corrupted_review.returncode, 0, corrupted_review.stdout)
+        source_path.write_bytes(source_preimage)
+        baseline = next(json.loads(path.read_text()) for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                        if json.loads(path.read_text()).get("kind") == "baseline")
+        self.assertEqual(baseline["history"][0]["outcome"], "no-change")
+        evidence_dir = self.vault / "wiki/meta/evidence"
+        source_path = next(path for path in evidence_dir.glob("*.json") if json.loads(path.read_text()).get("kind") == "source")
+        source_preimage = source_path.read_bytes()
+        changed_source = json.loads(source_preimage)
+        changed_source["locator"] = "local:research/elsewhere.txt"
+        source_path.write_text(json.dumps(changed_source), encoding="utf-8")
+        source_replay = self.cli("batch-recover", "--batch-id", json.loads(published.stdout)["batchId"],
+                                "--vault", self.vault, "--config", self.config, "--json")
+        self.assertNotEqual(source_replay.returncode, 0, source_replay.stdout)
+        source_path.write_bytes(source_preimage)
+        observation_path = next(path for path in evidence_dir.glob("*.json")
+                               if json.loads(path.read_text()).get("kind") == "observation")
+        observation_preimage = observation_path.read_bytes()
+        changed_observation = json.loads(observation_preimage)
+        changed_observation["locator"] = "elsewhere.txt"
+        observation_path.write_text(json.dumps(changed_observation), encoding="utf-8")
+        observation_replay = self.cli("batch-recover", "--batch-id", json.loads(published.stdout)["batchId"],
+                                      "--vault", self.vault, "--config", self.config, "--json")
+        self.assertNotEqual(observation_replay.returncode, 0, observation_replay.stdout)
+        observation_path.write_bytes(observation_preimage)
+        page.write_text(PAGE_A + "\nDrift after reconciliation.\n", encoding="utf-8")
+        drifted_review = self.cli("baseline-inspect", "--selection", selection, "--vault", self.vault,
+                                  "--config", self.config, "--json")
+        self.assertNotEqual(drifted_review.returncode, 0)
+        self.assertEqual(drifted_review.stderr, "")
+        self.assertEqual(json.loads(drifted_review.stdout)["code"], "command-error")
+        replay = self.cli("batch-recover", "--batch-id", json.loads(published.stdout)["batchId"],
+                          "--vault", self.vault, "--config", self.config, "--json")
+        self.assertNotEqual(replay.returncode, 0, replay.stdout)
+
+    def test_cli_appends_updated_baseline_after_existing_no_change_entry(self):
+        observe_selection = self.root / "observation.json"
+        observe_selection.write_text(json.dumps({"version": 1, "rootId": "research", "assetId": "asset-notes",
+            "locator": "selected.txt", "observedAt": "2025-01-02T03:04:05Z"}), encoding="utf-8")
+        observation_review = self.cli("observe-inspect", "--selection", observe_selection, "--source-root", self.root,
+                                      "--vault", self.vault, "--config", self.config, "--json")
+        self.assertEqual(observation_review.returncode, 0, observation_review.stderr + observation_review.stdout)
+        observation_apply = self.cli("observe-apply", "--selection", observe_selection, "--source-root", self.root,
+            "--vault", self.vault, "--config", self.config,
+            "--plan-hash", json.loads(observation_review.stdout)["planHash"], "--json")
+        self.assertEqual(observation_apply.returncode, 0, observation_apply.stderr + observation_apply.stdout)
+        observation = next(json.loads(path.read_text()) for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                           if json.loads(path.read_text()).get("kind") == "observation")
+
+        page_path = self.vault / "wiki/alpha.md"
+        page_path.write_text(PAGE_A, encoding="utf-8")
+        page_bundle = {"version": 1, "operations": [{"path": "wiki/alpha.md",
+            "expectedHash": __import__("hashlib").sha256(PAGE_A.encode()).hexdigest(), "content": PAGE_A}]}
+        page_bundle_path = self.root / "page-nochange.json"
+        page_bundle_path.write_text(json.dumps(page_bundle), encoding="utf-8")
+        page_review = self.cli("batch-inspect", "--bundle", page_bundle_path, "--vault", self.vault,
+                               "--config", self.config, "--json")
+        self.assertEqual(page_review.returncode, 0, page_review.stderr + page_review.stdout)
+        page_apply = self.cli("batch-apply", "--bundle", page_bundle_path, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(page_review.stdout)["planHash"], "--json")
+        self.assertEqual(page_apply.returncode, 0, page_apply.stderr + page_apply.stdout)
+        first_selection = self.root / "baseline-first.json"
+        first_selection.write_text(json.dumps({"version": 1, "reconciliations": [{
+            "page": "wiki/alpha.md", "observationId": observation["id"],
+            "pageBatchId": json.loads(page_apply.stdout)["batchId"],
+            "reconciledAt": "2025-01-03T03:04:05Z", "outcome": "no-change"}]}), encoding="utf-8")
+        first_review = self.cli("baseline-inspect", "--selection", first_selection, "--vault", self.vault,
+                                "--config", self.config, "--json")
+        self.assertEqual(first_review.returncode, 0, first_review.stderr + first_review.stdout)
+        first_apply = self.cli("baseline-apply", "--selection", first_selection, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(first_review.stdout)["planHash"], "--json")
+        self.assertEqual(first_apply.returncode, 0, first_apply.stderr + first_apply.stdout)
+        initial_baseline = next(json.loads(path.read_text()) for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                                if json.loads(path.read_text()).get("kind") == "baseline")
+        baseline_id = initial_baseline["id"]
+        prefix = initial_baseline["history"][:]
+
+        self.source.write_bytes(b"Second selected source version.\n")
+        second_observe_selection = dict(json.loads(observe_selection.read_text()), observedAt="2025-01-04T03:04:05Z")
+        observe_selection.write_text(json.dumps(second_observe_selection), encoding="utf-8")
+        second_observation_review = self.cli("observe-inspect", "--selection", observe_selection,
+            "--source-root", self.root, "--vault", self.vault, "--config", self.config, "--json")
+        self.assertEqual(second_observation_review.returncode, 0, second_observation_review.stderr + second_observation_review.stdout)
+        second_observation_apply = self.cli("observe-apply", "--selection", observe_selection,
+            "--source-root", self.root, "--vault", self.vault, "--config", self.config,
+            "--plan-hash", json.loads(second_observation_review.stdout)["planHash"], "--json")
+        self.assertEqual(second_observation_apply.returncode, 0, second_observation_apply.stderr + second_observation_apply.stdout)
+        second_observation = next(json.loads(path.read_text()) for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+            if json.loads(path.read_text()).get("kind") == "observation"
+            and json.loads(path.read_text()).get("observedAt") == "2025-01-04T03:04:05Z")
+        page_bundle["operations"][0] = {"path": "wiki/alpha.md",
+            "expectedHash": __import__("hashlib").sha256(PAGE_A.encode()).hexdigest(), "content": PAGE_B}
+        page_bundle_path.write_text(json.dumps(page_bundle), encoding="utf-8")
+        changed_page_review = self.cli("batch-inspect", "--bundle", page_bundle_path, "--vault", self.vault,
+                                       "--config", self.config, "--json")
+        self.assertEqual(changed_page_review.returncode, 0, changed_page_review.stderr + changed_page_review.stdout)
+        changed_page_apply = self.cli("batch-apply", "--bundle", page_bundle_path, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(changed_page_review.stdout)["planHash"], "--json")
+        self.assertEqual(changed_page_apply.returncode, 0, changed_page_apply.stderr + changed_page_apply.stdout)
+        second_selection = self.root / "baseline-second.json"
+        second_selection.write_text(json.dumps({"version": 1, "reconciliations": [{
+            "page": "wiki/alpha.md", "observationId": second_observation["id"],
+            "pageBatchId": json.loads(changed_page_apply.stdout)["batchId"],
+            "reconciledAt": "2025-01-05T03:04:05Z", "outcome": "updated"}]}), encoding="utf-8")
+        preview_snapshot = {path.relative_to(self.vault).as_posix(): path.read_bytes()
+                            for path in self.vault.rglob("*") if path.is_file()}
+        selected_source_before = self.source.read_bytes()
+        second_review = self.cli("baseline-inspect", "--selection", second_selection, "--vault", self.vault,
+                                 "--config", self.config, "--json")
+        self.assertEqual(second_review.returncode, 0, second_review.stderr + second_review.stdout)
+        self.assertEqual({path.relative_to(self.vault).as_posix(): path.read_bytes()
+                          for path in self.vault.rglob("*") if path.is_file()}, preview_snapshot)
+        self.assertEqual(self.source.read_bytes(), selected_source_before)
+        second_apply = self.cli("baseline-apply", "--selection", second_selection, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(second_review.stdout)["planHash"], "--json")
+        self.assertEqual(second_apply.returncode, 0, second_apply.stderr + second_apply.stdout)
+        updated_baseline = next(json.loads(path.read_text()) for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                                if json.loads(path.read_text()).get("kind") == "baseline")
+        self.assertEqual(updated_baseline["id"], baseline_id)
+        self.assertEqual(updated_baseline["history"][:len(prefix)], prefix)
+        self.assertEqual(len(updated_baseline["history"]), 2)
+        self.assertEqual(updated_baseline["history"][1]["outcome"], "updated")
+        repeated = self.cli("baseline-apply", "--selection", second_selection, "--vault", self.vault,
+            "--config", self.config, "--plan-hash", json.loads(second_review.stdout)["planHash"], "--json")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr + repeated.stdout)
+        self.assertTrue(json.loads(repeated.stdout)["noop"])
+        no_op_review = self.cli("baseline-inspect", "--selection", second_selection, "--vault", self.vault,
+                                "--config", self.config, "--json")
+        self.assertEqual(no_op_review.returncode, 0, no_op_review.stderr + no_op_review.stdout)
+        self.assertTrue(json.loads(no_op_review.stdout)["noop"])
+
+        old_source_path = next(path for path in (self.vault / "wiki/meta/evidence").glob("*.json")
+                               if json.loads(path.read_text()).get("kind") == "source"
+                               and json.loads(path.read_text())["id"] == prefix[0]["sourceId"])
+        old_source_bytes = old_source_path.read_bytes()
+        old_source = json.loads(old_source_bytes)
+        old_source["contentHash"] = "sha256:" + "0" * 64
+        old_source_path.write_text(json.dumps(old_source), encoding="utf-8")
+        corrupted = self.cli("baseline-inspect", "--selection", second_selection, "--vault", self.vault,
+                             "--config", self.config, "--json")
+        self.assertNotEqual(corrupted.returncode, 0, corrupted.stdout)
+        self.assertEqual(corrupted.stderr, "")
+        self.assertEqual(json.loads(corrupted.stdout)["code"], "command-error")
+        old_source_path.write_bytes(old_source_bytes)
+
+    def test_observation_and_baseline_invalid_config_fail_without_vault_writes(self):
+        source_selection = self.root / "observation-selection.json"
+        source_selection.write_text(json.dumps({"version": 1, "rootId": "research", "assetId": "asset-notes",
+            "locator": "selected.txt", "observedAt": "2025-01-02T03:04:05Z"}), encoding="utf-8")
+        baseline_selection = self.root / "baseline-selection.json"
+        baseline_selection.write_text(json.dumps({"version": 1, "reconciliations": []}), encoding="utf-8")
+        before = {path.relative_to(self.vault).as_posix(): path.read_bytes()
+                  for path in self.vault.rglob("*") if path.is_file()}
+        missing = self.cli("observe-inspect", "--source-root", self.root, "--vault", self.vault,
+                           "--config", self.config, "--json")
+        self.assertNotEqual(missing.returncode, 0)
+        after_missing = {path.relative_to(self.vault).as_posix(): path.read_bytes()
+                         for path in self.vault.rglob("*") if path.is_file()}
+        self.assertEqual(after_missing, before)
+        self.config.write_text("{malformed", encoding="utf-8")
+        for command, selection in (("observe-inspect", source_selection), ("baseline-inspect", baseline_selection)):
+            result = self.cli(command, "--selection", selection, "--source-root", self.root,
+                              "--vault", self.vault, "--config", self.config, "--json")
+            self.assertNotEqual(result.returncode, 0)
+        after = {path.relative_to(self.vault).as_posix(): path.read_bytes()
+                 for path in self.vault.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+        self.assertFalse((self.vault / ".vault-meta").exists())
+
     def test_batch_and_capture_cli_stop_on_invalid_selected_config(self):
         bundle = {"version": 1, "operations": [
             {"path": "wiki/blocked.md", "expectedHash": None, "content": PAGE_A},

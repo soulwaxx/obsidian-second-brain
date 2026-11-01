@@ -161,6 +161,17 @@ audio, video, OCR, or media extraction. Source capture does not promote a
 source into wiki claims or replace ordinary write authorization. If the CLI is
 not on `PATH`, use the active package-relative launcher above.
 
+## Optional selected source baselines
+
+For a user-selected local asset, optional source observations and reviewed
+per-page/asset reconciliation baselines preserve portable locator/byte lineage
+without archiving source content. They are distinct from wiki edits, source
+claims, and factual review; require separate exact observation, page-batch, and
+baseline approvals. Existing pages need only `type`, and missing provenance is
+not an error. Follow the exact commands, no-change receipt, recovery limits, and
+read-only adoption guidance in [source baselines](../../../docs/source-baselines.md).
+Do not infer a historic reconciliation or automatically backfill candidates.
+
 ## Optional evidence ledgers and read-only reports
 
 Evidence records are optional canonical wiki data, not derived cache state or a

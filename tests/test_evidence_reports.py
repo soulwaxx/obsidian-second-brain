@@ -104,6 +104,88 @@ class EvidenceReportTests(unittest.TestCase):
         self.assertIn("stale-source-record", item["issues"])
         self.assertIn("contradictory-evidence-recorded", item["issues"])
 
+    def test_optional_asset_observation_and_per_pair_baseline_history_are_reported_read_only(self):
+        observations = []
+        assets = [LEDGER.make_asset("asset-one", "root-one", "folder/one.txt"),
+                  LEDGER.make_asset("asset-two", "root-one", "folder/two.txt")]
+        for index, asset in enumerate(assets, start=1):
+            asset["producerExtension"] = {"preserve": index}
+            source = LEDGER.make_source(
+                f"local:{asset['rootId']}/{asset['locator']}", f"source bytes {index}".encode()
+            )
+            observation = LEDGER.make_observation(asset, source, f"2026-06-0{index}T12:00:00Z")
+            self.write_record(asset)
+            self.write_record(source)
+            self.write_record(observation)
+            observations.append((asset, source, observation))
+        first_revision_source = LEDGER.make_source(
+            f"local:{assets[0]['rootId']}/{assets[0]['locator']}", b"revised source bytes"
+        )
+        first_revision = LEDGER.make_observation(assets[0], first_revision_source, "2026-06-03T12:00:00Z")
+        self.write_record(first_revision_source)
+        self.write_record(first_revision)
+
+        page_one = "wiki/page-one.md"
+        page_two = "wiki/page-two.md"
+        for page in (page_one, page_two):
+            (self.vault / page).write_bytes(b"---\ntype: Note\n---\nBody\r\n")
+
+        def baseline(page, asset, observation, source, batch, time, outcome="updated"):
+            return LEDGER.make_baseline(page, asset["id"], [{
+                "observationId": observation["id"], "sourceId": source["id"],
+                "contentHash": observation["contentHash"], "pageHash": "sha256:" + "a" * 64,
+                "pageBatchId": batch, "reconciledAt": time, "outcome": outcome,
+            }])
+
+        first, second = observations
+        left = baseline(page_one, first[0], first[2], first[1], "batch-one", "2026-06-03T12:00:00Z")
+        left["history"].append({**left["history"][0], "observationId": first_revision["id"],
+                                "sourceId": first_revision_source["id"], "contentHash": first_revision["contentHash"],
+                                "pageBatchId": "batch-two", "reconciledAt": "2026-06-04T12:00:00Z",
+                                "outcome": "no-change"})
+        left["futureExtension"] = "keep"
+        right = baseline(page_two, second[0], second[2], second[1], "batch-three", "2026-06-05T12:00:00Z")
+        self.write_record(left)
+        self.write_record(right)
+        before = self.snapshot(self.vault)
+
+        report = MODULE.build_report(self.vault, "2026-06-06")
+        self.assertEqual(report["ledgerSummary"]["assets"], 2)
+        self.assertEqual(report["ledgerSummary"]["observations"], 3)
+        self.assertEqual(report["ledgerSummary"]["baselines"], 2)
+        self.assertEqual(report["assets"][0]["producerExtension"], {"preserve": 1})
+        self.assertEqual(report["observations"][0]["reportState"],
+                         "recorded-observation-not-reconciliation-or-review")
+        self.assertEqual(report["baselines"][0]["reportState"],
+                         "declared-reconciliation-not-factual-verification")
+        page_reports = {page["path"]: page for page in report["pages"]}
+        self.assertEqual(len(page_reports[page_one]["baselines"]), 1)
+        history = page_reports[page_one]["baselines"][0]
+        self.assertEqual(len(history["history"]), 2)
+        self.assertEqual(history["latest"]["outcome"], "no-change")
+        self.assertEqual(history["state"], "declared-reconciliation-not-factual-verification")
+        self.assertEqual(page_reports[page_two]["baselines"][0]["assetId"], second[0]["id"])
+        self.assertIsNone(page_reports[page_one]["review"]["status"])
+        self.assertEqual(self.snapshot(self.vault), before)
+
+    def test_malformed_known_optional_record_is_listed_as_invalid_without_mutation(self):
+        malformed = {"schema": LEDGER.SCHEMA, "kind": "observation", "id": "observation-" + "a" * 24,
+                     "assetId": "asset-bad", "rootId": "root", "locator": "file.bin",
+                     "sourceId": "source-" + "b" * 24, "contentHash": "not-a-hash",
+                     "observedAt": "2026-06-01T12:00:00Z", "review": {"status": "unreviewed"},
+                     "unknownExtension": "kept on disk"}
+        invalid_path = self.vault / f"wiki/meta/evidence/{malformed['id']}.json"
+        invalid_path.parent.mkdir(parents=True, exist_ok=True)
+        invalid_path.write_text(json.dumps(malformed), encoding="utf-8")
+        (self.vault / "wiki/valid.md").write_text("---\ntype: Note\n---\nOK\n", encoding="utf-8")
+        before = self.snapshot(self.vault)
+        report = MODULE.build_report(self.vault, "2026-06-01")
+        self.assertEqual(report["ledger"]["invalidCount"], 1)
+        self.assertIn("unsafe-or-invalid-ledger-record", report["ledger"]["invalidRecords"][0]["issues"])
+        self.assertEqual(report["ledgerSummary"]["observations"], 0)
+        self.assertEqual(report["pages"][0]["structuralValidity"]["status"], "valid")
+        self.assertEqual(self.snapshot(self.vault), before)
+
     def test_malformed_optional_source_ids_are_reported_without_crashing(self):
         page = self.vault / "wiki/malformed-sources.md"
         page.write_text("---\ntype: Note\nsources:\n  - id: [not, a, scalar]\n---\nText.[^known]\n", encoding="utf-8")
