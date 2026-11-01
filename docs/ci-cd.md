@@ -150,7 +150,10 @@ installation; the owned package's version hook still runs during preparation.
 CI and release use the same pinned npm 12.2.1 CLI. The latest compatible
 `@semantic-release/npm` plugin still requires npm 11.x and keeps its own locked
 11.21.1 copy; do not force an incompatible major override to hide audit findings.
-Archive-result parsing accepts both
+Release metadata and dist-tag reads normalize npm 11's object output and npm 12's
+single-result arrays, rejecting empty or ambiguous arrays before publication or
+latest-tag decisions. Exact version/source checks and explicit-404-only missing
+output handling remain unchanged. Archive-result parsing accepts both
 npm 11's array output and npm 12's package-name-keyed output; release, packed-runtime,
 and isolated plugin-install checks all use the same tested parser. The disposable
 loopback registry fixture explicitly permits its tarball downloads for npm 12;
@@ -167,7 +170,7 @@ longer requires the previous `esbuild` postinstall. A transitive
 `node-domexception` deprecation can still appear during CLI installation; keep
 it visible until the upstream dependency is replaced.
 
-CI tests Node 24 with both Python 3.14 (the supported minimum) and Python 3.15
+CI tests Node 26 with both Python 3.14 (the supported minimum) and Python 3.15
 on macOS and Linux. Release uses the newest Python version in that tested matrix.
 The workflow guards preserve minimum-version coverage and require the release
 runtime to match the newest matrix entry, rather than rejecting every Python

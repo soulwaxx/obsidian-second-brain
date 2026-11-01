@@ -89,7 +89,14 @@ export function npmCommand(...args) {
   try {
     const output = execFileSync("npm", args, { encoding: "utf8", timeout: 120000,
       stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NPM_CONFIG_PROVENANCE: "true" } });
-    return args.includes("--json") ? JSON.parse(output) : undefined;
+    if (!args.includes("--json")) return;
+    const result = JSON.parse(output);
+    if (args[0] !== "view" || !Array.isArray(result)) return result;
+    // npm 12 wraps even an exact-version metadata/dist-tags query in an array.
+    assert.equal(result.length, 1, "Expected exactly one npm view result");
+    assert.ok(result[0] && typeof result[0] === "object" && !Array.isArray(result[0]),
+      "Expected npm view metadata");
+    return result[0];
   } catch (error) {
     // Only an explicit registry 404 means missing. Auth, network, and other failures stop recovery.
     if (args[0] === "view" && /\bE404\b/.test(String(error.stderr))) return undefined;
