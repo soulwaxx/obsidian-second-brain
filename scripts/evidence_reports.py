@@ -330,6 +330,10 @@ def build_report(vault: Path, as_of: str | date | None = None) -> dict[str, Any]
     candidates = sorted(path for path in wiki.rglob("*") if path.is_file() and path.name.casefold().endswith(".md")
                         and _INDEX.eligible(path, vault))
     pages = []
+    baselines_by_page: dict[str, list[dict[str, Any]]] = {}
+    for record in records.values():
+        if record["kind"] == "baseline":
+            baselines_by_page.setdefault(record["page"], []).append(record)
     for path in candidates:
         relative = path.relative_to(vault).as_posix()
         try:
@@ -368,14 +372,28 @@ def build_report(vault: Path, as_of: str | date | None = None) -> dict[str, Any]
             review_status = None
             review_issues.append("invalid-review-status")
         issues.extend(review_issues)
+        page_baselines = []
+        for record in baselines_by_page.get(relative, []):
+            history = record["history"]
+            page_baselines.append({"id": record["id"], "assetId": record["assetId"],
+                                   "history": history, "latest": history[-1],
+                                   "state": "declared-reconciliation-not-factual-verification"})
         pages.append({"path": relative, "structuralValidity": validation,
                       "freshness": {"status": freshness_status, "asOf": report_date.isoformat(), "staleAfter": stale_after_json,
                                     "issues": freshness_issues},
                       "review": {"status": review_status,
                                  "verificationMetadata": "present-unverified-by-report" if review_meta else "absent"},
-                      "references": references, "citations": citations, "claims": claims, "issues": sorted(set(issues))})
+                      "references": references, "citations": citations, "claims": claims,
+                      "baselines": page_baselines, "issues": sorted(set(issues))})
     claim_records = [record for record in records.values() if record["kind"] == "claim"]
     source_records = [record for record in records.values() if record["kind"] == "source"]
+    asset_records = [record for record in records.values() if record["kind"] == "asset"]
+    observation_records = [record for record in records.values() if record["kind"] == "observation"]
+    baseline_records = [record for record in records.values() if record["kind"] == "baseline"]
+    observation_reports = [{**record, "reportState": "recorded-observation-not-reconciliation-or-review"}
+                           for record in observation_records]
+    baseline_reports = [{**record, "reportState": "declared-reconciliation-not-factual-verification"}
+                        for record in baseline_records]
     source_reports = [{"id": record["id"], "locator": record["locator"], "contentHash": record["contentHash"],
                        "freshness": record["freshness"], "reviewStatus": record["review"]["status"]}
                       for record in source_records]
@@ -384,7 +402,11 @@ def build_report(vault: Path, as_of: str | date | None = None) -> dict[str, Any]
             "scope": "read-only structural and reference metadata; no factual truth verification",
             "ledger": ledger,
             "ledgerSummary": {"sources": len(source_records), "claims": len(claim_records),
+                              "assets": len(asset_records), "observations": len(observation_records),
+                              "baselines": len(baseline_records),
                               "staleSources": sum(record["freshness"] == "stale" for record in source_records),
                               "unknownFreshnessSources": sum(record["freshness"] == "unknown" for record in source_records),
                               "contradictoryClaims": sum(bool(record["contradictions"]) for record in claim_records)},
-            "sources": source_reports, "claims": claim_reports, "pages": pages}
+            "sources": source_reports, "claims": claim_reports,
+            "assets": asset_records, "observations": observation_reports, "baselines": baseline_reports,
+            "pages": pages}

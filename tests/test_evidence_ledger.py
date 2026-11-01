@@ -94,6 +94,93 @@ class EvidenceLedgerTests(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertEqual((self.vault / relative).read_bytes(), preexisting_bytes)
 
+    def test_asset_observation_and_pair_baseline_are_distinct_reviewable_records(self):
+        asset = LEDGER.make_asset("asset-report", "root-reports", "reports/annual.pdf")
+        source_a = LEDGER.make_source_digest("local:root-reports/reports/annual.pdf", "sha256:" + "a" * 64)
+        source_b = LEDGER.make_source_digest("local:root-reports/reports/annual.pdf", "sha256:" + "b" * 64)
+        observed_a = LEDGER.make_observation(asset, source_a, "2025-01-02T03:04:05+00:00")
+        observed_b = LEDGER.make_observation(asset, source_b, "2025-01-03T03:04:05Z")
+        self.assertNotEqual(observed_a["id"], observed_b["id"])
+        self.assertEqual(observed_a["review"]["status"], "unreviewed")
+        entry = {"observationId": observed_a["id"], "sourceId": source_a["id"],
+                 "contentHash": source_a["contentHash"], "pageHash": "sha256:" + "c" * 64,
+                 "pageBatchId": "batch-123", "reconciledAt": "2025-01-04T00:00:00+00:00",
+                 "outcome": "no-change"}
+        baseline = LEDGER.make_baseline("wiki/research/report.md", asset["id"], [entry])
+        self.assertEqual(LEDGER.record_path(baseline), f"wiki/meta/evidence/{baseline['id']}.json")
+        second = dict(entry, observationId=observed_b["id"], sourceId=source_b["id"],
+                      contentHash=source_b["contentHash"], reconciledAt="2025-01-05T00:00:00+00:00")
+        merged = LEDGER.merge_record(baseline, {"history": [entry, second]})
+        self.assertEqual(len(merged["history"]), 2)
+        with self.assertRaises(LEDGER.LedgerError):
+            LEDGER.merge_record(baseline, {"history": [second]})
+        with self.assertRaises(LEDGER.LedgerError):
+            LEDGER.merge_record(observed_a, {"locator": "moved.pdf"})
+        self.assertNotEqual(LEDGER.make_baseline("wiki/research/other.md", asset["id"], [entry])["id"], baseline["id"])
+        other_asset = LEDGER.make_asset("asset-other", "root-reports", "reports/second.pdf")
+        other_source = LEDGER.make_source_digest("local:root-reports/reports/second.pdf", "sha256:" + "d" * 64)
+        other_observation = LEDGER.make_observation(other_asset, other_source, "2025-01-05T00:00:00Z")
+        other_entry = dict(entry, observationId=other_observation["id"], sourceId=other_source["id"],
+                           contentHash=other_source["contentHash"])
+        other_pair = LEDGER.make_baseline("wiki/research/report.md", other_asset["id"], [other_entry])
+        self.assertNotEqual(other_pair["id"], baseline["id"])
+        self.assertEqual(other_pair["page"], baseline["page"])
+        self.assertEqual(other_pair["assetId"], other_asset["id"])
+        with self.assertRaises(LEDGER.LedgerError):
+            mismatched = LEDGER.make_source_digest("local:root-other/reports/annual.pdf", source_a["contentHash"])
+            LEDGER.make_observation(asset, mismatched, "2025-01-02T03:04:05+00:00")
+
+    def test_unknown_git_context_extensions_do_not_change_observation_identity(self):
+        asset = LEDGER.make_asset("asset-paper", "research", "paper.pdf")
+        source = LEDGER.make_source("local:research/paper.pdf", b"bytes")
+        observation = LEDGER.make_observation(asset, source, "2025-01-01T00:00:00Z",
+                                               git_context={"head": "a" * 40, "vendor": {"x": 1}})
+        changed = dict(observation)
+        changed["gitContext"] = {"head": "a" * 40, "vendor": {"x": 2}}
+        LEDGER.validate_record(changed)
+        merged = LEDGER.merge_record(observation, changed)
+        self.assertEqual(merged["id"], observation["id"])
+        self.assertEqual(merged["gitContext"]["vendor"], {"x": 2})
+
+    def test_new_known_fields_reject_bad_types_and_retain_unknown_extensions(self):
+        asset = LEDGER.make_asset("asset-report", "root-reports", "reports/annual.pdf")
+        for changes in ({"rootId": []}, {"locator": "../escape"}, {"locator": "."},
+                        {"locator": "reports/annual\n.pdf"}):
+            malformed = dict(asset, **changes)
+            with self.assertRaises(LEDGER.LedgerError):
+                LEDGER.validate_record(malformed)
+        changed = LEDGER.merge_record(asset, {"locator": "archive/annual.pdf", "future": {"x": 1}})
+        self.assertEqual(changed["id"], asset["id"])
+        self.assertEqual(changed["future"], {"x": 1})
+        self.assertEqual(changed["review"]["status"], "unreviewed")
+        source = LEDGER.make_source_digest("local:root-reports/reports/annual.pdf", "sha256:" + "a" * 64)
+        observation = LEDGER.make_observation(asset, source, "2025-01-02T03:04:05+00:00")
+        valid_sha256_git = LEDGER.make_observation(
+            asset, source, "2025-01-02T03:04:05+00:00",
+            git_context={"head": "a" * 64, "repositoryLocator": "repo/path", "selectedBytes": "equal"})
+        LEDGER.validate_record(valid_sha256_git)
+        for changes in ({"observedAt": 3}, {"locator": "."}, {"locator": "reports/a\x01.pdf"},
+                        {"gitContext": {"head": "a" * 39}}, {"gitContext": {"head": "a" * 41}},
+                        {"gitContext": {"head": "a" * 63}},
+                        {"gitContext": {"repositoryLocator": "repo/with\x01control"}}):
+            malformed = dict(observation, **changes)
+            with self.assertRaises(LEDGER.LedgerError):
+                LEDGER.validate_record(malformed)
+        with self.assertRaises(LEDGER.LedgerError):
+            LEDGER.make_baseline("wiki/research/bad\x01name.md", asset["id"], [{
+                "observationId": observation["id"], "sourceId": source["id"],
+                "contentHash": source["contentHash"], "pageHash": "sha256:" + "b" * 64,
+                "pageBatchId": "batch-report", "reconciledAt": "2025-01-03T00:00:00Z", "outcome": "updated"}])
+        baseline = LEDGER.make_baseline("wiki/research/report.md", asset["id"], [{
+            "observationId": observation["id"], "sourceId": source["id"],
+            "contentHash": source["contentHash"], "pageHash": "sha256:" + "b" * 64,
+            "pageBatchId": "batch-report", "reconciledAt": "2025-01-03T00:00:00Z", "outcome": "updated"}])
+        observation["futureNested"] = {"retain": [1, 2]}
+        baseline["futureBaseline"] = {"retain": True}
+        self.assertEqual(LEDGER.merge_record(observation, {"review": {"status": "reviewed"}})["futureNested"], {"retain": [1, 2]})
+        self.assertEqual(LEDGER.merge_record(baseline, {"review": {"status": "reviewed"}})["futureBaseline"], {"retain": True})
+        self.assertFalse((self.vault / "wiki/meta/evidence").exists())
+
     def test_no_implicit_ledger_creation_and_unknown_fields_survive_prepared_update(self):
         self.assertFalse((self.vault / "wiki/meta/evidence").exists())
         record = LEDGER.make_claim("claim-one", "original")

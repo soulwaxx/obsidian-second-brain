@@ -41,3 +41,9 @@ Surgical updates to an existing wiki.
 6. **Cleanup.** Delete any temporary `_plan.md`. On a major update, run the Coverage
    Self-Check in [authoring-standards.md](authoring-standards.md). No-op is
    acceptable.
+
+For an explicitly selected local source whose page relationship is being
+reviewed, optional source observations and per-page/asset reconciliation
+baselines may help preserve portable lineage. They are not required metadata or
+a replacement for the normal update procedure; use fresh selected review and
+the separate approvals described in [source baselines](../../../docs/source-baselines.md).

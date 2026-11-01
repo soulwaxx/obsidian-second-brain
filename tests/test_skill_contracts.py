@@ -50,7 +50,7 @@ for boundary in ('only that selected material', 'make no changes', 'destination 
     assert boundary in workflow_save, boundary
 
 common = ' '.join((ROOT / 'skills/wiki/references/focused-workflows.md').read_text().lower().split())
-for boundary in ('exact plan hash', 'wiki-ledger', 'does not provide web search', 'capture-inspect', 'capture-apply', 'batch-recover', 'source-identity', '.raw/agent-captures/', 'do not batch every small edit', 'search is read-only and reports fallback/freshness; it does not build an index', 'existing pages remain valid with only `type`', 'backfill/fabricate records for legacy pages', 'evidence-report --json', 'not that a claim is true or verified'):
+for boundary in ('exact plan hash', 'wiki-ledger', 'does not provide web search', 'capture-inspect', 'capture-apply', 'batch-recover', 'source-identity', '.raw/agent-captures/', 'do not batch every small edit', 'search is read-only and reports fallback/freshness; it does not build an index', 'existing pages remain valid with only `type`', 'backfill/fabricate records for legacy pages', 'evidence-report --json', 'not that a claim is true or verified', 'optional selected source baselines', 'separate exact observation, page-batch, and baseline approvals', 'do not infer a historic reconciliation'):
     assert boundary in common
 
 for workflow in ('wiki-research', 'wiki-ingest', 'wiki-save'):
@@ -165,6 +165,14 @@ with tempfile.TemporaryDirectory() as temp:
     result = subprocess.run([sys.executable, str(ROOT / 'skills/wiki/scripts/okf_mw/validate.py'), str(page)],
                             text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
+baseline_doc = (ROOT / 'docs/source-baselines.md').read_text().lower().replace('**', '')
+for boundary in ('observe-inspect', 'observe-apply', 'baseline-inspect', 'baseline-apply',
+                 'source-history', 'no-change', '64 mib', 'not copied or archived',
+                 'imported records do not recreate local publication authority',
+                 'does not identify historically reconciled content',
+                 'observation is not a declared reconciliation',
+                 'reconciliation is not factual review'):
+    assert boundary in ' '.join(baseline_doc.split()), boundary
 research_path = ROOT / 'skills/wiki/references/research-discipline.md'
 frontmatter_path = ROOT / 'skills/wiki/references/frontmatter.md'
 research = ' '.join(research_path.read_text().lower().split())

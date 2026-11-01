@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import uuid
 from typing import Any
+from urllib.parse import quote
 from module_loading import load_source
 
 LIFECYCLE = load_source("wiki_batch_lifecycle", str(Path(__file__).with_name("wiki_lifecycle.py")))
@@ -225,6 +227,215 @@ def _validate_draft(vault: Path, op: dict, authority: str) -> None:
         raise BatchError("source capture draft must be nonempty text without NUL bytes")
 
 
+def _journal_preimages(journal: dict) -> dict[str, bytes | None]:
+    return {entry["path"]: (base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None)
+            for entry in journal["entries"]}
+
+
+def _ledger_files(vault: Path) -> dict[str, bytes]:
+    """Safely enumerate ledger bytes without parsing records or following links."""
+    vault = Path(vault).resolve(strict=True)
+    probe = os.open(vault, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        for part in ("wiki", "meta", "evidence"):
+            names = os.listdir(probe)
+            matching = [name for name in names if name.casefold() == part.casefold()]
+            if matching and matching != [part]:
+                raise BatchError(f"case-insensitive ledger namespace collision at {part}")
+            if not matching:
+                return {}
+            child = os.open(part, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=probe)
+            os.close(probe)
+            probe = child
+    except OSError as exc:
+        raise BatchError(f"evidence ledger namespace is unsafe: {exc}") from exc
+    finally:
+        os.close(probe)
+    try:
+        directory_fd = LIFECYCLE.secure_dir(vault / "wiki/meta/evidence", create=False)
+    except OSError as exc:
+        raise BatchError(f"evidence ledger namespace is unsafe: {exc}") from exc
+    try:
+        names = os.listdir(directory_fd)
+        folded: dict[str, str] = {}
+        record_names = []
+        for name in names:
+            key = name.casefold()
+            if key in folded:
+                raise BatchError(f"case-insensitive ledger filename collision: {folded[key]} and {name}")
+            folded[key] = name
+            if re.fullmatch(r"\.batch-[0-9a-f-]{36}-[0-9a-f]{32}\.tmp", name):
+                try:
+                    temp_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+                    try:
+                        if not stat.S_ISREG(os.fstat(temp_fd).st_mode):
+                            raise BatchError("ledger batch temporary entry is not a regular file")
+                    finally:
+                        os.close(temp_fd)
+                except OSError as exc:
+                    raise BatchError("ledger batch temporary entry is unsafe") from exc
+                continue
+            if not name.endswith(".json") or name[:-5] != name[:-5].casefold():
+                raise BatchError(f"noncanonical ledger filename: {name}")
+            record_names.append(name)
+        result: dict[str, bytes] = {}
+        for name in record_names:
+            try:
+                fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+            except OSError as exc:
+                raise BatchError(f"cannot open ledger record safely: {name}") from exc
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise BatchError(f"ledger record is not a regular file: {name}")
+                chunks = []
+                with os.fdopen(fd, "rb") as stream:
+                    fd = -1
+                    while chunk := stream.read(1024 * 1024):
+                        chunks.append(chunk)
+                result[name] = b"".join(chunks)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        return result
+    finally:
+        os.close(directory_fd)
+
+
+def _ledger_snapshot(vault: Path) -> dict[str, tuple[dict, bytes]]:
+    files = _ledger_files(vault)
+    result = {}
+    ledger = load_source("wiki_batch_evidence_ledger", str(Path(__file__).with_name("evidence_ledger.py")))
+    for name, raw in files.items():
+        try:
+            value = json.loads(raw)
+            ledger.validate_record(value, expected_id=name[:-5])
+            if ledger.record_path(value).rsplit("/", 1)[-1] != name:
+                raise ValueError("record path does not match canonical filename")
+        except (ValueError, TypeError) as exc:
+            raise BatchError(f"invalid ledger record {name}: {exc}") from exc
+        result[value["id"]] = (value, raw)
+    return result
+
+
+def _page_batch_evidence(vault: Path, batch_id: str, page: str, page_hash: str, outcome: str) -> None:
+    try:
+        uuid.UUID(batch_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise BatchError("baseline references an invalid page batch ID") from exc
+    journal = _load_journal(vault, batch_id)
+    if journal["authority"] != "wiki-page" or journal["phase"] != "complete":
+        raise BatchError("baseline requires a completed wiki-page authority batch")
+    entry = next((item for item in journal["entries"] if item["path"] == page), None)
+    if (entry is None or entry["state"] != "published" or entry["afterHash"] != page_hash
+            or (outcome == "no-change") != (entry["beforeHash"] == entry["afterHash"])):
+        raise BatchError("baseline page batch does not publish the referenced page bytes and outcome")
+    path, parent, name = _target(vault, page, "wiki-page", allow_missing=True)
+    try:
+        current = _read_at(parent, name) if parent is not None else None
+    finally:
+        if parent is not None:
+            os.close(parent)
+    if current is None or sha(current) != page_hash:
+        raise BatchError("baseline page bytes no longer match the completed page batch")
+
+
+def _validate_ledger_operations(vault: Path, operations: list[dict], *, publication: bool = False,
+                                original_preimages: dict[str, bytes | None] | None = None,
+                                check_current_asset_locator: bool = True) -> None:
+    ledger = load_source("wiki_batch_evidence_ledger", str(Path(__file__).with_name("evidence_ledger.py")))
+    records = {key: value for key, (value, _raw) in _ledger_snapshot(vault).items()}
+    for operation in operations:
+        try:
+            record = json.loads(operation["content"])
+            ledger.validate_record(record, expected_id=PurePosixPath(operation["path"]).stem)
+        except (ValueError, TypeError) as exc:
+            raise BatchError(f"invalid ledger operation: {exc}") from exc
+        raw_before = (original_preimages or {}).get(operation["path"], ...)
+        prior = records.get(record["id"])
+        if raw_before is not ...:
+            prior = None
+            if raw_before is not None:
+                try:
+                    prior = json.loads(raw_before)
+                    ledger.validate_record(prior, expected_id=record["id"])
+                except (ValueError, TypeError) as exc:
+                    raise BatchError("journal ledger preimage is invalid") from exc
+        if prior is not None:
+            if record["kind"] in {"asset", "observation", "baseline"}:
+                merged = ledger.merge_record(prior, record)
+                if merged != record:
+                    raise BatchError("ledger update must preserve existing fields and unknown extensions")
+            if record["kind"] == "observation" and ledger._observation_material(prior) != ledger._observation_material(record):
+                raise BatchError("observation immutable identity material cannot change")
+            if record["kind"] == "source":
+                referenced = any(value.get("kind") == "observation" and value.get("sourceId") == record["id"]
+                                 for value in records.values())
+                referenced = referenced or any(
+                    value.get("kind") == "baseline" and any(entry.get("sourceId") == record["id"]
+                                                               for entry in value.get("history", []))
+                    for value in records.values())
+                if referenced and (prior["locator"] != record["locator"]
+                                   or prior["contentHash"] != record["contentHash"]):
+                    raise BatchError("source locator and content are immutable while referenced by observations or baselines")
+            if record["kind"] == "asset" and prior["rootId"] != record["rootId"]:
+                raise BatchError("asset root identity cannot change")
+            if record["kind"] == "baseline":
+                old_history = prior["history"]
+                history = record["history"]
+                if history[:len(old_history)] != old_history:
+                    raise BatchError("baseline history must retain its existing prefix")
+                added = history[len(old_history):]
+            else:
+                added = []
+        else:
+            added = record.get("history", []) if record["kind"] == "baseline" else []
+        if record["kind"] == "observation":
+            asset = records.get(record["assetId"])
+            if asset is None or asset["kind"] != "asset" or asset["rootId"] != record["rootId"]:
+                raise BatchError("observation requires its matching durable asset")
+            if (check_current_asset_locator and prior is None
+                    and asset["locator"] != record["locator"]):
+                raise BatchError("new observation locator must match the asset at publication")
+            if not publication and record["assetId"] not in records:
+                raise BatchError("observation asset must precede it in the approved ledger batch")
+            source = records.get(record["sourceId"])
+            if source is None or source["kind"] != "source" or source["contentHash"] != record["contentHash"]:
+                raise BatchError("observation requires its matching durable source digest")
+            if not publication and record["sourceId"] not in records:
+                raise BatchError("observation source must precede it in the approved ledger batch")
+            expected_locator = "local:" + record["rootId"] + "/" + "/".join(quote(part, safe="-._~") for part in record["locator"].split("/"))
+            source_id = ledger.make_source_digest(source["locator"], source["contentHash"])["id"]
+            if (source["locator"] != expected_locator or source_id != source["id"]
+                    or source["contentHash"] != record["contentHash"]):
+                raise BatchError("observation source identity, locator, or content does not match its asset")
+        if record["kind"] == "asset" and prior is not None and prior["rootId"] != record["rootId"]:
+            raise BatchError("asset root identity cannot change")
+        if record["kind"] == "baseline":
+            asset = records.get(record["assetId"])
+            if asset is None or asset["kind"] != "asset":
+                raise BatchError("baseline requires its matching durable asset")
+            for entry in record["history"]:
+                observation = records.get(entry["observationId"])
+                if (observation is None or observation["kind"] != "observation"
+                        or observation["assetId"] != record["assetId"]):
+                    raise BatchError("baseline entry requires its matching observation")
+                source = records.get(entry["sourceId"])
+                if source is None or source["kind"] != "source" or observation["sourceId"] != entry["sourceId"]:
+                    raise BatchError("baseline entry source does not match its observation")
+                source_id = ledger.make_source_digest(source["locator"], source["contentHash"])["id"]
+                expected_locator = "local:" + observation["rootId"] + "/" + "/".join(quote(part, safe="-._~") for part in observation["locator"].split("/"))
+                if (source_id != source["id"] or source["locator"] != expected_locator
+                        or observation["contentHash"] != source["contentHash"]
+                        or entry["contentHash"] != source["contentHash"]):
+                    raise BatchError("baseline entry source identity, locator, or content hash is inconsistent")
+                if observation["rootId"] != asset["rootId"]:
+                    raise BatchError("baseline observation asset/root identity mismatch")
+            for entry in added:
+                _page_batch_evidence(vault, entry["pageBatchId"], record["page"],
+                                     entry["pageHash"].removeprefix("sha256:"), entry["outcome"])
+        records[record["id"]] = record
+
+
 def _journal_dir(vault: Path, create: bool) -> Path:
     path = vault / ".vault-meta/lifecycle/batches"
     fd = LIFECYCLE.secure_dir(path, create=create)
@@ -311,7 +522,81 @@ def _load_journal(vault: Path, batch_id: str) -> dict:
             raise BatchError("journal approval hash does not verify")
     except (KeyError, TypeError, ValueError) as exc:
         raise BatchError(f"batch journal is malformed: {exc}") from exc
+    if "cliBinding" in data:
+        if (not isinstance(data.get("cliBinding"), dict)
+                or data["cliBinding"].get("ledgerPlanHash") != data["planHash"]
+                or data.get("cliPlanHash") != sha(canonical_json(data["cliBinding"]))):
+            raise BatchError("journal CLI approval binding does not verify")
     return data
+
+
+def completed_cli_replay(vault: Path, cli_plan_hash: str, stable_binding: dict,
+                         config: Path) -> dict | None:
+    vault = Path(vault).resolve(strict=True)
+    directory = vault / ".vault-meta/lifecycle/batches"
+    try:
+        dir_fd = LIFECYCLE.secure_dir(directory, create=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise BatchError(f"batch history is unsafe: {exc}") from exc
+    try:
+        for name in os.listdir(dir_fd):
+            if name == "writer.lock":
+                continue
+            if not name.endswith(".json"):
+                raise BatchError("batch history contains an unrecognized entry")
+            try:
+                journal = _load_journal(vault, name[:-5])
+            except (OSError, ValueError, TypeError, BatchError) as exc:
+                raise BatchError(f"batch history is incomplete or unsafe at {name}: {exc}") from exc
+            binding = journal.get("cliBinding")
+            if (journal["phase"] != "complete" or journal.get("cliPlanHash") != cli_plan_hash
+                    or not isinstance(binding, dict)):
+                continue
+            stable = {key: value for key, value in binding.items() if key != "ledgerPlanHash"}
+            if stable != stable_binding:
+                continue
+            _require_approved_config(journal, config)
+            _verify_postimages(vault, journal)
+            if journal["authority"] == "wiki-ledger":
+                _validate_ledger_operations(vault, journal["bundle"]["operations"],
+                                            original_preimages=_journal_preimages(journal),
+                                            check_current_asset_locator=False)
+            return {"batchId": journal["batchId"], "planHash": cli_plan_hash,
+                    "phase": "complete", "noop": True}
+        return None
+    finally:
+        os.close(dir_fd)
+
+
+def ensure_no_unfinished_ledger_publication(vault: Path, record_ids: set[str]) -> None:
+    vault = Path(vault).resolve(strict=True)
+    directory = vault / ".vault-meta/lifecycle/batches"
+    try:
+        dir_fd = LIFECYCLE.secure_dir(directory, create=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise BatchError(f"batch history is unsafe: {exc}") from exc
+    try:
+        names = os.listdir(dir_fd)
+        for name in names:
+            if name == "writer.lock":
+                continue
+            if not name.endswith(".json"):
+                raise BatchError("batch history contains an unrecognized entry")
+            try:
+                journal = _load_journal(vault, name[:-5])
+            except (OSError, ValueError, TypeError, BatchError) as exc:
+                raise BatchError(f"batch history is incomplete or unsafe at {name}: {exc}") from exc
+            if journal["authority"] != "wiki-ledger" or journal["phase"] in {"complete", "rolled-back"}:
+                continue
+            touched = {PurePosixPath(op["path"]).stem for op in journal["bundle"]["operations"]}
+            if touched & record_ids:
+                raise BatchError("a relevant wiki-ledger batch is unfinished; recover or roll it back first")
+    finally:
+        os.close(dir_fd)
 
 
 def source_capture_history(vault: Path) -> list[dict[str, Any]]:
@@ -384,6 +669,8 @@ def _approval_plan(vault: Path, bundle: dict, config: Path, authority: str) -> d
     _validate_paths(operations, authority)
     for op in operations:
         _validate_draft(vault, op, authority)
+    if authority == "wiki-ledger":
+        _validate_ledger_operations(vault, operations)
     return {"version": 1, "vault": str(vault), "config": config_identity(config),
             "authority": authority, "bundle": bundle,
             "contentHash": sha(canonical_json(operations))}
@@ -547,6 +834,10 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
     _prepare_lifecycle(vault, journal, config)
     for entry in journal["entries"]:
         _require_approved_config(journal, config)
+        if authority == "wiki-ledger":
+            _validate_ledger_operations(vault, [journal["bundle"]["operations"][entry["index"]]],
+                                        publication=True,
+                                        original_preimages={entry["path"]: base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None})
         if entry["state"] == "published":
             path, parent, name = _target(vault, entry["path"], authority, allow_missing=True)
             try:
@@ -586,6 +877,10 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
                     raise BatchError("destination directory mapping changed before publication")
                 entry["state"] = "publishing"
                 _save_journal(vault, journal)
+                if authority == "wiki-ledger":
+                    _validate_ledger_operations(vault, [journal["bundle"]["operations"][entry["index"]]],
+                                                publication=True,
+                                                original_preimages={entry["path"]: base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None})
                 latest = _read_at(parent, name)
                 if (sha(latest) if latest is not None else None) != entry["beforeHash"]:
                     raise BatchError(f"target changed immediately before publication: {entry['path']}")
@@ -627,7 +922,8 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
     _save_journal(vault, journal)
 
 
-def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: str = "wiki-page") -> dict:
+def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: str = "wiki-page",
+          *, cli_binding: dict | None = None, cli_plan_hash: str | None = None) -> dict:
     vault = Path(vault).resolve(strict=True)
     bundle = validate_bundle(bundle)
     # Bind identity/content before locking; inspect target preconditions after
@@ -644,7 +940,22 @@ def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: st
                 continue
             if saved["planHash"] == plan_hash and saved["phase"] == "complete":
                 _verify_postimages(vault, saved)
+                if saved["authority"] == "wiki-ledger":
+                    _validate_ledger_operations(vault, saved["bundle"]["operations"],
+                                                original_preimages=_journal_preimages(saved),
+                                                check_current_asset_locator=False)
                 return {"batchId": saved["batchId"], "planHash": plan_hash, "phase": "complete", "noop": True}
+        if authority == "wiki-ledger":
+            target_ids = {PurePosixPath(op["path"]).stem for op in bundle["operations"]}
+            for prior in directory.glob("*.json"):
+                try:
+                    saved = _load_journal(vault, prior.stem)
+                except BatchError as exc:
+                    raise BatchError(f"cannot verify existing batch history at {prior.name}: {exc}") from exc
+                if saved["authority"] == "wiki-ledger" and saved["phase"] not in {"complete", "rolled-back"}:
+                    saved_ids = {PurePosixPath(op["path"]).stem for op in saved["bundle"]["operations"]}
+                    if target_ids & saved_ids:
+                        raise BatchError("a matching wiki-ledger batch is unfinished; recover or roll it back first")
         planned = _plan(vault, bundle, config, authority)
         if planned["planHash"] != plan_hash:
             raise BatchError("approval hash does not match current plan")
@@ -658,6 +969,11 @@ def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: st
         journal = {"version": 1, "batchId": batch_id, "vault": str(vault), "authority": authority,
                    "config": planned["plan"]["config"], "planHash": plan_hash, "bundle": bundle,
                    "entries": entries, "phase": "approved"}
+        if cli_binding is not None:
+            if not isinstance(cli_binding, dict) or cli_plan_hash != sha(canonical_json(cli_binding)):
+                raise BatchError("CLI approval binding is invalid")
+            journal["cliBinding"] = cli_binding
+            journal["cliPlanHash"] = cli_plan_hash
         _require_approved_config(journal, config)
         _save_journal(vault, journal)
         _publish(vault, journal, selected_config=config)
@@ -675,10 +991,17 @@ def recover(vault: Path, batch_id: str, config: Path | None = None) -> dict:
         approved_config = _require_approved_config(journal, config)
         if journal["phase"] == "complete":
             _verify_postimages(vault, journal)
+            if journal["authority"] == "wiki-ledger":
+                _validate_ledger_operations(vault, journal["bundle"]["operations"],
+                                            original_preimages=_journal_preimages(journal),
+                                            check_current_asset_locator=False)
             return {"batchId": batch_id, "phase": "complete", "applied": True, "noop": True}
         if journal["phase"] in {"rollback-conflict", "rolled-back"}:
             raise BatchError("batch is in rollback recovery; use rollback, not apply/recover")
         _preflight_recovery(vault, journal)
+        if journal["authority"] == "wiki-ledger":
+            _validate_ledger_operations(vault, journal["bundle"]["operations"], publication=True,
+                                        original_preimages=_journal_preimages(journal))
         for op in journal["bundle"]["operations"]:
             _validate_draft(vault, op, journal["authority"])
         _publish(vault, journal, selected_config=approved_config)

@@ -15,8 +15,14 @@ commits with `git log --oneline -20` and `git show` for relevant commits.
 Use `git log -- <path>` to trace a file's history and `git blame` or
 `git log -p --follow -- <path>` for evolutionary context.
 
-During Update Mode, use `git diff HEAD~1 -- <path>` to scope what changed in
-a specific area. Use `git log --oneline --since=<date>` for timeboxed scoping.
+During Update Mode, `git diff HEAD~1 -- <path>` is only an investigation aid
+for recent repository changes; it is not a source baseline or proof that dirty
+bytes match a commit. For explicitly selected local assets, compare against the
+last recorded observation and the selected page's reviewed reconciliation
+baseline; see [source baselines](../../../docs/source-baselines.md). Do not
+substitute `HEAD~1` for unavailable, shallow, or rewritten source history, and
+do not imply that an observation or page hash establishes source currentness or
+factual truth. Use `git log --oneline --since=<date>` for timeboxed scoping.
 
 Do not over-index on ancient history. Focus on the last ~3 months or the
 most recent 20 commits unless investigating a specific historical question.
