@@ -50,6 +50,39 @@ class SourceBaselinePublicationTests(unittest.TestCase):
         review = BATCH.inspect(self.vault, bundle, self.config, "wiki-page")
         return BATCH.apply(self.vault, bundle, self.config, review["planHash"], "wiki-page")
 
+    def interrupt_observation_batch(self):
+        asset = LEDGER.make_asset("asset-pending", "example", "old.txt")
+        source = LEDGER.make_source_digest("local:example/old.txt", "sha256:" + "e" * 64)
+        observation = LEDGER.make_observation(asset, source, "2025-03-04T05:06:07Z")
+        bundle = {"version": 1, "operations": [LEDGER.operation(asset),
+            LEDGER.operation(source), LEDGER.operation(observation)]}
+        review = BATCH.inspect(self.vault, bundle, self.config, "wiki-ledger")
+        original = BATCH._save_journal
+        def interrupt(vault, journal):
+            original(vault, journal)
+            if (journal["authority"] == "wiki-ledger"
+                    and all(entry["state"] == "published" for entry in journal["entries"])):
+                raise RuntimeError("synthetic all-records-durable interruption")
+        BATCH._save_journal = interrupt
+        try:
+            with self.assertRaisesRegex(RuntimeError, "all-records-durable"):
+                BATCH.apply(self.vault, bundle, self.config, review["planHash"], "wiki-ledger")
+        finally:
+            BATCH._save_journal = original
+        journal = next(json.loads(path.read_text()) for path in (self.vault / ".vault-meta/lifecycle/batches").glob("*.json")
+                       if json.loads(path.read_text())["authority"] == "wiki-ledger")
+        return journal["batchId"], asset, source, observation
+
+    def baseline_for(self, page_result, asset, source, observation):
+        page_journal = BATCH._load_journal(self.vault, page_result["batchId"])
+        page_entry = next(item for item in page_journal["entries"] if item["path"] == "wiki/page.md")
+        entry = {"observationId": observation["id"], "sourceId": source["id"],
+                 "contentHash": source["contentHash"], "pageHash": "sha256:" + page_entry["afterHash"],
+                 "pageBatchId": page_result["batchId"], "reconciledAt": "2025-03-05T00:00:00Z",
+                 "outcome": "no-change"}
+        return {"version": 1, "operations": [LEDGER.operation(
+            LEDGER.make_baseline("wiki/page.md", asset["id"], [entry]))]}
+
     def seed_observation(self):
         asset = LEDGER.make_asset("asset-seed", "example", "old.txt")
         source = LEDGER.make_source_digest("local:example/old.txt", "sha256:" + "a" * 64)
@@ -82,6 +115,86 @@ class SourceBaselinePublicationTests(unittest.TestCase):
         original = json.loads((self.vault / LEDGER.record_path(self.asset)).read_text())
         self.assertEqual(original["locator"], "old.txt")
         self.assertEqual(original["review"]["status"], "reviewed")
+
+    def test_generic_baseline_cannot_consume_unfinished_observation_dependencies(self):
+        page = "---\ntype: note\n---\n\n# Pending deps\n"
+        page_result = self.page_batch(page, page)
+        observation_batch, asset, source, observation = self.interrupt_observation_batch()
+        baseline = self.baseline_for(page_result, asset, source, observation)
+        with self.assertRaisesRegex(BATCH.BatchError, "unfinished"):
+            BATCH.inspect(self.vault, baseline, self.config, "wiki-ledger")
+        BATCH.recover(self.vault, observation_batch, self.config)
+        review = BATCH.inspect(self.vault, baseline, self.config, "wiki-ledger")
+        result = BATCH.apply(self.vault, baseline, self.config, review["planHash"], "wiki-ledger")
+        self.assertEqual(result["phase"], "complete")
+
+    def test_observation_rollback_after_interruption_cannot_leave_completed_baseline(self):
+        page = "---\ntype: note\n---\n\n# Rolled back deps\n"
+        page_result = self.page_batch(page, page)
+        observation_batch, asset, source, observation = self.interrupt_observation_batch()
+        baseline = self.baseline_for(page_result, asset, source, observation)
+        with self.assertRaisesRegex(BATCH.BatchError, "unfinished"):
+            BATCH.inspect(self.vault, baseline, self.config, "wiki-ledger")
+        BATCH.rollback(self.vault, observation_batch, self.config)
+        for record in (asset, source, observation):
+            self.assertFalse((self.vault / LEDGER.record_path(record)).exists())
+        with self.assertRaises(BATCH.BatchError):
+            BATCH.inspect(self.vault, baseline, self.config, "wiki-ledger")
+        self.assertFalse(any(json.loads(path.read_text()).get("kind") == "baseline"
+                             for path in (self.vault / "wiki/meta/evidence").glob("*.json")))
+
+    def test_ordered_dependency_records_in_one_batch_recover_with_self_exclusion(self):
+        page = "---\ntype: note\n---\n\n# Ordered bundle\n"
+        page_result = self.page_batch(page, page)
+        asset = LEDGER.make_asset("asset-ordered", "example", "old.txt")
+        source = LEDGER.make_source_digest("local:example/old.txt", "sha256:" + "f" * 64)
+        observation = LEDGER.make_observation(asset, source, "2025-03-04T05:06:07Z")
+        page_journal = BATCH._load_journal(self.vault, page_result["batchId"])
+        page_entry = page_journal["entries"][0]
+        receipt = {"observationId": observation["id"], "sourceId": source["id"],
+                   "contentHash": source["contentHash"], "pageHash": "sha256:" + page_entry["afterHash"],
+                   "pageBatchId": page_result["batchId"], "reconciledAt": "2025-03-05T00:00:00Z",
+                   "outcome": "no-change"}
+        baseline = LEDGER.operation(LEDGER.make_baseline("wiki/page.md", asset["id"], [receipt]))
+        bundle = {"version": 1, "operations": [LEDGER.operation(asset), LEDGER.operation(source),
+            LEDGER.operation(observation), baseline]}
+        review = BATCH.inspect(self.vault, bundle, self.config, "wiki-ledger")
+        original = BATCH._save_journal
+        def interrupt_complete(vault, journal):
+            original(vault, journal)
+            if journal["authority"] == "wiki-ledger" and all(entry["state"] == "published" for entry in journal["entries"]):
+                raise RuntimeError("synthetic ordered-batch final acknowledgement interruption")
+        BATCH._save_journal = interrupt_complete
+        try:
+            with self.assertRaisesRegex(RuntimeError, "final acknowledgement"):
+                BATCH.apply(self.vault, bundle, self.config, review["planHash"], "wiki-ledger")
+        finally:
+            BATCH._save_journal = original
+        journal = next(json.loads(path.read_text()) for path in (self.vault / ".vault-meta/lifecycle/batches").glob("*.json")
+                       if json.loads(path.read_text())["authority"] == "wiki-ledger")
+        recovered = BATCH.recover(self.vault, journal["batchId"], self.config)
+        self.assertEqual(recovered["phase"], "complete")
+
+    def test_generic_baseline_noop_and_completed_replay_recheck_latest_page_receipt(self):
+        page = "---\ntype: note\n---\n\n# No-op\n"
+        page_result = self.page_batch(page, page)
+        bundle = self.baseline_bundle(page_result, "no-change")
+        review = BATCH.inspect(self.vault, bundle, self.config, "wiki-ledger")
+        BATCH.apply(self.vault, bundle, self.config, review["planHash"], "wiki-ledger")
+        baseline_path = self.vault / bundle["operations"][0]["path"]
+        current = json.loads(baseline_path.read_bytes())
+        raw = baseline_path.read_bytes()
+        no_op = {"version": 1, "operations": [LEDGER.operation(current, raw)]}
+        no_op_review = BATCH.inspect(self.vault, no_op, self.config, "wiki-ledger")
+        no_op_applied = BATCH.apply(self.vault, no_op, self.config, no_op_review["planHash"], "wiki-ledger")
+        page_path = self.vault / "wiki/page.md"
+        page_path.write_text(page + "\nDrift\n", encoding="utf-8")
+        with self.assertRaisesRegex(BATCH.BatchError, "page bytes"):
+            BATCH.recover(self.vault, no_op_applied["batchId"], self.config)
+        with self.assertRaisesRegex(BATCH.BatchError, "page bytes"):
+            BATCH.apply(self.vault, no_op, self.config, no_op_review["planHash"], "wiki-ledger")
+        with self.assertRaisesRegex(BATCH.BatchError, "page bytes"):
+            BATCH.inspect(self.vault, no_op, self.config, "wiki-ledger")
 
     def test_generic_batch_rejects_invalid_receipts_hashes_outcomes_and_authorities(self):
         old = "---\ntype: note\n---\n\n# Before\n"

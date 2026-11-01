@@ -209,6 +209,89 @@ class SourceBaselineHelperTests(unittest.TestCase):
         unrelated = self.observe(locator="selected.txt")["observation"]["gitContext"]
         self.assertEqual(unrelated["selectedBytes"], "equal")
 
+    def test_nested_mapped_root_preserves_repository_root_git_path(self):
+        repository = self.root / "repository"
+        nested = repository / "docs"
+        nested.mkdir(parents=True)
+        selected = nested / "x.bin"
+        selected.write_bytes(b"committed bytes")
+        result = subprocess.run(["git", "init", "--quiet", "-b", "main", str(repository)], capture_output=True)
+        if result.returncode:
+            self.skipTest("Git unavailable")
+        def git(*args):
+            return subprocess.run(["git", "-C", str(repository), *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git("config", "user.email", "fixture@example.test")
+        git("config", "user.name", "Disposable Fixture")
+        git("add", "docs/x.bin")
+        git("commit", "-m", "fixture nested file")
+        captured = git("rev-parse", "HEAD")
+        context = BASELINES.observe_source("root-notes", "asset-nested", nested, "x.bin",
+                                           "2025-01-02T03:04:05Z")["observation"]["gitContext"]
+        self.assertEqual(context["head"], captured)
+        self.assertEqual(context["repositoryLocator"], "docs/x.bin")
+        self.assertEqual(context["selectedBytes"], "equal")
+        selected.write_bytes(b"dirty nested bytes")
+        dirty = BASELINES.observe_source("root-notes", "asset-nested", nested, "x.bin",
+                                         "2025-01-03T03:04:05Z")["observation"]["gitContext"]
+        self.assertEqual(dirty["head"], captured)
+        self.assertEqual(dirty["repositoryLocator"], "docs/x.bin")
+        self.assertEqual(dirty["selectedBytes"], "different")
+
+    def test_partial_clone_git_evidence_never_lazily_fetches(self):
+        repository = self.root / "promisor-source"
+        repository.mkdir()
+        def run(args, env=None, check=True):
+            return subprocess.run(args, capture_output=True, text=True, env=env, check=check)
+        initialized = run(["git", "init", "--quiet", "-b", "main", str(repository)], check=False)
+        if initialized.returncode:
+            self.skipTest("Git unavailable")
+        source_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        run(["git", "-C", str(repository), "config", "user.email", "fixture@example.test"], env=source_env)
+        run(["git", "-C", str(repository), "config", "user.name", "Disposable Fixture"], env=source_env)
+        run(["git", "-C", str(repository), "config", "uploadpack.allowFilter", "true"], env=source_env)
+        committed = repository / "selected.bin"
+        committed.write_bytes(b"same selected content")
+        run(["git", "-C", str(repository), "add", "selected.bin"], env=source_env)
+        run(["git", "-C", str(repository), "commit", "-m", "fixture selected blob"], env=source_env)
+        commit = run(["git", "-C", str(repository), "rev-parse", "HEAD"], env=source_env).stdout.strip()
+        clone = self.root / "partial-clone"
+        cloned = run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout",
+                      Path(repository).as_uri(), str(clone)], env=source_env, check=False)
+        if cloned.returncode:
+            self.skipTest("Git local file promisor filtering unavailable")
+        clone_env = {**source_env, "GIT_NO_LAZY_FETCH": "1"}
+        missing = run(["git", "-C", str(clone), "cat-file", "-e", f"{commit}:selected.bin"],
+                      env=clone_env, check=False)
+        if missing.returncode == 0:
+            self.skipTest("Git clone did not leave the selected blob missing")
+        # A working-tree copy can exist even when the captured commit blob is absent.
+        selected = clone / "selected.bin"
+        selected.write_bytes(b"same selected content")
+        def object_snapshot():
+            objects = clone / ".git/objects"
+            return {path.relative_to(objects).as_posix(): (path.stat().st_size, path.read_bytes())
+                    for path in objects.rglob("*") if path.is_file()}
+        before = object_snapshot()
+        prior_env = os.environ.get("GIT_NO_LAZY_FETCH")
+        os.environ["GIT_NO_LAZY_FETCH"] = "0"
+        try:
+            result = BASELINES.observe_source("root-notes", "asset-partial", clone, "selected.bin",
+                                              "2025-01-02T03:04:05Z")
+            history = BASELINES.history_availability(clone, commit)
+        finally:
+            if prior_env is None:
+                os.environ.pop("GIT_NO_LAZY_FETCH", None)
+            else:
+                os.environ["GIT_NO_LAZY_FETCH"] = prior_env
+        after = object_snapshot()
+        self.assertEqual(after, before)
+        context = result["observation"]["gitContext"]
+        self.assertEqual(context["selectedBytes"], "unknown")
+        self.assertNotIn(context["selectedBytes"], {"equal", "untracked"})
+        self.assertEqual(history["status"], "available-ancestor")
+        self.assertEqual(object_snapshot(), before)
+
     def test_git_uses_captured_head_if_head_advances_mid_collection(self):
         captured = self._committed_repo()
         (self.root / "selected.txt").write_bytes(b"committed bytes")

@@ -168,7 +168,11 @@ def _open_selected(root: Path, relative: PurePosixPath,
 
 
 def _git_run(root: Path, args: list[str], *, limit: int = _GIT_OUTPUT_LIMIT) -> tuple[int, bytes]:
-    process = subprocess.Popen(["git", "-C", str(root), *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    env = os.environ.copy()
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    process = subprocess.Popen(["git", "-C", str(root), *args], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, env=env)
     assert process.stdout is not None
     output = bytearray()
     try:
@@ -215,7 +219,8 @@ def _git_context(root: Path, relative: PurePosixPath, content_hash: str,
         if _relative_locator(repo_relative).as_posix() != repo_relative:
             return {**unavailable, "limitation": "selected Git path is not portable"}
         context = {"head": head, "repositoryLocator": repo_relative}
-        tree_status, tree_data = _git_run(root, ["ls-tree", "-r", "--name-only", "-z", head, "--", f":(literal){repo_relative}"])
+        tree_status, tree_data = _git_run(repo, ["ls-tree", "-r", "--full-tree", "--name-only", "-z",
+                                                  head, "--", f":(top,literal){repo_relative}"])
         if tree_status:
             return {**context, "selectedBytes": "unknown", "limitation": "recorded HEAD tree is unavailable"}
         tree_paths = tree_data.split(b"\0")
@@ -223,7 +228,7 @@ def _git_context(root: Path, relative: PurePosixPath, content_hash: str,
             context["selectedBytes"] = "untracked"
             _assert_mapping(mapping)
             return context
-        blob_status, blob = _git_run(root, ["cat-file", "blob", f"{head}:{repo_relative}"], limit=_GIT_BLOB_LIMIT)
+        blob_status, blob = _git_run(repo, ["cat-file", "blob", f"{head}:{repo_relative}"], limit=_GIT_BLOB_LIMIT)
         if blob_status:
             return {**context, "selectedBytes": "unknown", "limitation": "selected blob unavailable at recorded HEAD"}
         context["selectedBytes"] = "equal" if hashlib.sha256(blob).hexdigest() == content_hash.removeprefix("sha256:") else "different"

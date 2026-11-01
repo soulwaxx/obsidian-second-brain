@@ -341,7 +341,10 @@ def _page_batch_evidence(vault: Path, batch_id: str, page: str, page_hash: str, 
 
 def _validate_ledger_operations(vault: Path, operations: list[dict], *, publication: bool = False,
                                 original_preimages: dict[str, bytes | None] | None = None,
-                                check_current_asset_locator: bool = True) -> None:
+                                check_current_asset_locator: bool = True,
+                                current_batch_id: str | None = None) -> None:
+    ensure_no_unfinished_ledger_publication(vault, set(), except_batch_id=current_batch_id,
+                                            operations=operations)
     ledger = load_source("wiki_batch_evidence_ledger", str(Path(__file__).with_name("evidence_ledger.py")))
     records = {key: value for key, (value, _raw) in _ledger_snapshot(vault).items()}
     for operation in operations:
@@ -430,9 +433,14 @@ def _validate_ledger_operations(vault: Path, operations: list[dict], *, publicat
                     raise BatchError("baseline entry source identity, locator, or content hash is inconsistent")
                 if observation["rootId"] != asset["rootId"]:
                     raise BatchError("baseline observation asset/root identity mismatch")
-            for entry in added:
-                _page_batch_evidence(vault, entry["pageBatchId"], record["page"],
-                                     entry["pageHash"].removeprefix("sha256:"), entry["outcome"])
+            if added:
+                for entry in added:
+                    _page_batch_evidence(vault, entry["pageBatchId"], record["page"],
+                                         entry["pageHash"].removeprefix("sha256:"), entry["outcome"])
+            else:
+                latest = record["history"][-1]
+                _page_batch_evidence(vault, latest["pageBatchId"], record["page"],
+                                     latest["pageHash"].removeprefix("sha256:"), latest["outcome"])
         records[record["id"]] = record
 
 
@@ -570,8 +578,45 @@ def completed_cli_replay(vault: Path, cli_plan_hash: str, stable_binding: dict,
         os.close(dir_fd)
 
 
-def ensure_no_unfinished_ledger_publication(vault: Path, record_ids: set[str]) -> None:
+def _ledger_dependency_ids(vault: Path, operations: list[dict], seeds: set[str] | None = None) -> set[str]:
+    records = {key: value for key, (value, _raw) in _ledger_snapshot(vault).items()}
+    ids = set(seeds or ())
+    for operation in operations:
+        try:
+            record = json.loads(operation["content"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise BatchError("cannot determine ledger batch dependencies") from exc
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            raise BatchError("cannot determine ledger batch dependencies")
+        ids.add(record["id"])
+        records[record["id"]] = record
+    changed = True
+    while changed:
+        before = len(ids)
+        for record in records.values():
+            kind = record.get("kind")
+            if kind == "observation":
+                if (record.get("id") in ids or record.get("assetId") in ids
+                        or record.get("sourceId") in ids):
+                    ids.update((record.get("id"), record.get("assetId"), record.get("sourceId")))
+            elif kind == "baseline":
+                history = record.get("history", [])
+                related = {record.get("id"), record.get("assetId")}
+                for entry in history if isinstance(history, list) else ():
+                    if isinstance(entry, dict):
+                        related.update((entry.get("observationId"), entry.get("sourceId")))
+                if ids & related:
+                    ids.update(related)
+        ids.discard(None)
+        changed = len(ids) != before
+    return ids
+
+
+def ensure_no_unfinished_ledger_publication(vault: Path, record_ids: set[str],
+                                            *, except_batch_id: str | None = None,
+                                            operations: list[dict] | None = None) -> None:
     vault = Path(vault).resolve(strict=True)
+    record_ids = _ledger_dependency_ids(vault, operations or [], record_ids)
     directory = vault / ".vault-meta/lifecycle/batches"
     try:
         dir_fd = LIFECYCLE.secure_dir(directory, create=False)
@@ -590,9 +635,10 @@ def ensure_no_unfinished_ledger_publication(vault: Path, record_ids: set[str]) -
                 journal = _load_journal(vault, name[:-5])
             except (OSError, ValueError, TypeError, BatchError) as exc:
                 raise BatchError(f"batch history is incomplete or unsafe at {name}: {exc}") from exc
-            if journal["authority"] != "wiki-ledger" or journal["phase"] in {"complete", "rolled-back"}:
+            if (journal["authority"] != "wiki-ledger" or journal["phase"] in {"complete", "rolled-back"}
+                    or journal["batchId"] == except_batch_id):
                 continue
-            touched = {PurePosixPath(op["path"]).stem for op in journal["bundle"]["operations"]}
+            touched = _ledger_dependency_ids(vault, journal["bundle"]["operations"])
             if touched & record_ids:
                 raise BatchError("a relevant wiki-ledger batch is unfinished; recover or roll it back first")
     finally:
@@ -837,7 +883,8 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
         if authority == "wiki-ledger":
             _validate_ledger_operations(vault, [journal["bundle"]["operations"][entry["index"]]],
                                         publication=True,
-                                        original_preimages={entry["path"]: base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None})
+                                        original_preimages={entry["path"]: base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None},
+                                        current_batch_id=journal["batchId"])
         if entry["state"] == "published":
             path, parent, name = _target(vault, entry["path"], authority, allow_missing=True)
             try:
@@ -880,7 +927,8 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
                 if authority == "wiki-ledger":
                     _validate_ledger_operations(vault, [journal["bundle"]["operations"][entry["index"]]],
                                                 publication=True,
-                                                original_preimages={entry["path"]: base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None})
+                                                original_preimages={entry["path"]: base64.b64decode(entry["beforeContent"]) if entry["beforeContent"] is not None else None},
+                                                current_batch_id=journal["batchId"])
                 latest = _read_at(parent, name)
                 if (sha(latest) if latest is not None else None) != entry["beforeHash"]:
                     raise BatchError(f"target changed immediately before publication: {entry['path']}")
@@ -1001,7 +1049,8 @@ def recover(vault: Path, batch_id: str, config: Path | None = None) -> dict:
         _preflight_recovery(vault, journal)
         if journal["authority"] == "wiki-ledger":
             _validate_ledger_operations(vault, journal["bundle"]["operations"], publication=True,
-                                        original_preimages=_journal_preimages(journal))
+                                        original_preimages=_journal_preimages(journal),
+                                        current_batch_id=journal["batchId"])
         for op in journal["bundle"]["operations"]:
             _validate_draft(vault, op, journal["authority"])
         _publish(vault, journal, selected_config=approved_config)
