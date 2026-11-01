@@ -89,7 +89,7 @@ jobs:
           node-version: '24'
           check-latest: true
           package-manager-cache: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15'
           check-latest: true
@@ -109,14 +109,14 @@ jobs:
       - name: Install publishing CLI
         env:
           # renovate: datasource=npm depName=npm
-          NPM_VERSION: '11.21.1'
+          NPM_VERSION: '12.2.1'
         run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-fund
       - name: Install agent CLIs for prepared-artifact checks
         env:
           # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
           PI_VERSION: '1.4.0'
           # renovate: datasource=npm depName=@anthropic-ai/claude-code
-          CLAUDE_VERSION: '2.1.308'
+          CLAUDE_VERSION: '2.1.316'
         run: |
           npm install --global --strict-allow-scripts \
             --allow-scripts=@anthropic-ai/claude-code,@google/genai,protobufjs \
