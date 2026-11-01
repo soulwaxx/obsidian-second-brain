@@ -464,13 +464,65 @@ try {
   assert.equal(repeatedBaseline.noop, true, "exact baseline repeat is a no-op");
   assert.equal(baselineCli("baseline-apply", "--selection", reconciliationSelection,
     "--plan-hash", repeatedBaseline.planHash).noop, true);
-  const historyResult = baselineCli("source-history", "--observation-id", observationRecord.id,
+  const baselineRecordPath = path.join(baselineVault, "wiki/meta/evidence",
+    fs.readdirSync(path.join(baselineVault, "wiki/meta/evidence")).find((name) => {
+      const record = JSON.parse(fs.readFileSync(path.join(baselineVault, "wiki/meta/evidence", name), "utf8"));
+      return record.kind === "baseline";
+    }));
+  const firstBaseline = JSON.parse(fs.readFileSync(baselineRecordPath, "utf8"));
+  const firstHistory = firstBaseline.history.slice();
+
+  fs.writeFileSync(baselineSource, Buffer.from("Second selected source version.\n"));
+  fs.writeFileSync(observationSelection, JSON.stringify({ version: 1, rootId: "packed-root",
+    assetId: "asset-packed", locator: "selected.bin", observedAt: "2026-06-03T12:00:00Z" }));
+  const secondObservationReview = baselineCli("observe-inspect", "--selection", observationSelection,
     "--source-root", baselineSourceRoot);
-  assert.equal(historyResult.observationId, observationRecord.id);
+  assert.equal(baselineCli("observe-apply", "--selection", observationSelection,
+    "--source-root", baselineSourceRoot, "--plan-hash", secondObservationReview.planHash).phase, "complete");
+  const secondObservationRecord = fs.readdirSync(path.join(baselineVault, "wiki/meta/evidence"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(baselineVault, "wiki/meta/evidence", name), "utf8")))
+    .find((record) => record.kind === "observation" && record.observedAt === "2026-06-03T12:00:00Z");
+  const revisedPageBytes = Buffer.from("---\ntype: Note\n---\nSelected page revised.\r\n");
+  const revisedPageBundle = evidenceBundle("baseline-page-update", [{
+    path: "wiki/selected.md", expectedHash: evidenceHash(baselinePageBytes), content: revisedPageBytes.toString("utf8"),
+  }]);
+  const beforeRevisedPagePreview = baselineSnapshot();
+  const revisedPageReview = baselineCli("batch-inspect", "--vault", baselineVault, "--bundle", revisedPageBundle,
+    "--authority", "wiki-page");
+  assert.equal(baselineSnapshot(), beforeRevisedPagePreview, "updated page preview must remain read-only");
+  const revisedPageReceipt = baselineCli("batch-apply", "--vault", baselineVault, "--bundle", revisedPageBundle,
+    "--authority", "wiki-page", "--plan-hash", revisedPageReview.planHash);
+  assert.equal(revisedPageReceipt.phase, "complete");
+
+  fs.writeFileSync(reconciliationSelection, JSON.stringify({ version: 1, reconciliations: [{
+    page: "wiki/selected.md", observationId: secondObservationRecord.id, pageBatchId: revisedPageReceipt.batchId,
+    reconciledAt: "2026-06-04T13:00:00Z", outcome: "updated",
+  }] }));
+  const beforeSecondBaselinePreview = baselineSnapshot();
+  const secondBaselineReview = baselineCli("baseline-inspect", "--selection", reconciliationSelection);
+  assert.equal(baselineSnapshot(), beforeSecondBaselinePreview, "updated baseline preview must remain read-only");
+  assert.equal(baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", secondBaselineReview.planHash).phase, "complete");
+  const secondBaseline = JSON.parse(fs.readFileSync(baselineRecordPath, "utf8"));
+  assert.equal(secondBaseline.id, firstBaseline.id, "page/asset baseline identity remains stable across updates");
+  assert.deepEqual(secondBaseline.history.slice(0, firstHistory.length), firstHistory, "old history is retained exactly");
+  assert.equal(secondBaseline.history.length, 2);
+  assert.equal(secondBaseline.history[1].outcome, "updated");
+  const repeatedUpdate = baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", secondBaselineReview.planHash);
+  assert.equal(repeatedUpdate.noop, true, "approved updated reconciliation retry is idempotent");
+  const updatedNoop = baselineCli("baseline-inspect", "--selection", reconciliationSelection);
+  assert.equal(updatedNoop.noop, true, "updated reconciliation repeat is a verified no-op");
+  assert.equal(baselineCli("baseline-apply", "--selection", reconciliationSelection,
+    "--plan-hash", updatedNoop.planHash).noop, true);
+
+  const historyResult = baselineCli("source-history", "--observation-id", secondObservationRecord.id,
+    "--source-root", baselineSourceRoot);
+  assert.equal(historyResult.observationId, secondObservationRecord.id);
   assert.equal(historyResult.status, "no-commit-recorded");
-  const baselineReport = baselineCli("evidence-report", "--vault", baselineVault, "--as-of", "2026-06-02");
-  assert.equal(baselineReport.ledgerSummary.observations, 1);
-  assert.equal(baselineReport.pages.find((item) => item.path === "wiki/selected.md").baselines[0].latest.outcome, "no-change");
+  const baselineReport = baselineCli("evidence-report", "--vault", baselineVault, "--as-of", "2026-06-05");
+  assert.equal(baselineReport.ledgerSummary.observations, 2);
+  assert.equal(baselineReport.pages.find((item) => item.path === "wiki/selected.md").baselines[0].latest.outcome, "updated");
 
   const hook = path.join(installed, "hooks/obsidian-session.sh");
   const middleware = path.join(installed, "skills/wiki/scripts/okf_mw");

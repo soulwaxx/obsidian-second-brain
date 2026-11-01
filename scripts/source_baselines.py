@@ -390,11 +390,11 @@ def baseline_bundle(vault: Path, selection: dict[str, Any]) -> dict[str, Any]:
         relevant_record_ids.update({baseline_id, observation["id"], observation["sourceId"], asset_pair[0]["id"]})
         existing = records.get(baseline_id)
         if existing:
-            # Validate every existing history link before treating this selection as an idempotent retry.
-            batch._validate_ledger_operations(
-                vault, [_LEDGER.operation(existing[0], existing[1])], publication=True)
             history = existing[0]["history"]
             if entry in history:
+                # Only an unchanged retry must validate the latest historical page against current bytes.
+                batch._validate_ledger_operations(
+                    vault, [_LEDGER.operation(existing[0], existing[1])], publication=True)
                 continue
             baseline = _LEDGER.merge_record(existing[0], {"history": history + [entry]})
             expected = batch.sha(existing[1])
