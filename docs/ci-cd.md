@@ -147,7 +147,10 @@ selection and release notes, and exercises npm preparation against disposable
 manifests without publishing. Dependency lifecycle scripts are disabled during
 installation; the owned package's version hook still runs during preparation.
 
-CI and release use the same pinned npm CLI. Archive-result parsing accepts both
+CI and release use the same pinned npm 12.2.1 CLI. The latest compatible
+`@semantic-release/npm` plugin still requires npm 11.x and keeps its own locked
+11.21.1 copy; do not force an incompatible major override to hide audit findings.
+Archive-result parsing accepts both
 npm 11's array output and npm 12's package-name-keyed output; release, packed-runtime,
 and isolated plugin-install checks all use the same tested parser. The disposable
 loopback registry fixture explicitly permits its tarball downloads for npm 12;
