@@ -28,7 +28,6 @@ finally:
 ROOT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _SOURCE_ID = re.compile(r"source-[0-9a-f]{24}")
 _LEGACY_SOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-_CLAIM_ID = re.compile(r"claim-[a-z0-9][a-z0-9._-]{0,121}")
 _RESERVED = {"index.md", "log.md", "_plan.md"}
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -566,7 +565,8 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             page["reviewReasons"].append("invalid-page-claims")
         else:
             for claim_id in claim_refs:
-                if not isinstance(claim_id, str) or not _CLAIM_ID.fullmatch(claim_id):
+                if (not isinstance(claim_id, str) or not claim_id.startswith("claim-")
+                        or not LEDGER._identifier(claim_id)):
                     issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-claim-reference"})
                     page["reviewReasons"].append("invalid-page-claim-reference")
                 else:
@@ -591,9 +591,8 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             has_resource = isinstance(ref, dict) and "resource" in ref
             resource = ref.get("resource") if isinstance(ref, dict) else ref if isinstance(ref, str) else None
             canonical_identity = isinstance(identity, str) and bool(_SOURCE_ID.fullmatch(identity))
-            legacy_identity = (isinstance(identity, str) and bool(_LEGACY_SOURCE_ID.fullmatch(identity))
-                               and not identity.startswith("source-"))
-            if has_identity and not canonical_identity and not legacy_identity:
+            legacy_identity = isinstance(identity, str) and not canonical_identity
+            if has_identity and not isinstance(identity, str):
                 issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-source-id"})
                 page["sourceReferences"].append({"id": None, "state": "invalid-reference", "reason": "invalid-page-source-id"})
             elif has_resource and not isinstance(resource, str):
@@ -608,8 +607,18 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
                 issues.append({"path": page_path, "id": identity, "state": "invalid", "reason": "page-source-resource-mismatch"})
                 page["sourceReferences"].append({"id": identity, "state": "invalid-reference", "reason": "page-source-resource-mismatch"})
             elif legacy_identity:
-                page["sourceReferences"].append({"id": identity, "state": "external-or-legacy-unchecked"})
+                reference = {"state": "external-or-legacy-unchecked"}
+                if _LEGACY_SOURCE_ID.fullmatch(identity):
+                    reference["id"] = identity
+                page["sourceReferences"].append(reference)
             elif canonical_identity:
+                if identity in bad_graph:
+                    reason = bad_graph[identity]
+                    page["sourceReferences"].append({"id": identity, "state": "unsafe-unresolvable", "reason": reason})
+                    if page["state"] in {"current", "affected"}:
+                        page["state"] = "unsafe-unresolvable"
+                    page["reviewReasons"].append(reason)
+                    continue
                 linked = observations_for_source.get(identity, [])
                 if not linked:
                     page["sourceReferences"].append({"id": identity, "state": "unchecked", "reason": "no-recorded-observation"})
@@ -696,10 +705,15 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
                 source = sources.get(source_id)
                 linked = observations_for_source.get(source_id, [])
                 if source is None or source_id in bad_graph:
-                    evidence.append({"sourceId": source_id, "relation": relation, "state": "missing-source-record" if source is None else "unsafe-unresolvable", "reason": "broken-claim-reference"})
+                    reason = "broken-claim-reference" if source is None else bad_graph[source_id]
+                    evidence.append({"sourceId": source_id, "relation": relation,
+                                     "state": "missing-source-record" if source is None else "unsafe-unresolvable",
+                                     "reason": reason})
                     if source is None:
                         issues.append({"id": claim["id"], "state": "invalid", "reason": "missing-claim-source"})
-                    review_reasons.append("broken-claim-reference")
+                        review_reasons.append("broken-claim-reference")
+                    else:
+                        review_reasons.append("source-" + reason)
                     continue
                 if not linked:
                     evidence.append({"sourceId": source_id, "relation": relation, "state": "unchecked", "reason": "no-recorded-observation"})
@@ -857,8 +871,8 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
                  for item in selected.values() if item.get("state") == "unchecked"]
     unsafe_states = {"unsafe-unresolvable", "operational-error", "permission-denied", "path-collision", "unstable"}
     incomplete = (bool(issues)
-                  or any(item.get("state") in unsafe_states or item.get("state") == "unchecked"
-                         and item.get("reason") not in {"unselected-root", "external-or-unmapped-source"}
+                  or any(item.get("state") in unsafe_states
+                         or item.get("id") in selected_assets and item.get("state") == "unchecked"
                          for item in selected.values())
                   or any(page.get("state") in unsafe_states for page in pages.values()))
     ordered_assets = sorted(selected.values(), key=lambda x: (x.get("rootId") or "", x["id"]))

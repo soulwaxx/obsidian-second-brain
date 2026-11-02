@@ -161,6 +161,8 @@ def _inspect_selected(root: Path, relative: PurePosixPath,
         try:
             source_fd = os.open(relative.name, file_flags, dir_fd=fd)
         except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("selected source changed while being observed") from exc
             raise SourceBaselineError(f"cannot open selected source: {exc}") from exc
         before = os.fstat(source_fd)
         if not stat.S_ISREG(before.st_mode) or _identity(before) != _identity(before_name):

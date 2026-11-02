@@ -287,6 +287,21 @@ class SourceDriftTests(unittest.TestCase):
                          ("support", "changed", "recorded-source-snapshot-differs"))
         self.assertFalse(rows["claim-one"]["reviewRequired"])
 
+    def test_unobserved_source_only_records_do_not_fail_selected_asset_check(self):
+        asset, *_ = self.setup_asset()
+        root_only = self.save(LEDGER.make_source("local:root-notes/legacy.txt", b"legacy"))
+        other_root = self.save(LEDGER.make_source("local:root-other/other.txt", b"other"))
+        external = self.save(LEDGER.make_source("https://example.test/reference", b"external"))
+        result = self.run_check()
+        self.assertTrue(result["complete"])
+        asset_row = next(row for row in result["assets"] if row["id"] == asset["id"])
+        self.assertEqual(asset_row["state"], "unchanged")
+        rows = {row["id"]: row for row in result["assets"]}
+        for source in (root_only, other_root, external):
+            self.assertEqual(rows[source["id"]]["state"], "unchecked")
+        self.assertFalse((self.source / "legacy.txt").exists())
+        self.assertFalse((self.source / "other.txt").exists())
+
     def test_external_legacy_refs_and_unrecorded_files_remain_unchecked(self):
         self.setup_asset()
         (self.source / "notes/not-approved.txt").write_bytes(b"must not discover")
@@ -298,6 +313,66 @@ class SourceDriftTests(unittest.TestCase):
                          ["external-or-legacy-unchecked", "external-or-legacy-unchecked"])
         self.assertTrue(result["complete"])
         self.assertNotIn("not-approved.txt", json.dumps(result))
+
+    def test_invalid_source_identity_propagates_to_explicit_page_and_claim_edges(self):
+        self.setup_asset()
+        source = LEDGER.make_source("local:root-notes/not-inspected.txt", b"SYNTHETIC_SOURCE_CONTENT")
+        forged_id = "source-" + "f" * 24
+        source["id"] = forged_id
+        self.save(source)
+        support = self.save(LEDGER.make_claim("claim-forged-support", "SYNTHETIC_CLAIM_STATEMENT support",
+                                              support=[forged_id]))
+        contradiction = self.save(LEDGER.make_claim("claim-forged-contradiction", "SYNTHETIC_CLAIM_STATEMENT contradiction",
+                                                    contradictions=[forged_id]))
+        page = self.vault / "wiki/forged-source.md"
+        page.write_text("---\ntype: Note\nclaims: [claim-forged-support, claim-forged-contradiction]\nsources:\n  - id: " + forged_id + "\n---\nSynthetic page\n",
+                        encoding="utf-8")
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        result = subprocess.run([sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                                 "--source-root", str(self.source), "--json"], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        page_row = next(row for row in report["pages"] if row["path"] == "wiki/forged-source.md")
+        self.assertEqual(page_row["state"], "unsafe-unresolvable")
+        self.assertEqual(page_row["sourceReferences"][0]["state"], "unsafe-unresolvable")
+        self.assertEqual(page_row["sourceReferences"][0]["reason"], "invalid-source-identity")
+        self.assertIn("invalid-source-identity", page_row["reviewReasons"])
+        claims = {row["id"]: row for row in report["claims"]}
+        self.assertEqual(claims[support["id"]]["evidence"][0]["reason"], "invalid-source-identity")
+        self.assertEqual(claims[contradiction["id"]]["evidence"][0]["reason"], "invalid-source-identity")
+        self.assertEqual(claims[support["id"]]["pages"], ["wiki/forged-source.md"])
+        self.assertEqual(claims[contradiction["id"]]["pages"], ["wiki/forged-source.md"])
+        self.assertEqual(next(row for row in report["pages"] if row["path"] == "wiki/claim.md")["state"], "current")
+        self.assertEqual(next(row for row in report["assets"] if row["id"] == "asset-one")["state"], "unchanged")
+        self.assertNotIn("SYNTHETIC_SOURCE_CONTENT", result.stdout + result.stderr)
+        self.assertNotIn("SYNTHETIC_CLAIM_STATEMENT", result.stdout + result.stderr)
+
+    def test_ledger_valid_claim_identifiers_are_accepted_in_page_references(self):
+        _asset, source, *_ = self.setup_asset()
+        identities = ["claim-", "claim-_test", "claim-.dot", "claim--dash", "claim-" + "a" * 122]
+        for identity in identities:
+            self.save(LEDGER.make_claim(identity, "Synthetic schema-valid claim",
+                                        support=[source["id"]] if identity == "claim-_test" else []))
+        page = self.vault / "wiki/schema-valid-claims.md"
+        page.write_text("---\ntype: Note\nclaims: " + json.dumps(identities) + "\n---\nSynthetic page\n",
+                        encoding="utf-8")
+        invalid = self.vault / "wiki/invalid-claim-reference.md"
+        invalid.write_text("---\ntype: Note\nclaims: [not-a-claim]\n---\nSynthetic page\n", encoding="utf-8")
+        (self.source / "notes/a.txt").write_bytes(b"v2")
+        result = self.run_check()
+        pages = {row["path"]: row for row in result["pages"]}
+        self.assertEqual(pages["wiki/schema-valid-claims.md"]["claims"], sorted(identities))
+        self.assertEqual(pages["wiki/schema-valid-claims.md"]["state"], "affected")
+        linked_claim = next(row for row in result["claims"] if row["id"] == "claim-_test")
+        self.assertEqual(linked_claim["pages"], ["wiki/schema-valid-claims.md"])
+        self.assertTrue(linked_claim["reviewRequired"])
+        self.assertEqual(linked_claim["evidence"][0]["state"], "changed")
+        self.assertTrue(any(issue.get("path") == "wiki/invalid-claim-reference.md"
+                            and issue["reason"] == "invalid-page-claim-reference" for issue in result["issues"]))
+        self.assertFalse(result["complete"])
 
     def test_portable_source_locator_uses_encoded_path_segments(self):
         _asset, source, _observation, _baseline, _page = self.setup_asset(locator="notes/a b#1.txt")
@@ -665,6 +740,51 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(pages["wiki/claim.md"]["claims"], [])
         self.assertFalse(result["complete"])
 
+    def test_source_removed_between_stat_and_open_is_unstable_in_cli_report(self):
+        _asset, source, *_ = self.setup_asset(content=b"open-race-payload", claims=["claim-open-race"])
+        self.save(LEDGER.make_claim("claim-open-race", "Synthetic open-race claim", support=[source["id"]]))
+        target = self.source / "notes/a.txt"
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        bootstrap = f"""
+import runpy, sys
+from pathlib import Path
+sys.path.insert(0, {str(ROOT / 'scripts')!r})
+import module_loading
+real_load = module_loading.load_source
+def hooked_load(name, path):
+    module = real_load(name, path)
+    if name == "obsidian_cli_source_drift":
+        baseline = module.BASELINES
+        real_open = baseline.os.open
+        fired = False
+        def open_spy(path, *args, **kwargs):
+            nonlocal fired
+            if path == "a.txt" and kwargs.get("dir_fd") is not None and not fired:
+                fired = True
+                Path({str(target)!r}).unlink()
+            return real_open(path, *args, **kwargs)
+        baseline.os.open = open_spy
+    return module
+module_loading.load_source = hooked_load
+sys.argv = [{str(CLI)!r}, "source-check", "--root-id", "root-notes", "--source-root", {str(self.source)!r}, "--json"]
+runpy.run_path({str(CLI)!r}, run_name="__main__")
+"""
+        result = subprocess.run([sys.executable, "-c", bootstrap], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["snapshotValidity"], "unstable")
+        asset = next(row for row in report["assets"] if row["id"] == "asset-one")
+        self.assertEqual(asset["state"], "unstable")
+        page = next(row for row in report["pages"] if row["path"] == "wiki/claim.md")
+        self.assertEqual(page["state"], "unstable")
+        self.assertEqual(page["baselines"][0]["state"], "unstable")
+        claim = next(row for row in report["claims"] if row["id"] == "claim-open-race")
+        self.assertEqual(claim["evidence"][0]["state"], "unstable")
+        self.assertNotIn(str(self.source), result.stdout + result.stderr)
+
     def test_source_removed_after_hash_starts_is_unstable_in_cli_report(self):
         _asset, source, *_ = self.setup_asset(content=b"race-source-payload", claims=["claim-source-race"])
         self.save(LEDGER.make_claim("claim-source-race", "Synthetic race claim", support=[source["id"]]))
@@ -714,6 +834,18 @@ runpy.run_path({str(CLI)!r}, run_name="__main__")
         claim = next(row for row in report["claims"] if row["id"] == "claim-source-race")
         self.assertEqual(claim["evidence"][0]["state"], "unstable")
         self.assertNotIn(str(self.source), result.stdout + result.stderr)
+
+    def test_source_policy_legacy_ids_are_unchecked_with_or_without_resource(self):
+        self.setup_asset()
+        page = self.vault / "wiki/source-policy.md"
+        page.write_text("---\ntype: Note\nsources:\n  - id: source-policy\n  - id: source-policy\n    resource: https://example.test/policy\n  - id: citation with spaces\n---\nSynthetic body\n",
+                        encoding="utf-8")
+        result = self.run_check()
+        report_page = next(row for row in result["pages"] if row["path"] == "wiki/source-policy.md")
+        self.assertEqual([reference["state"] for reference in report_page["sourceReferences"]],
+                         ["external-or-legacy-unchecked"] * 3)
+        self.assertFalse(any(reference.get("id") == "citation with spaces" for reference in report_page["sourceReferences"]))
+        self.assertTrue(result["complete"])
 
     def test_missing_claim_does_not_downgrade_an_unstable_page(self):
         self.setup_asset(claims=["claim-missing"])
