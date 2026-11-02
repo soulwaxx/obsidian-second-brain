@@ -452,6 +452,7 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
     if not source_root.is_absolute():
         raise DriftInputError("--source-root must be an explicit absolute path")
     vault = Path(vault)
+    vault_mapping = BASELINES._mapping_snapshot(vault, strict_aliases=True)
     records, raw_ledger, issues = _load(vault)
     observations, bad_graph = _graph(records)
     issues.extend({"id": identity, "state": "invalid", "reason": reason} for identity, reason in sorted(bad_graph.items()))
@@ -874,6 +875,34 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             for item in selected.values():
                 if item.get("rootId") == root_id and item.get("state") not in {"unchecked", "unsafe-unresolvable"}:
                     item.update(state="unstable", reason=invalidation_reason)
+    vault_mapping_changed = False
+    try:
+        BASELINES._assert_mapping(vault_mapping, strict_aliases=True)
+    except (OSError, ValueError):
+        vault_mapping_changed = True
+        issues.append({"state": "unstable", "reason": "vault-mapping-changed-during-check"})
+    if vault_mapping_changed:
+        invalidation_reason = "vault-mapping-changed-during-check"
+        for item in selected.values():
+            if item.get("state") == "unchecked":
+                continue
+            item.update(state="unstable", reason=invalidation_reason)
+            for observation in item.get("observations", []):
+                observation.update(state="unstable", reason=invalidation_reason)
+        for page in pages.values():
+            page.update(state="unstable", reason=invalidation_reason)
+            page["reviewReasons"] = sorted(set(page["reviewReasons"] + [invalidation_reason]))
+            for baseline in page["baselines"]:
+                baseline.update(state="unstable", pageState="unstable", reason=invalidation_reason)
+            for reference in page["sourceReferences"]:
+                if reference.get("state") not in {"unchecked", "external-or-legacy-unchecked", "portable-source-unmapped", "ledger-source-unchecked"}:
+                    reference.update(state="unstable", reason=invalidation_reason)
+        for claim in claim_rows:
+            claim.update(state="unstable", reviewRequired=True, pageLinkState="unstable")
+            claim["reviewReasons"] = sorted(set(claim["reviewReasons"] + [invalidation_reason]))
+            for evidence in claim["evidence"]:
+                if evidence.get("state") != "unchecked":
+                    evidence.update(state="unstable", reason=invalidation_reason)
     snapshot_validity = "unstable" if any(issue.get("state") == "unstable" for issue in issues) or any(item.get("state") == "unstable" for item in selected.values()) or any(page.get("state") == "unstable" for page in pages.values()) else "stable"
     unchecked = [{"id": item["id"], "reason": item.get("reason", "unchecked")}
                  for item in selected.values() if item.get("state") == "unchecked"]

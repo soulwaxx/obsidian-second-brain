@@ -527,6 +527,139 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(invalid.returncode, 1)
         self.assertEqual(json.loads(invalid.stdout)["code"], "invalid-config")
 
+    def test_vault_ancestor_remap_invalidates_cli_comparisons(self):
+        _asset, source, *_ = self.setup_asset(claims=["claim-vault-map"])
+        self.save(LEDGER.make_claim("claim-vault-map", "Synthetic vault mapping claim", support=[source["id"]]))
+        container = self.base / "container"
+        container.mkdir()
+        nested_vault = container / "vault"
+        self.vault.rename(nested_vault)
+        self.vault = nested_vault
+        self.config.write_text(json.dumps({"vaultPath": str(nested_vault)}), encoding="utf-8")
+        old_container = self.base / "old-container"
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        bootstrap = f"""
+import runpy, sys
+from pathlib import Path
+sys.path.insert(0, {str(ROOT / 'scripts')!r})
+import module_loading
+real_load = module_loading.load_source
+def hooked_load(name, path):
+    module = real_load(name, path)
+    if name == "obsidian_cli_source_drift":
+        real_read = module._read_page
+        fired = False
+        def read_and_remap(vault, relative):
+            nonlocal fired
+            result = real_read(vault, relative)
+            if not fired:
+                fired = True
+                Path({str(container)!r}).rename({str(old_container)!r})
+                Path({str(container)!r}).mkdir()
+                Path({str(old_container / 'vault')!r}).rename({str(nested_vault)!r})
+            return result
+        module._read_page = read_and_remap
+    return module
+module_loading.load_source = hooked_load
+sys.argv = [{str(CLI)!r}, "source-check", "--root-id", "root-notes", "--source-root", {str(self.source)!r}, "--json"]
+runpy.run_path({str(CLI)!r}, run_name="__main__")
+"""
+        result = subprocess.run([sys.executable, "-c", bootstrap], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["snapshotValidity"], "unstable")
+        self.assertTrue(any(issue.get("reason") == "vault-mapping-changed-during-check"
+                            for issue in report["issues"]))
+        asset = next(row for row in report["assets"] if row["id"] == "asset-one")
+        self.assertEqual(asset["state"], "unstable")
+        self.assertTrue(all(observation["state"] == "unstable" for observation in asset["observations"]))
+        page = next(row for row in report["pages"] if row["path"] == "wiki/claim.md")
+        self.assertEqual(page["state"], "unstable")
+        self.assertTrue(all(baseline["state"] == baseline["pageState"] == "unstable"
+                            for baseline in page["baselines"]))
+        claim = next(row for row in report["claims"] if row["id"] == "claim-vault-map")
+        self.assertEqual(claim["state"], "unstable")
+        self.assertTrue(claim["reviewRequired"])
+        self.assertTrue(all(edge["state"] == "unstable" for edge in claim["evidence"]))
+        self.assertNotIn(str(self.base), result.stdout + result.stderr)
+
+    def test_vault_ancestor_guard_runs_without_pages_or_ledger(self):
+        container = self.base / "container"
+        container.mkdir()
+        nested_vault = container / "vault"
+        self.vault.rename(nested_vault)
+        self.vault = nested_vault
+        old_container = self.base / "old-container"
+        original_discover = DRIFT._discover_pages
+        calls = 0
+
+        def discover_then_remap(vault):
+            nonlocal calls
+            result = original_discover(vault)
+            calls += 1
+            if calls == 1:
+                container.rename(old_container)
+                container.mkdir()
+                (old_container / "vault").rename(nested_vault)
+            return result
+
+        with mock.patch.object(DRIFT, "_discover_pages", side_effect=discover_then_remap):
+            result = DRIFT.check(self.vault, "root-notes", self.source)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["snapshotValidity"], "unstable")
+        self.assertEqual(result["pages"], [])
+        self.assertEqual(result["claims"], [])
+        self.assertTrue(any(issue.get("reason") == "vault-mapping-changed-during-check"
+                            for issue in result["issues"]))
+
+    def test_source_check_cli_sanitizes_vault_resolution_failures(self):
+        self.setup_asset()
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+
+        for name, vault_path in (("nul", "bad\x00vault"),
+                                 ("unknown-user", f"~osb_missing_user_{os.getpid()}/vault"),
+                                 ("surrogate", "\ud800")):
+            with self.subTest(path=name):
+                self.config.write_text(json.dumps({"vaultPath": vault_path}), encoding="utf-8")
+                for json_output in (True, False):
+                    args = [sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                            "--source-root", str(self.source)]
+                    if json_output:
+                        args.append("--json")
+                    result = subprocess.run(args, cwd=self.base, env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertNotIn("Traceback", result.stdout + result.stderr)
+                    self.assertNotIn(str(self.base), result.stdout + result.stderr)
+                    if json_output:
+                        self.assertEqual(result.stderr, "")
+                        payload = json.loads(result.stdout)
+                        self.assertEqual(payload["code"], "source-check-error")
+                        self.assertEqual(payload["error"], "source check could not safely complete")
+                    else:
+                        self.assertEqual(result.stdout, "")
+                        self.assertEqual(result.stderr.strip(),
+                                         "obsidian-second-brain: source check could not safely complete")
+
+    def test_source_check_cli_valid_vault_selection_precedence(self):
+        self.setup_asset()
+        alternate = self.base / "alternate-vault"
+        (alternate / "wiki").mkdir(parents=True)
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config),
+               "OBSIDIAN_VAULT_PATH": str(alternate)}
+        args = [sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                "--source-root", str(self.source), "--json"]
+        from_env = subprocess.run(args, cwd=self.base, env=env, text=True, capture_output=True)
+        self.assertEqual(from_env.returncode, 0, from_env.stdout + from_env.stderr)
+        self.assertEqual(json.loads(from_env.stdout)["coverage"]["selectedAssets"], 0)
+        explicit = subprocess.run([*args[:-1], "--vault", str(self.vault), "--json"],
+                                  cwd=self.base, env=env, text=True, capture_output=True)
+        self.assertEqual(explicit.returncode, 0, explicit.stdout + explicit.stderr)
+        self.assertEqual(json.loads(explicit.stdout)["coverage"]["selectedAssets"], 1)
+
     def test_source_check_validates_frontmatter_without_leaking_field_values(self):
         self.setup_asset()
         fixtures = {
@@ -1096,13 +1229,13 @@ runpy.run_path({str(CLI)!r}, run_name="__main__")
         self.setup_asset()
         moved = self.source.with_name("source-moved-before-open")
         original_snapshot = DRIFT.BASELINES._mapping_snapshot
-        calls = 0
+        removed = False
 
         def remove_after_root_validation(path, **kwargs):
-            nonlocal calls
+            nonlocal removed
             result = original_snapshot(path, **kwargs)
-            calls += 1
-            if calls == 1:
+            if Path(path) == self.source and not removed:
+                removed = True
                 self.source.rename(moved)
             return result
 

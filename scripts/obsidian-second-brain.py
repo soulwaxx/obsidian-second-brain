@@ -420,19 +420,14 @@ def main() -> int:
             payload = {"error": str(exc), "code": "source-changed" if type(exc).__name__ == "SourceChanged" else "invalid-read"}
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True) if args.json else f"obsidian-second-brain: {exc}", file=sys.stderr if not args.json else sys.stdout)
             return 1
-    config_file = config_path(args.config)
-    config, error = load_config(config_file)
-    write_commands = {"batch-inspect", "batch-apply", "batch-recover", "batch-rollback",
-                      "capture-inspect", "capture-apply", "observe-inspect", "observe-apply",
-                      "baseline-inspect", "baseline-apply"}
-    if args.command in write_commands and error:
-        return fail(f"invalid selected integration config: {error}")
-    if args.command == "source-check" and error:
-        return fail("invalid selected integration config", "invalid-config")
-    vault = resolve_vault(args.vault, config)
     if args.command == "source-check":
         drift = None
         try:
+            config_file = config_path(args.config)
+            config, error = load_config(config_file)
+            if error:
+                return fail("invalid selected integration config", "invalid-config")
+            vault = resolve_vault(args.vault, config)
             drift = load_source("obsidian_cli_source_drift", str(Path(__file__).with_name("source_drift.py")))
             if args.query is not None:
                 raise drift.DriftInputError("source-check does not accept query terms")
@@ -469,9 +464,17 @@ def main() -> int:
                     detail = ",".join(value for value in (issue.get("path"), issue.get("id"), issue.get("reason")) if value)
                     print(f"Check issue: {issue.get('state', 'unavailable')}\t{detail}")
             return 0 if output["complete"] else 1
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
             message = str(exc) if drift is not None and isinstance(exc, drift.DriftInputError) else "source check could not safely complete"
             return fail(message, "source-check-error")
+    config_file = config_path(args.config)
+    config, error = load_config(config_file)
+    write_commands = {"batch-inspect", "batch-apply", "batch-recover", "batch-rollback",
+                      "capture-inspect", "capture-apply", "observe-inspect", "observe-apply",
+                      "baseline-inspect", "baseline-apply"}
+    if args.command in write_commands and error:
+        return fail(f"invalid selected integration config: {error}")
+    vault = resolve_vault(args.vault, config)
     if args.command in {"observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history"}:
         try:
             source_module = load_source("obsidian_cli_source_baselines", str(Path(__file__).with_name("source_baselines.py")))
