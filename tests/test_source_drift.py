@@ -451,6 +451,82 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(invalid.returncode, 1)
         self.assertEqual(json.loads(invalid.stdout)["code"], "invalid-config")
 
+    def test_singleton_resource_does_not_hide_malformed_sources(self):
+        self.setup_asset()
+        for filename, sources in (("boolean", "true"), ("integer", "123"), ("mapping", "{}")):
+            page = self.vault / "wiki" / (filename + "-sources.md")
+            page.write_text("---\ntype: Note\nresource: https://example.test/item\nsources: " + sources + "\n---\nText\n",
+                            encoding="utf-8")
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        result = subprocess.run([sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                                 "--source-root", str(self.source), "--json"], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        invalid_pages = {issue["path"] for issue in report["issues"] if issue["reason"] == "invalid-page-sources"}
+        self.assertEqual(invalid_pages, {"wiki/boolean-sources.md", "wiki/integer-sources.md", "wiki/mapping-sources.md"})
+        for page in report["pages"]:
+            if page["path"] in invalid_pages:
+                self.assertTrue(any(ref["state"] == "external-or-legacy-unchecked" for ref in page["sourceReferences"]))
+
+    def test_source_check_rejects_hardlinked_ledger_record(self):
+        _asset, source, *_ = self.setup_asset(content=b"synthetic-private-source-content")
+        self.save(LEDGER.make_claim("claim-private", "synthetic-private-claim-statement", support=[source["id"]]))
+        record = self.vault / "wiki/meta/evidence/asset-one.json"
+        outside = self.base / "outside-asset-record.json"
+        outside.write_bytes(record.read_bytes())
+        record.unlink()
+        os.link(outside, record)
+        self.assertEqual(record.stat().st_nlink, 2)
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        result = subprocess.run([sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                                 "--source-root", str(self.source), "--json"], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        self.assertTrue(any(issue["state"] == "unsafe-unresolvable" for issue in report["issues"]))
+        self.assertNotIn("synthetic-private-source-content", result.stdout + result.stderr)
+        self.assertNotIn("synthetic-private-claim-statement", result.stdout + result.stderr)
+
+    def test_final_ledger_hardlink_replacement_invalidates_snapshot(self):
+        self.setup_asset()
+        batch = load_source("source_drift_batch_hardlink_race_test", str(ROOT / "scripts/wiki_batch.py"))
+        original_ledger = batch._ledger_files
+        record = self.vault / "wiki/meta/evidence/asset-one.json"
+        outside = self.base / "late-hardlinked-record.json"
+        original_bytes = record.read_bytes()
+        calls = 0
+
+        def replace_after_initial_load(vault, *, reject_hardlinks=False):
+            nonlocal calls
+            result = original_ledger(vault, reject_hardlinks=reject_hardlinks)
+            calls += 1
+            if calls == 1:
+                outside.write_bytes(original_bytes)
+                record.unlink()
+                os.link(outside, record)
+            return result
+
+        real_load = load_source
+        try:
+            with mock.patch.object(DRIFT, "load_source", side_effect=lambda name, path:
+                                  batch if Path(path).name == "wiki_batch.py" else real_load(name, path)):
+                with mock.patch.object(batch, "_ledger_files", side_effect=replace_after_initial_load):
+                    result = self.run_check()
+        finally:
+            if record.exists():
+                record.unlink()
+            record.write_bytes(original_bytes)
+        asset = next(row for row in result["assets"] if row["id"] == "asset-one")
+        self.assertTrue(any(issue.get("reason") == "ledger-changed-during-check" for issue in result["issues"]))
+        self.assertEqual(asset["state"], "unstable")
+        self.assertEqual(asset["observations"][0]["state"], "unstable")
+        self.assertFalse(result["complete"])
+
     def test_source_page_and_ledger_changes_during_final_validation_are_unstable(self):
         _asset, source, *_ = self.setup_asset(claims=["claim-source-race"])
         peer_path = self.source / "notes/peer.txt"
@@ -783,7 +859,8 @@ class SourceDriftTests(unittest.TestCase):
         self.setup_asset()
         batch = load_source("source_drift_batch_permission_test", str(ROOT / "scripts/wiki_batch.py"))
 
-        def denied(_vault):
+        def denied(_vault, *, reject_hardlinks=False):
+            self.assertTrue(reject_hardlinks)
             try:
                 raise PermissionError(errno.EACCES, "denied")
             except PermissionError as exc:

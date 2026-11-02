@@ -91,7 +91,7 @@ def _load(vault: Path) -> tuple[dict[str, dict[str, Any]], dict[str, bytes], lis
     batch = load_source("source_drift_batch", str(Path(__file__).with_name("wiki_batch.py")))
     records: dict[str, dict[str, Any]] = {}
     try:
-        raw_records = batch._ledger_files(vault)
+        raw_records = batch._ledger_files(vault, reject_hardlinks=True)
     except batch.BatchError as exc:
         code = _reason(exc)
         current: BaseException | None = exc
@@ -573,15 +573,15 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             refs = []
         if isinstance(refs, str):
             refs = [refs]
-        singleton_resource = meta.get("resource")
-        if isinstance(singleton_resource, str):
-            refs = [{"resource": singleton_resource}, *refs] if isinstance(refs, list) else [{"resource": singleton_resource}]
-        elif singleton_resource is not None:
-            issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-resource"})
         if not isinstance(refs, list):
             issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-sources"})
             page["reviewReasons"].append("invalid-page-sources")
             refs = []
+        singleton_resource = meta.get("resource")
+        if isinstance(singleton_resource, str):
+            refs = [{"resource": singleton_resource}, *refs]
+        elif singleton_resource is not None:
+            issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-resource"})
         for ref in refs:
             identity = ref.get("id") if isinstance(ref, dict) else None
             has_identity = isinstance(ref, dict) and "id" in ref
@@ -768,7 +768,8 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
                 if item.get("rootId") == root_id and item.get("state") in {"unchanged", "changed", "missing"}:
                     item.update(state="unstable", reason="selected-root-remapped")
     try:
-        current_raw = load_source("source_drift_batch_final", str(Path(__file__).with_name("wiki_batch.py")))._ledger_files(vault)
+        current_raw = load_source("source_drift_batch_final", str(Path(__file__).with_name("wiki_batch.py")))._ledger_files(
+            vault, reject_hardlinks=True)
         if current_raw != raw_ledger:
             raise RuntimeError("ledger-snapshot-changed")
     except (OSError, ValueError, RuntimeError):

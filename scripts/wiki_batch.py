@@ -232,7 +232,7 @@ def _journal_preimages(journal: dict) -> dict[str, bytes | None]:
             for entry in journal["entries"]}
 
 
-def _ledger_files(vault: Path) -> dict[str, bytes]:
+def _ledger_files(vault: Path, *, reject_hardlinks: bool = False) -> dict[str, bytes]:
     """Safely enumerate ledger bytes without parsing records or following links."""
     vault = Path(vault).resolve(strict=True)
     probe = os.open(vault, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -285,8 +285,11 @@ def _ledger_files(vault: Path) -> dict[str, bytes]:
             except OSError as exc:
                 raise BatchError(f"cannot open ledger record safely: {name}") from exc
             try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
                     raise BatchError(f"ledger record is not a regular file: {name}")
+                if reject_hardlinks and info.st_nlink != 1:
+                    raise BatchError("ledger record has hardlink aliases")
                 chunks = []
                 with os.fdopen(fd, "rb") as stream:
                     fd = -1
