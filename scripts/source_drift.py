@@ -27,6 +27,7 @@ finally:
 
 ROOT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _SOURCE_ID = re.compile(r"source-[0-9a-f]{24}")
+_LEGACY_SOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _CLAIM_ID = re.compile(r"claim-[a-z0-9][a-z0-9._-]{0,121}")
 _RESERVED = {"index.md", "log.md", "_plan.md"}
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -91,8 +92,23 @@ def _load(vault: Path) -> tuple[dict[str, dict[str, Any]], dict[str, bytes], lis
     records: dict[str, dict[str, Any]] = {}
     try:
         raw_records = batch._ledger_files(vault)
+    except batch.BatchError as exc:
+        code = _reason(exc)
+        current: BaseException | None = exc
+        has_os_error = False
+        while current is not None:
+            has_os_error = has_os_error or isinstance(current, OSError)
+            current = current.__cause__ or current.__context__
+        if code == "permission-denied":
+            state, reason = "operational-error", "ledger-permission-denied"
+        elif code == "unsafe-path" or not has_os_error:
+            state, reason = "unsafe-unresolvable", "ledger-unsafe-path" if code == "unsafe-path" else "ledger-unsafe"
+        else:
+            state, reason = "operational-error", "ledger-" + code
+        return records, {}, [{"state": state, "reason": reason}]
     except (OSError, ValueError) as exc:
-        return records, {}, [{"state": "operational-error", "reason": "ledger-" + _reason(exc)}]
+        code = _reason(exc)
+        return records, {}, [{"state": _state(code), "reason": "ledger-" + code}]
     issues: list[dict[str, Any]] = []
     for name, raw in sorted(raw_records.items()):
         try:
@@ -316,7 +332,8 @@ def _state(code: str) -> str:
 
 
 def _refresh_impacts(selected: dict[str, dict[str, Any]], pages: dict[str, dict[str, Any]],
-                     claims: list[dict[str, Any]], observations: dict[str, list[dict[str, Any]]]) -> None:
+                     claims: list[dict[str, Any]], observations: dict[str, list[dict[str, Any]]],
+                     bad_graph: dict[str, str]) -> None:
     """Refresh all source-dependent worklist edges after final source revalidation."""
     by_source: dict[str, list[dict[str, Any]]] = {}
     for values in observations.values():
@@ -324,6 +341,8 @@ def _refresh_impacts(selected: dict[str, dict[str, Any]], pages: dict[str, dict[
             by_source.setdefault(observation["sourceId"], []).append(observation)
 
     def compare(source_id: str, asset_id: str) -> tuple[str, str | None]:
+        if asset_id in bad_graph:
+            return "unsafe-unresolvable", bad_graph[asset_id]
         item = selected.get(asset_id, {})
         if item.get("state") in {"unstable", "missing", "unsafe-unresolvable", "operational-error"}:
             return item["state"], item.get("reason", item["state"])
@@ -565,9 +584,13 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             refs = []
         for ref in refs:
             identity = ref.get("id") if isinstance(ref, dict) else None
+            has_identity = isinstance(ref, dict) and "id" in ref
             has_resource = isinstance(ref, dict) and "resource" in ref
             resource = ref.get("resource") if isinstance(ref, dict) else ref if isinstance(ref, str) else None
-            if identity is not None and (not isinstance(identity, str) or not _SOURCE_ID.fullmatch(identity)):
+            canonical_identity = isinstance(identity, str) and bool(_SOURCE_ID.fullmatch(identity))
+            legacy_identity = (isinstance(identity, str) and bool(_LEGACY_SOURCE_ID.fullmatch(identity))
+                               and not identity.startswith("source-"))
+            if has_identity and not canonical_identity and not legacy_identity:
                 issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-source-id"})
                 page["sourceReferences"].append({"id": None, "state": "invalid-reference", "reason": "invalid-page-source-id"})
             elif has_resource and not isinstance(resource, str):
@@ -575,13 +598,15 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
                                "state": "invalid", "reason": "invalid-page-source-resource"})
                 page["sourceReferences"].append({"id": identity if isinstance(identity, str) and _SOURCE_ID.fullmatch(identity) else None,
                                                   "state": "invalid-reference", "reason": "invalid-page-source-resource"})
-            elif identity is not None and identity not in sources:
+            elif canonical_identity and identity not in sources:
                 issues.append({"path": page_path, "id": identity, "state": "invalid", "reason": "missing-source-record"})
                 page["sourceReferences"].append({"id": identity, "state": "missing-source-record", "reason": "missing-source-record"})
-            elif identity is not None and has_resource and resource != sources[identity]["locator"]:
+            elif canonical_identity and has_resource and resource != sources[identity]["locator"]:
                 issues.append({"path": page_path, "id": identity, "state": "invalid", "reason": "page-source-resource-mismatch"})
                 page["sourceReferences"].append({"id": identity, "state": "invalid-reference", "reason": "page-source-resource-mismatch"})
-            elif identity is not None:
+            elif legacy_identity:
+                page["sourceReferences"].append({"id": identity, "state": "external-or-legacy-unchecked"})
+            elif canonical_identity:
                 linked = observations_for_source.get(identity, [])
                 if not linked:
                     page["sourceReferences"].append({"id": identity, "state": "unchecked", "reason": "no-recorded-observation"})
@@ -784,7 +809,11 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             claim.update(state="unstable", reviewRequired=True)
             claim["reviewReasons"] = sorted(set(claim["reviewReasons"] + ["page-set-changed-during-check"]))
 
-    _refresh_impacts(selected, pages, claim_rows, observations)
+    for item in selected.values():
+        if item.get("state") == "unstable":
+            for observation in item.get("observations", []):
+                observation.update(state="unstable", reason=item.get("reason", "source-state-unstable"))
+    _refresh_impacts(selected, pages, claim_rows, observations, bad_graph)
     for page_path in unstable_page_paths:
         page = pages[page_path]
         for reference in page["sourceReferences"]:

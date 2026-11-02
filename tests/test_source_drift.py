@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -452,6 +453,12 @@ class SourceDriftTests(unittest.TestCase):
 
     def test_source_page_and_ledger_changes_during_final_validation_are_unstable(self):
         _asset, source, *_ = self.setup_asset(claims=["claim-source-race"])
+        peer_path = self.source / "notes/peer.txt"
+        peer_path.write_bytes(b"peer")
+        peer_asset = LEDGER.make_asset("asset-peer", "root-notes", "notes/peer.txt")
+        peer_source = LEDGER.make_source("local:root-notes/notes/peer.txt", b"peer")
+        self.save(peer_asset); self.save(peer_source)
+        self.save(LEDGER.make_observation(peer_asset, peer_source, "2026-01-02T00:00:00Z"))
         self.save(LEDGER.make_claim("claim-source-race", "Synthetic source-race fixture", support=[source["id"]]))
         original_open = DRIFT.BASELINES._inspect_selected
         calls = 0
@@ -472,6 +479,10 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(result["pages"][0]["baselines"][0]["state"], "unstable")
         self.assertEqual(result["snapshotValidity"], "unstable")
         self.assertEqual(result["claims"][0]["evidence"][0]["state"], "unstable")
+        unstable = next(row for row in result["assets"] if row["id"] == "asset-one")
+        self.assertEqual(unstable["observations"][0]["state"], "unstable")
+        peer = next(row for row in result["assets"] if row["id"] == "asset-peer")
+        self.assertEqual(peer["observations"][0]["state"], "unchanged")
 
         _asset, page_source, *_ = self.setup_asset(claims=["claim-page-race"])
         self.save(LEDGER.make_claim("claim-page-race", "Synthetic page-link fixture", support=[page_source["id"]]))
@@ -512,6 +523,7 @@ class SourceDriftTests(unittest.TestCase):
         self.assertIn("ledger-changed-during-check", {item.get("reason") for item in result["issues"]})
         self.assertEqual(result["pages"][0]["state"], "unstable")
         self.assertEqual(result["assets"][0]["state"], "unstable")
+        self.assertEqual(result["assets"][0]["observations"][0]["state"], "unstable")
         self.assertEqual(result["claims"][0]["state"], "unstable")
 
     def test_final_source_race_propagates_to_claim_only_pages_without_inferred_links(self):
@@ -600,6 +612,7 @@ class SourceDriftTests(unittest.TestCase):
         with mock.patch.object(DRIFT.BASELINES, "_inspect_selected", side_effect=replace_parent):
             result = self.run_check()
         self.assertEqual(result["assets"][0]["state"], "unstable")
+        self.assertEqual(result["assets"][0]["observations"][0]["state"], "unstable")
         self.assertEqual(result["pages"][0]["baselines"][0]["state"], "unstable")
 
     def test_metadata_only_source_and_page_mutations_are_unstable(self):
@@ -686,8 +699,102 @@ class SourceDriftTests(unittest.TestCase):
         with mock.patch.object(DRIFT.BASELINES, "_inspect_selected", side_effect=remap):
             result = self.run_check()
         self.assertEqual(result["assets"][0]["state"], "unstable")
+        self.assertEqual(result["assets"][0]["observations"][0]["state"], "unstable")
         self.source.unlink()
         moved.rename(self.source)
+
+    def test_legacy_mapping_source_ids_are_unchecked_and_malformed_types_invalid(self):
+        self.setup_asset()
+        legacy = self.vault / "wiki/legacy.md"
+        legacy.write_text("---\ntype: Note\nsources:\n  - id: fpa-handbook\n    resource: https://example.test/handbook\n  - id: legacy-id-only\n---\nText\n", encoding="utf-8")
+        result = self.run_check()
+        pages = {page["path"]: page for page in result["pages"]}
+        self.assertEqual([ref["state"] for ref in pages["wiki/legacy.md"]["sourceReferences"]],
+                         ["external-or-legacy-unchecked", "external-or-legacy-unchecked"])
+        self.assertTrue(result["complete"])
+        malformed = self.vault / "wiki/malformed.md"
+        malformed.write_text("---\ntype: Note\nsources:\n  - id: []\n    resource: https://example.test/handbook\n---\nText\n", encoding="utf-8")
+        result = self.run_check()
+        self.assertFalse(result["complete"])
+        self.assertTrue(any(issue["reason"] == "invalid-page-source-id" for issue in result["issues"]))
+
+    def test_missing_asset_observation_invalidates_explicit_claim_and_page_edges(self):
+        asset, source, _observation, baseline, _page = self.setup_asset()
+        claim = self.save(LEDGER.make_claim("claim-missing-asset", "Synthetic claim", support=[source["id"]]))
+        contradiction = self.save(LEDGER.make_claim("claim-contradiction-missing-asset", "Synthetic contradiction",
+                                                    contradictions=[source["id"]]))
+        page = self.vault / "wiki/claim-only-missing-asset.md"
+        page.write_text("---\ntype: Note\nclaims: [claim-missing-asset]\nsources:\n  - id: " + source["id"] + "\n---\nText\n", encoding="utf-8")
+        (self.vault / "wiki/meta/evidence" / (asset["id"] + ".json")).unlink()
+        (self.vault / "wiki/meta/evidence" / (baseline["id"] + ".json")).unlink()
+        result = self.run_check()
+        claim_row = next(row for row in result["claims"] if row["id"] == claim["id"])
+        page_row = next(row for row in result["pages"] if row["path"] == "wiki/claim-only-missing-asset.md")
+        contradiction_row = next(row for row in result["claims"] if row["id"] == contradiction["id"])
+        edges = claim_row["evidence"] + contradiction_row["evidence"]
+        self.assertEqual({(edge["relation"], edge["state"], edge["reason"]) for edge in edges},
+                         {("support", "unsafe-unresolvable", "broken-observation-dependency"),
+                          ("contradictions", "unsafe-unresolvable", "broken-observation-dependency")})
+        self.assertTrue(claim_row["reviewRequired"])
+        self.assertIn(page_row["state"], {"affected", "unsafe-unresolvable"})
+        self.assertTrue(any("unsafe" in reason or "needs-review" in reason for reason in page_row["reviewReasons"]))
+        self.assertEqual(page_row["sourceReferences"][0]["state"], "unsafe-unresolvable")
+        self.assertFalse(result["complete"])
+
+    def test_unsafe_ledger_errors_are_structured_for_json_cli(self):
+        self.setup_asset(content=b"synthetic-secret-payload")
+        evidence = self.vault / "wiki/meta/evidence"
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+
+        def assert_structured(reason):
+            result = subprocess.run([sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                                     "--source-root", str(self.source), "--json"], cwd=self.base,
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["complete"])
+            self.assertTrue(any(issue["reason"] == reason and issue["state"] == "unsafe-unresolvable"
+                                for issue in payload["issues"]))
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertNotIn("synthetic-secret-payload", result.stdout + result.stderr)
+
+        record_link = evidence / "source-link.json"
+        record_link.symlink_to(self.base / "secret.json")
+        try:
+            with self.subTest(boundary="symlink-record"):
+                assert_structured("ledger-unsafe-path")
+        finally:
+            record_link.unlink()
+
+        namespace = self.vault / "wiki/meta/evidence"
+        moved = self.vault / "wiki/meta/evidence-safe"
+        namespace.rename(moved)
+        try:
+            namespace.symlink_to(self.base / "outside-evidence", target_is_directory=True)
+            with self.subTest(boundary="symlink-namespace"):
+                assert_structured("ledger-unsafe-path")
+        finally:
+            if namespace.is_symlink():
+                namespace.unlink()
+            moved.rename(namespace)
+
+    def test_ledger_permission_failure_remains_operational_error(self):
+        self.setup_asset()
+        batch = load_source("source_drift_batch_permission_test", str(ROOT / "scripts/wiki_batch.py"))
+
+        def denied(_vault):
+            try:
+                raise PermissionError(errno.EACCES, "denied")
+            except PermissionError as exc:
+                raise batch.BatchError("cannot read ledger safely") from exc
+
+        real_load = load_source
+        with mock.patch.object(DRIFT, "load_source", side_effect=lambda name, path:
+                              batch if Path(path).name == "wiki_batch.py" else real_load(name, path)):
+            with mock.patch.object(batch, "_ledger_files", side_effect=denied):
+                _records, _raw, issues = DRIFT._load(self.vault)
+        self.assertEqual(issues, [{"state": "operational-error", "reason": "ledger-permission-denied"}])
 
     def test_invalid_records_are_reported_without_exposing_record_content(self):
         self.setup_asset()
