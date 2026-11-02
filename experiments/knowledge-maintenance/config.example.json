@@ -1,0 +1,21 @@
+{
+  "solver": {
+    "provider": "openai",
+    "model": "gpt-6.1-sol",
+    "effort": "medium"
+  },
+  "judge": {
+    "provider": "openai",
+    "model": "gpt-6.1-terra",
+    "effort": "medium"
+  },
+  "limits": {
+    "calls": 750,
+    "minutes": 90,
+    "outputTokens": 500000,
+    "maxOutputTokens": 4096
+  },
+  "authFile": "/absolute/path/to/selected-pi-auth.json",
+  "vaultRoot": "/absolute/path/to/host-created-synthetic-vault",
+  "workdir": "/absolute/path/to/new-external-workdir"
+}

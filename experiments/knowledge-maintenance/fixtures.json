@@ -1,0 +1,444 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "synthetic-knowledge-maintenance-longitudinal-v1",
+  "checkpoints": [
+    {
+      "id": "2025-01-10",
+      "sources": [
+        {
+          "path": "sources/policy.md",
+          "text": "---\ntype: note\ntitle: Synthetic support policy\n---\n# Support policy\n\nThe fictional Acorn service keeps requests for 30 days.\r\nThe response target is 2 business days.\n\nUnicode example: café 🧭.\n",
+          "sha256": "7a861b702975c419549232c75dac81e2c84ce39e75c0489a2bbccfddfa8d4821"
+        }
+      ]
+    },
+    {
+      "id": "2025-02-10",
+      "sources": [
+        {
+          "path": "sources/policy.md",
+          "text": "---\ntype: note\ntitle: Synthetic support policy\n---\n# Support policy\n\nThe fictional Acorn service keeps requests for 45 days.\r\nThe response target is 2 business days.\n\nUnicode example: café 🧭.\n",
+          "sha256": "754e87be0c073e5ea0c79d0d04441bcd3c14963439915350feafcd7a886f6852"
+        },
+        {
+          "path": "sources/operations.md",
+          "text": "---\ntype: note\ntitle: Synthetic operations\n---\n# Operations\n\nThe Acorn service has one weekly maintenance window, on Wednesdays.\n",
+          "sha256": "a3d60a327bd4e37a646f59c7899424c3da79d17e2170c3905fe61163399c3bb7"
+        }
+      ]
+    },
+    {
+      "id": "2025-03-10",
+      "sources": [
+        {
+          "path": "sources/policy.md",
+          "text": "---\ntype: note\ntitle: Synthetic support policy\n---\n# Support policy\n\nThe fictional Acorn service no longer retains requests; the 45-day retention rule was withdrawn on 2025-03-10.\r\nThe response target is 2 business days.\n\nUnicode example: café 🧭.\n",
+          "sha256": "b6be7b1a858b202d649de5e409e502e95c28faf48fd93b26f5d3688eba81c07d"
+        },
+        {
+          "path": "sources/operations.md",
+          "text": "---\ntype: note\ntitle: Synthetic operations\n---\n# Operations\n\nThe Acorn service has one weekly maintenance window, on Wednesdays.\nA migration rehearsal is planned, but its date is not specified.\n",
+          "sha256": "72be565f9e1ac0a5c704ce4f8d11b1b7102d51b4f2e8496178083255a7eec5b2"
+        }
+      ]
+    },
+    {
+      "id": "2025-04-10",
+      "sources": [
+        {
+          "path": "sources/policy.md",
+          "text": "---\ntype: note\ntitle: Synthetic support policy\n---\n# Support policy\n\nThe fictional Acorn service no longer retains requests; the 45-day retention rule was withdrawn on 2025-03-10.\r\nThe response target is 3 business days.\n\nUnicode example: café 🧭.\n",
+          "sha256": "d2cd155b11946fec170d584d51b227d5537fb912774ff1e601d123c5e885d471"
+        },
+        {
+          "path": "sources/operations.md",
+          "text": "---\ntype: note\ntitle: Synthetic operations\n---\n# Operations\n\nThe Acorn service has one weekly maintenance window, on Thursdays, effective 2025-04-10.\nA migration rehearsal is planned, but its date is not specified.\n",
+          "sha256": "9951dcc6259f3707c9cfbadade260d73ba4464467c3fb8509f63229bf29bbca1"
+        }
+      ]
+    }
+  ],
+  "visibleTasks": [
+    {
+      "id": "retention-current",
+      "intent": "current",
+      "topic": "retention",
+      "question": {
+        "en": "As of this checkpoint, how long are Acorn requests retained?",
+        "it": "Alla data di questo checkpoint, per quanto tempo vengono conservate le richieste Acorn?"
+      },
+      "maintenance": "Maintain a concise canonical retention note. Preserve only sourced dates and qualifications; revise or retract changed rules."
+    },
+    {
+      "id": "response-qualified",
+      "intent": "current",
+      "topic": "response-target",
+      "question": {
+        "en": "What is the response target, including its unit?",
+        "it": "Qual è l'obiettivo di risposta, inclusa l'unità?"
+      },
+      "maintenance": "Maintain the response target with its complete unit/qualification."
+    },
+    {
+      "id": "retention-history",
+      "intent": "historical",
+      "topic": "retention-history",
+      "question": {
+        "en": "What retention rule, if any, had been stated by 2025-02-10?",
+        "it": "Quale regola di conservazione, se presente, era stata indicata entro il 2025-02-10?"
+      },
+      "maintenance": "Preserve dated history where useful; distinguish historical from current statements."
+    },
+    {
+      "id": "maintenance-day",
+      "intent": "current",
+      "topic": "maintenance-day",
+      "question": {
+        "en": "Which weekday is the maintenance window on now?",
+        "it": "In quale giorno della settimana si svolge ora la finestra di manutenzione?"
+      },
+      "maintenance": "Maintain the canonical operations page; update changes without duplicating it."
+    },
+    {
+      "id": "rehearsal-date",
+      "intent": "insufficient",
+      "topic": "rehearsal-date",
+      "question": {
+        "en": "What is the migration rehearsal date?",
+        "it": "Qual è la data della prova di migrazione?"
+      },
+      "maintenance": "Do not invent an unspecified date; retain uncertainty."
+    },
+    {
+      "id": "retention-conflict",
+      "intent": "conflict",
+      "topic": "retention-conflict",
+      "question": {
+        "en": "What do the sources establish about the current retention rule?",
+        "it": "Cosa stabiliscono le fonti sulla regola attuale di conservazione?"
+      },
+      "maintenance": "Record explicit withdrawal and avoid presenting a prior numeric rule as current."
+    }
+  ],
+  "gold": {
+    "actor": "agent-authored development fixture; not human-reviewed",
+    "topics": [
+      "retention",
+      "response-target",
+      "retention-history",
+      "maintenance-day",
+      "rehearsal-date",
+      "retention-conflict"
+    ],
+    "expectedCurrent": {
+      "retention": {
+        "2025-01-10": "30 days",
+        "2025-02-10": "45 days",
+        "2025-03-10": "withdrawn; no current numeric period",
+        "2025-04-10": "withdrawn; no current numeric period"
+      },
+      "response-target": {
+        "2025-01-10": "2 business days",
+        "2025-02-10": "2 business days",
+        "2025-03-10": "2 business days",
+        "2025-04-10": "3 business days"
+      },
+      "maintenance-day": {
+        "2025-01-10": "not stated",
+        "2025-02-10": "Wednesday",
+        "2025-03-10": "Wednesday",
+        "2025-04-10": "Thursday"
+      },
+      "rehearsal-date": {
+        "2025-01-10": "not stated",
+        "2025-02-10": "not stated",
+        "2025-03-10": "unspecified",
+        "2025-04-10": "unspecified"
+      }
+    },
+    "historical": {
+      "retention-history": {
+        "asOf": "2025-02-10",
+        "value": "45 days"
+      },
+      "retention": {
+        "priorValues": {
+          "2025-03-10": "45 days",
+          "2025-04-10": "45 days"
+        }
+      }
+    },
+    "sourceCoordinates": {
+      "2025-01-10/sources/policy.md": {
+        "sha256": "7a861b702975c419549232c75dac81e2c84ce39e75c0489a2bbccfddfa8d4821",
+        "spans": [
+          {
+            "start": 69,
+            "end": 124,
+            "quote": "The fictional Acorn service keeps requests for 30 days."
+          },
+          {
+            "start": 126,
+            "end": 165,
+            "quote": "The response target is 2 business days."
+          }
+        ]
+      },
+      "2025-02-10/sources/policy.md": {
+        "sha256": "754e87be0c073e5ea0c79d0d04441bcd3c14963439915350feafcd7a886f6852",
+        "spans": [
+          {
+            "start": 69,
+            "end": 124,
+            "quote": "The fictional Acorn service keeps requests for 45 days."
+          },
+          {
+            "start": 126,
+            "end": 165,
+            "quote": "The response target is 2 business days."
+          }
+        ]
+      },
+      "2025-02-10/sources/operations.md": {
+        "sha256": "a3d60a327bd4e37a646f59c7899424c3da79d17e2170c3905fe61163399c3bb7",
+        "spans": [
+          {
+            "start": 61,
+            "end": 128,
+            "quote": "The Acorn service has one weekly maintenance window, on Wednesdays."
+          }
+        ]
+      },
+      "2025-03-10/sources/policy.md": {
+        "sha256": "b6be7b1a858b202d649de5e409e502e95c28faf48fd93b26f5d3688eba81c07d",
+        "spans": [
+          {
+            "start": 69,
+            "end": 179,
+            "quote": "The fictional Acorn service no longer retains requests; the 45-day retention rule was withdrawn on 2025-03-10."
+          },
+          {
+            "start": 181,
+            "end": 220,
+            "quote": "The response target is 2 business days."
+          }
+        ]
+      },
+      "2025-03-10/sources/operations.md": {
+        "sha256": "72be565f9e1ac0a5c704ce4f8d11b1b7102d51b4f2e8496178083255a7eec5b2",
+        "spans": [
+          {
+            "start": 61,
+            "end": 128,
+            "quote": "The Acorn service has one weekly maintenance window, on Wednesdays."
+          },
+          {
+            "start": 129,
+            "end": 193,
+            "quote": "A migration rehearsal is planned, but its date is not specified."
+          }
+        ]
+      },
+      "2025-04-10/sources/policy.md": {
+        "sha256": "d2cd155b11946fec170d584d51b227d5537fb912774ff1e601d123c5e885d471",
+        "spans": [
+          {
+            "start": 69,
+            "end": 179,
+            "quote": "The fictional Acorn service no longer retains requests; the 45-day retention rule was withdrawn on 2025-03-10."
+          },
+          {
+            "start": 181,
+            "end": 220,
+            "quote": "The response target is 3 business days."
+          }
+        ]
+      },
+      "2025-04-10/sources/operations.md": {
+        "sha256": "9951dcc6259f3707c9cfbadade260d73ba4464467c3fb8509f63229bf29bbca1",
+        "spans": [
+          {
+            "start": 61,
+            "end": 149,
+            "quote": "The Acorn service has one weekly maintenance window, on Thursdays, effective 2025-04-10."
+          },
+          {
+            "start": 150,
+            "end": 214,
+            "quote": "A migration rehearsal is planned, but its date is not specified."
+          }
+        ]
+      }
+    },
+    "expectedAnswers": {
+      "retention-current": {
+        "2025-01-10": {
+          "outcome": "supported",
+          "value": "30 days",
+          "temporal": "current",
+          "qualification": null
+        },
+        "2025-02-10": {
+          "outcome": "supported",
+          "value": "45 days",
+          "temporal": "current",
+          "qualification": null
+        },
+        "2025-03-10": {
+          "outcome": "supported",
+          "value": "withdrawn; no current numeric period",
+          "temporal": "current",
+          "qualification": "withdrawal date 2025-03-10"
+        },
+        "2025-04-10": {
+          "outcome": "supported",
+          "value": "withdrawn; no current numeric period",
+          "temporal": "current",
+          "qualification": "withdrawal date 2025-03-10"
+        }
+      },
+      "response-qualified": {
+        "2025-01-10": {
+          "outcome": "supported",
+          "value": "2 business days",
+          "temporal": "current",
+          "qualification": "business-day unit"
+        },
+        "2025-02-10": {
+          "outcome": "supported",
+          "value": "2 business days",
+          "temporal": "current",
+          "qualification": "business-day unit"
+        },
+        "2025-03-10": {
+          "outcome": "supported",
+          "value": "2 business days",
+          "temporal": "current",
+          "qualification": "business-day unit"
+        },
+        "2025-04-10": {
+          "outcome": "supported",
+          "value": "3 business days",
+          "temporal": "current",
+          "qualification": "business-day unit"
+        }
+      },
+      "retention-history": {
+        "2025-01-10": {
+          "outcome": "abstained",
+          "value": null,
+          "temporal": "unknown",
+          "qualification": null
+        },
+        "2025-02-10": {
+          "outcome": "supported",
+          "value": "45 days",
+          "temporal": "historical",
+          "qualification": null
+        },
+        "2025-03-10": {
+          "outcome": "supported",
+          "value": "45 days",
+          "temporal": "historical",
+          "qualification": null
+        },
+        "2025-04-10": {
+          "outcome": "supported",
+          "value": "45 days",
+          "temporal": "historical",
+          "qualification": null
+        }
+      },
+      "maintenance-day": {
+        "2025-01-10": {
+          "outcome": "abstained",
+          "value": null,
+          "temporal": "unknown",
+          "qualification": null
+        },
+        "2025-02-10": {
+          "outcome": "supported",
+          "value": "Wednesday",
+          "temporal": "current",
+          "qualification": null
+        },
+        "2025-03-10": {
+          "outcome": "supported",
+          "value": "Wednesday",
+          "temporal": "current",
+          "qualification": null
+        },
+        "2025-04-10": {
+          "outcome": "supported",
+          "value": "Thursday",
+          "temporal": "current",
+          "qualification": null
+        }
+      },
+      "rehearsal-date": {
+        "2025-01-10": {
+          "outcome": "abstained",
+          "value": null,
+          "temporal": "unknown",
+          "qualification": null
+        },
+        "2025-02-10": {
+          "outcome": "abstained",
+          "value": null,
+          "temporal": "unknown",
+          "qualification": null
+        },
+        "2025-03-10": {
+          "outcome": "abstained",
+          "value": null,
+          "temporal": "unknown",
+          "qualification": null
+        },
+        "2025-04-10": {
+          "outcome": "abstained",
+          "value": null,
+          "temporal": "unknown",
+          "qualification": null
+        }
+      },
+      "retention-conflict": {
+        "2025-01-10": {
+          "outcome": "supported",
+          "value": "30 days",
+          "temporal": "current",
+          "qualification": null
+        },
+        "2025-02-10": {
+          "outcome": "supported",
+          "value": "45 days",
+          "temporal": "current",
+          "qualification": null
+        },
+        "2025-03-10": {
+          "outcome": "supported",
+          "value": "withdrawn; no current numeric period",
+          "temporal": "current",
+          "qualification": "withdrawal date 2025-03-10"
+        },
+        "2025-04-10": {
+          "outcome": "supported",
+          "value": "withdrawn; no current numeric period",
+          "temporal": "current",
+          "qualification": "withdrawal date 2025-03-10"
+        }
+      }
+    },
+    "canonicalPages": {
+      "retention": "wiki/policy.md",
+      "response-target": "wiki/policy.md",
+      "retention-history": "wiki/policy.md",
+      "maintenance-day": "wiki/operations.md",
+      "rehearsal-date": "wiki/operations.md",
+      "retention-conflict": "wiki/policy.md"
+    },
+    "currentEvidencePolicy": "Current claims require evidence from exactly the active checkpoint; historical claims require evidence no later than their explicitly requested as-of date.",
+    "historicalAsOf": {
+      "retention-history": "2025-02-10"
+    }
+  }
+}

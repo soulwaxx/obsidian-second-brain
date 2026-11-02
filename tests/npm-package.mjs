@@ -16,6 +16,7 @@ const run = (command, args, options = {}) => execFileSync(command, args, { cwd: 
 try {
   const archive = parseNpmArchive(run("npm", ["pack", "--json", "--pack-destination", work], { encoding: "utf8" }));
   const files = new Set(archive.files.map((file) => file.path));
+  assert.ok(![...files].some((file) => file.startsWith("experiments/")), "private evaluation experiments must not ship in the npm archive");
   for (const resource of [
     "package.json", "requirements.txt", "README.md", "LICENSE", "NOTICE.md", "properties.example.json",
     ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",

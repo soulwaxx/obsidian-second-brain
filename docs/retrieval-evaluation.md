@@ -15,6 +15,10 @@ includes EN/IT exposure counts, temporal and metadata counterexamples, unknown
 judgments and helper cost; it establishes no live model-quality gain or default
 change.
 
+## Longitudinal knowledge-maintenance experiment
+
+The repository-only [knowledge-maintenance experiment](../experiments/knowledge-maintenance/README.md) evaluates sequential synthetic wiki maintenance with paired source/wiki answer conditions. Its optional Pi runner is a development experiment, not an installed command, package feature, or normal test/release action.
+
 ## Run against a prepared disposable snapshot
 
 Use an explicit vault root and gold path. The evaluator never installs models,
