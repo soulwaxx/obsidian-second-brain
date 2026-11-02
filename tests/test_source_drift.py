@@ -451,6 +451,42 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(invalid.returncode, 1)
         self.assertEqual(json.loads(invalid.stdout)["code"], "invalid-config")
 
+    def test_source_check_validates_frontmatter_without_leaking_field_values(self):
+        self.setup_asset()
+        fixtures = {
+            "missing-type": "title: Missing type",
+            "empty-type": "type: ''",
+            "list-type": "type: []",
+            "integer-type": "type: 17",
+            "bad-optional": "type: Note\ntimestamp: DO_NOT_LEAK_VALIDATOR_VALUE",
+            "type-only": "type: Note",
+            "unknown-field": "type: Note\nunknown_extension: accepted",
+            "legacy-source": "type: Note\nsources:\n  - id: fpa-handbook\n    resource: https://example.test/handbook",
+        }
+        for name, metadata in fixtures.items():
+            page = self.vault / "wiki" / (name + ".md")
+            page.write_text("---\n" + metadata + "\n---\nSynthetic body\n", encoding="utf-8")
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        result = subprocess.run([sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                                 "--source-root", str(self.source), "--json"], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        invalid_paths = {"wiki/missing-type.md", "wiki/empty-type.md", "wiki/list-type.md",
+                         "wiki/integer-type.md", "wiki/bad-optional.md"}
+        self.assertEqual({issue["path"] for issue in report["issues"]
+                          if issue["reason"] == "invalid-page-frontmatter"}, invalid_paths)
+        page_rows = {page["path"]: page for page in report["pages"]}
+        for path in invalid_paths:
+            self.assertEqual(page_rows[path]["state"], "unsafe-unresolvable")
+        self.assertEqual(page_rows["wiki/type-only.md"]["state"], "current")
+        self.assertEqual(page_rows["wiki/unknown-field.md"]["state"], "current")
+        self.assertEqual(page_rows["wiki/legacy-source.md"]["sourceReferences"][0]["state"],
+                         "external-or-legacy-unchecked")
+        self.assertNotIn("DO_NOT_LEAK_VALIDATOR_VALUE", result.stdout + result.stderr)
+
     def test_singleton_resource_does_not_hide_malformed_sources(self):
         self.setup_asset()
         for filename, sources in (("boolean", "true"), ("integer", "123"), ("mapping", "{}")):
@@ -628,6 +664,56 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(claim["pages"], ["wiki/claim-only.md"])
         self.assertEqual(pages["wiki/claim.md"]["claims"], [])
         self.assertFalse(result["complete"])
+
+    def test_source_removed_after_hash_starts_is_unstable_in_cli_report(self):
+        _asset, source, *_ = self.setup_asset(content=b"race-source-payload", claims=["claim-source-race"])
+        self.save(LEDGER.make_claim("claim-source-race", "Synthetic race claim", support=[source["id"]]))
+        target = self.source / "notes/a.txt"
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        bootstrap = f"""
+import runpy, sys, types
+from pathlib import Path
+sys.path.insert(0, {str(ROOT / 'scripts')!r})
+import module_loading
+real_load = module_loading.load_source
+def hooked_load(name, path):
+    module = real_load(name, path)
+    if name == "obsidian_cli_source_drift":
+        baseline = module.BASELINES
+        real_sha256 = baseline.hashlib.sha256
+        fired = False
+        class HashSpy:
+            def __init__(self, inner):
+                self.inner = inner
+            def update(self, data):
+                nonlocal fired
+                self.inner.update(data)
+                if data == b"race-source-payload" and not fired:
+                    fired = True
+                    Path({str(target)!r}).unlink()
+            def hexdigest(self):
+                return self.inner.hexdigest()
+        baseline.hashlib = types.SimpleNamespace(sha256=lambda *args, **kwargs: HashSpy(real_sha256(*args, **kwargs)))
+    return module
+module_loading.load_source = hooked_load
+sys.argv = [{str(CLI)!r}, "source-check", "--root-id", "root-notes", "--source-root", {str(self.source)!r}, "--json"]
+runpy.run_path({str(CLI)!r}, run_name="__main__")
+"""
+        result = subprocess.run([sys.executable, "-c", bootstrap], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["snapshotValidity"], "unstable")
+        asset = next(row for row in report["assets"] if row["id"] == "asset-one")
+        self.assertEqual(asset["state"], "unstable")
+        page = next(row for row in report["pages"] if row["path"] == "wiki/claim.md")
+        self.assertEqual(page["state"], "unstable")
+        self.assertEqual(page["baselines"][0]["state"], "unstable")
+        claim = next(row for row in report["claims"] if row["id"] == "claim-source-race")
+        self.assertEqual(claim["evidence"][0]["state"], "unstable")
+        self.assertNotIn(str(self.source), result.stdout + result.stderr)
 
     def test_missing_claim_does_not_downgrade_an_unstable_page(self):
         self.setup_asset(claims=["claim-missing"])

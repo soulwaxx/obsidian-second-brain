@@ -45,6 +45,13 @@ def _stamp(info: os.stat_result) -> tuple[int, ...]:
 
 def _reason(exc: BaseException) -> str:
     """Translate safe exception types/errno to portable state codes."""
+    if isinstance(exc, (BASELINES.SourceChangedError, READS.SourceChanged)):
+        return "unstable"
+    if isinstance(exc, BASELINES.SourceBaselineError) and str(exc) in {
+            "selected source changed while being observed",
+            "source root or parent directory changed during observation",
+            "mapped source root or an ancestor changed during observation"}:
+        return "unstable"
     current: BaseException | None = exc
     chain: list[BaseException] = []
     while current is not None and current not in chain:
@@ -65,8 +72,6 @@ def _reason(exc: BaseException) -> str:
     if isinstance(exc, BASELINES.SourceBaselineError):
         # These are fixed messages emitted by source_baselines' guarded reader.
         message = str(exc)
-        if message == "selected source changed while being observed":
-            return "unstable"
         if message in {"selected source must be a regular file", "selected source changed or is not a regular file",
                        "selected source has hardlink aliases", "source locator component is not NFC canonical",
                        "mapped source root traverses a symlink", "mapped source root must be a directory",
@@ -74,11 +79,6 @@ def _reason(exc: BaseException) -> str:
             return "unsafe-path"
         if message == "mapped root has a case-insensitive path collision":
             return "path-collision"
-        if message in {"source root or parent directory changed during observation",
-                       "mapped source root or an ancestor changed during observation"}:
-            return "unstable"
-    if isinstance(exc, READS.SourceChanged):
-        return "unstable"
     if isinstance(exc, ValueError) and str(exc) == "unsafe-page-file":
         return "unsafe-path"
     if isinstance(exc, READS.ReadError):
@@ -270,13 +270,16 @@ def _read_page(vault: Path, relative: str) -> tuple[bytes, str, tuple[int, ...]]
             os.close(root_fd)
 
 
-def _metadata(raw: bytes) -> tuple[dict[str, Any], str | None]:
+def _metadata(raw: bytes, relative: str) -> tuple[dict[str, Any], str | None]:
     try:
         value, error = VALIDATOR._parse_frontmatter_yaml(raw.decode("utf-8"))
     except (UnicodeError, ValueError, TypeError):
         return {}, "invalid-frontmatter"
     if error or not isinstance(value, dict):
         return {}, "invalid-frontmatter"
+    validation_errors = VALIDATOR._validate_frontmatter(value, Path(relative).name, Path(relative))
+    if validation_errors:
+        return value, "invalid-page-frontmatter"
     return value, None
 
 
@@ -539,7 +542,7 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
         try:
             raw, page_hash, stamp = _read_page(vault, page_path)
             page_snapshots[page_path] = (raw, stamp)
-            metadata, error = _metadata(raw)
+            metadata, error = _metadata(raw, page_path)
             page_meta[page_path] = metadata
             if error:
                 page["state"] = "unsafe-unresolvable"

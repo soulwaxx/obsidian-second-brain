@@ -2,6 +2,7 @@
 """Read-only exact-byte observations for explicitly mapped local asset roots."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -23,6 +24,10 @@ _COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 class SourceBaselineError(ValueError):
     pass
+
+
+class SourceChangedError(SourceBaselineError):
+    """A selected source changed during its guarded observation."""
 
 
 def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
@@ -70,7 +75,15 @@ def _absolute_root(root: Path) -> Path:
 
 
 def _assert_mapping(snapshot: tuple[tuple[Path, tuple[int, int]], ...]) -> None:
-    current = _mapping_snapshot(snapshot[-1][0])
+    try:
+        current = _mapping_snapshot(snapshot[-1][0])
+    except SourceBaselineError as exc:
+        cause: BaseException | None = exc
+        while cause is not None:
+            if getattr(cause, "errno", None) == errno.ENOENT:
+                raise SourceBaselineError("mapped source root or an ancestor changed during observation") from exc
+            cause = cause.__cause__ or cause.__context__
+        raise
     if current != snapshot:
         raise SourceBaselineError("mapped source root or an ancestor changed during observation")
 
@@ -158,10 +171,15 @@ def _inspect_selected(root: Path, relative: PurePosixPath,
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
             opened_after = os.fstat(stream.fileno())
-        after_name = os.stat(relative.name, dir_fd=fd, follow_symlinks=False)
+        try:
+            after_name = os.stat(relative.name, dir_fd=fd, follow_symlinks=False)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("selected source changed while being observed") from exc
+            raise
         if (_identity(before) != _identity(opened_after) or _identity(before) != _identity(after_name)
                 or before.st_size != opened_after.st_size or before.st_size != after_name.st_size):
-            raise SourceBaselineError("selected source changed while being observed")
+            raise SourceChangedError("selected source changed while being observed")
         _assert_mapping(mapping)
         for dir_path, dir_fd, identity in dirs:
             _public_directory(dir_path, dir_fd, identity)
