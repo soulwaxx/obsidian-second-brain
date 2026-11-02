@@ -2,6 +2,7 @@
 """Read-only exact-byte observations for explicitly mapped local asset roots."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
+import unicodedata
 from typing import Any
 from urllib.parse import quote
 
@@ -24,6 +26,10 @@ class SourceBaselineError(ValueError):
     pass
 
 
+class SourceChangedError(SourceBaselineError):
+    """A selected source changed during its guarded observation."""
+
+
 def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
     return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns
 
@@ -32,7 +38,7 @@ def _directory_identity(info: os.stat_result) -> tuple[int, int]:
     return info.st_dev, info.st_ino
 
 
-def _mapping_snapshot(path: Path) -> tuple[tuple[Path, tuple[int, int]], ...]:
+def _mapping_snapshot(path: Path, *, strict_aliases: bool = False) -> tuple[tuple[Path, tuple[int, int]], ...]:
     """Capture and validate every public ancestor that maps to the selected root."""
     absolute = Path(os.path.abspath(path))
     chain: list[Path] = []
@@ -41,35 +47,62 @@ def _mapping_snapshot(path: Path) -> tuple[tuple[Path, tuple[int, int]], ...]:
     try:
         for part in absolute.parts[1:]:
             names = os.listdir(cursor)
-            matches = [name for name in names if name.casefold() == part.casefold()]
+            if strict_aliases:
+                folded = unicodedata.normalize("NFC", part).casefold()
+                matches = [name for name in names if unicodedata.normalize("NFC", name).casefold() == folded]
+            else:
+                matches = [name for name in names if name.casefold() == part.casefold()]
             if matches and matches != [part]:
                 raise SourceBaselineError("mapped root has a case-insensitive path collision")
             cursor = cursor / part
-            info = cursor.lstat()
+            try:
+                info = cursor.lstat()
+            except OSError as exc:
+                if exc.errno == errno.ENOENT and part in names:
+                    raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+                raise
             if stat.S_ISLNK(info.st_mode):
                 raise SourceBaselineError("mapped source root traverses a symlink")
             chain.append(cursor)
-        final = chain[-1].lstat()
+        try:
+            final = chain[-1].lstat()
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+            raise
         if not stat.S_ISDIR(final.st_mode):
             raise SourceBaselineError("mapped source root must be a directory")
-        return tuple((entry, _directory_identity(entry.lstat())) for entry in chain)
+        try:
+            return tuple((entry, _directory_identity(entry.lstat())) for entry in chain)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+            raise
     except SourceBaselineError:
         raise
     except OSError as exc:
         raise SourceBaselineError(f"cannot verify mapped source root: {exc}") from exc
 
 
-def _absolute_root(root: Path) -> Path:
+def _absolute_root(root: Path, *, strict_aliases: bool = False) -> Path:
     requested = Path(root).expanduser()
     if not requested.is_absolute():
         raise SourceBaselineError("mapped source root must be an explicit absolute path")
     absolute = Path(os.path.abspath(requested))
-    _mapping_snapshot(absolute)
+    _mapping_snapshot(absolute, strict_aliases=strict_aliases)
     return absolute
 
 
-def _assert_mapping(snapshot: tuple[tuple[Path, tuple[int, int]], ...]) -> None:
-    current = _mapping_snapshot(snapshot[-1][0])
+def _assert_mapping(snapshot: tuple[tuple[Path, tuple[int, int]], ...], *, strict_aliases: bool = False) -> None:
+    try:
+        current = _mapping_snapshot(snapshot[-1][0], strict_aliases=strict_aliases)
+    except SourceBaselineError as exc:
+        cause: BaseException | None = exc
+        while cause is not None:
+            if getattr(cause, "errno", None) == errno.ENOENT:
+                raise SourceBaselineError("mapped source root or an ancestor changed during observation") from exc
+            cause = cause.__cause__ or cause.__context__
+        raise
     if current != snapshot:
         raise SourceBaselineError("mapped source root or an ancestor changed during observation")
 
@@ -97,8 +130,9 @@ def _public_directory(path: Path, descriptor: int, before: tuple[int, int]) -> N
         raise SourceBaselineError("source root or parent directory changed during observation")
 
 
-def _open_selected(root: Path, relative: PurePosixPath,
-                   mapping: tuple[tuple[Path, tuple[int, int]], ...]) -> str:
+def _inspect_selected(root: Path, relative: PurePosixPath,
+                      mapping: tuple[tuple[Path, tuple[int, int]], ...], *,
+                      reject_hardlinks: bool = False, strict_aliases: bool = False) -> tuple[str, tuple[int, ...]]:
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory = getattr(os, "O_DIRECTORY", 0)
     dir_flags = os.O_RDONLY | nofollow | directory
@@ -107,37 +141,59 @@ def _open_selected(root: Path, relative: PurePosixPath,
     dirs: list[tuple[Path, int, tuple[int, int]]] = []
     source_fd = -1
     try:
-        fd = os.open(root, dir_flags)
+        try:
+            fd = os.open(root, dir_flags)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+            raise
         descriptors.append(fd)
         info = os.fstat(fd)
         dirs.append((root, fd, _directory_identity(info)))
         for part in relative.parts[:-1]:
-            _assert_mapping(mapping)
+            _assert_mapping(mapping, strict_aliases=strict_aliases)
             _public_directory(dirs[-1][0], fd, dirs[-1][2])
             names = os.listdir(fd)
-            matching = [name for name in names if name.casefold() == part.casefold()]
+            if strict_aliases and unicodedata.normalize("NFC", part) != part:
+                raise SourceBaselineError("source locator component is not NFC canonical")
+            folded = unicodedata.normalize("NFC", part).casefold() if strict_aliases else part.casefold()
+            matching = [name for name in names if (unicodedata.normalize("NFC", name).casefold() if strict_aliases else name.casefold()) == folded]
             if matching and matching != [part]:
                 raise SourceBaselineError("source locator has a case-insensitive path collision")
-            fd = os.open(part, dir_flags, dir_fd=fd)
+            try:
+                fd = os.open(part, dir_flags, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno == errno.ENOENT and part in names:
+                    raise SourceChangedError("source root or parent directory changed during observation") from exc
+                raise
             descriptors.append(fd)
             directory_path = dirs[-1][0] / part
             info = os.fstat(fd)
             dirs.append((directory_path, fd, _directory_identity(info)))
-        _assert_mapping(mapping)
+        _assert_mapping(mapping, strict_aliases=strict_aliases)
         _public_directory(dirs[-1][0], fd, dirs[-1][2])
         names = os.listdir(fd)
-        matching = [name for name in names if name.casefold() == relative.name.casefold()]
+        if strict_aliases and unicodedata.normalize("NFC", relative.name) != relative.name:
+            raise SourceBaselineError("source locator component is not NFC canonical")
+        folded = unicodedata.normalize("NFC", relative.name).casefold() if strict_aliases else relative.name.casefold()
+        matching = [name for name in names if (unicodedata.normalize("NFC", name).casefold() if strict_aliases else name.casefold()) == folded]
         if matching and matching != [relative.name]:
             raise SourceBaselineError("source locator has a case-insensitive path collision")
         try:
             before_name = os.stat(relative.name, dir_fd=fd, follow_symlinks=False)
         except OSError as exc:
+            if exc.errno == errno.ENOENT and relative.name in names:
+                raise SourceChangedError("selected source changed while being observed") from exc
             raise SourceBaselineError(f"cannot inspect selected source: {exc}") from exc
         if not stat.S_ISREG(before_name.st_mode):
             raise SourceBaselineError("selected source must be a regular file")
+        if reject_hardlinks and before_name.st_nlink != 1:
+            raise SourceBaselineError("selected source has hardlink aliases")
         try:
             source_fd = os.open(relative.name, file_flags, dir_fd=fd)
         except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("selected source changed while being observed") from exc
             raise SourceBaselineError(f"cannot open selected source: {exc}") from exc
         before = os.fstat(source_fd)
         if not stat.S_ISREG(before.st_mode) or _identity(before) != _identity(before_name):
@@ -148,14 +204,22 @@ def _open_selected(root: Path, relative: PurePosixPath,
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
             opened_after = os.fstat(stream.fileno())
-        after_name = os.stat(relative.name, dir_fd=fd, follow_symlinks=False)
+        try:
+            after_name = os.stat(relative.name, dir_fd=fd, follow_symlinks=False)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("selected source changed while being observed") from exc
+            raise
         if (_identity(before) != _identity(opened_after) or _identity(before) != _identity(after_name)
                 or before.st_size != opened_after.st_size or before.st_size != after_name.st_size):
-            raise SourceBaselineError("selected source changed while being observed")
-        _assert_mapping(mapping)
+            raise SourceChangedError("selected source changed while being observed")
+        _assert_mapping(mapping, strict_aliases=strict_aliases)
         for dir_path, dir_fd, identity in dirs:
             _public_directory(dir_path, dir_fd, identity)
-        return "sha256:" + digest.hexdigest()
+        stamp = (opened_after.st_dev, opened_after.st_ino, opened_after.st_mode, opened_after.st_nlink,
+                 opened_after.st_size, opened_after.st_mtime_ns, opened_after.st_ctime_ns,
+                 *(value for _path, _fd, identity in dirs for value in identity))
+        return "sha256:" + digest.hexdigest(), stamp
     except SourceBaselineError:
         raise
     except OSError as exc:
@@ -165,6 +229,12 @@ def _open_selected(root: Path, relative: PurePosixPath,
             os.close(source_fd)
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+def _open_selected(root: Path, relative: PurePosixPath,
+                   mapping: tuple[tuple[Path, tuple[int, int]], ...]) -> str:
+    """Compatibility wrapper returning the exact-byte digest only."""
+    return _inspect_selected(root, relative, mapping)[0]
 
 
 def _git_run(root: Path, args: list[str], *, limit: int = _GIT_OUTPUT_LIMIT) -> tuple[int, bytes]:

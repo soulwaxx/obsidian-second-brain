@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 import stat
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -54,6 +56,19 @@ class WikiBatchTests(unittest.TestCase):
             result[path.relative_to(self.vault).as_posix() if path != self.vault else "."] = (
                 info.st_mode, info.st_mtime_ns, content)
         return result
+
+    def test_ledger_hardlink_rejection_is_opt_in_and_precedes_byte_reads(self):
+        evidence = self.vault / "wiki/meta/evidence"
+        evidence.mkdir(parents=True)
+        record = evidence / "asset-one.json"
+        outside = Path(self.temp.name) / "outside-record.json"
+        outside.write_bytes(b"synthetic ledger bytes")
+        os.link(outside, record)
+        self.assertEqual(record.stat().st_nlink, 2)
+        self.assertEqual(MODULE._ledger_files(self.vault), {record.name: b"synthetic ledger bytes"})
+        with mock.patch.object(MODULE.os, "fdopen", side_effect=AssertionError("read before hardlink check")):
+            with self.assertRaisesRegex(MODULE.BatchError, "hardlink"):
+                MODULE._ledger_files(self.vault, reject_hardlinks=True)
 
     def test_source_capture_history_is_read_only_and_returns_validated_journals(self):
         self.config.write_text(json.dumps({"vaultPath": str(self.vault)}), encoding="utf-8")

@@ -136,8 +136,12 @@ is recorded.
 
 ## Reports, lint, and adoption candidates
 
-`evidence-report` remains read-only. It can report optional asset and observation
-records plus each page/asset baseline history and latest declared reconciliation
+The separate read-only [`source-check`](source-drift.md) compares a user-selected
+local root against declared recorded observations and reports possible page and
+claim impacts. It is not part of `evidence-report`; its selected scope and
+limits are documented separately. `evidence-report` remains read-only. It can
+report optional asset and observation records plus each page/asset baseline
+history and latest declared reconciliation
 without opening mapped external roots, querying Git, rehashing sources, writing,
 or asserting factual currentness. A recorded observation is not a declared
 reconciliation; a declared reconciliation is not factual review. Its page review

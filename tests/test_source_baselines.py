@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -140,6 +141,99 @@ class SourceBaselineHelperTests(unittest.TestCase):
                 if not remap_parent:
                     selected.unlink()
                     moved.rename(selected)
+
+    def test_observed_root_and_parent_disappearance_are_typed_as_changes(self):
+        root_mapping = BASELINES._mapping_snapshot(self.root)
+        moved_root = self.root.with_name(self.root.name + "-moved")
+        original_open = BASELINES.os.open
+        fired = False
+
+        def remove_root_before_open(path, *args, **kwargs):
+            nonlocal fired
+            if Path(path) == self.root and not fired:
+                fired = True
+                self.root.rename(moved_root)
+            return original_open(path, *args, **kwargs)
+
+        try:
+            with mock.patch.object(BASELINES.os, "open", side_effect=remove_root_before_open):
+                with self.assertRaises(BASELINES.SourceChangedError):
+                    BASELINES._inspect_selected(self.root, BASELINES._relative_locator("a"), root_mapping)
+        finally:
+            if moved_root.exists() and not self.root.exists():
+                moved_root.rename(self.root)
+
+        parent = self.root / "docs"
+        parent.mkdir()
+        (parent / "a").write_bytes(b"x")
+        root_mapping = BASELINES._mapping_snapshot(self.root)
+        moved_parent = parent.with_name("docs-moved")
+        fired = False
+
+        def remove_listed_parent_before_open(path, *args, **kwargs):
+            nonlocal fired
+            if path == "docs" and kwargs.get("dir_fd") is not None and not fired:
+                fired = True
+                parent.rename(moved_parent)
+            return original_open(path, *args, **kwargs)
+
+        try:
+            with mock.patch.object(BASELINES.os, "open", side_effect=remove_listed_parent_before_open):
+                with self.assertRaises(BASELINES.SourceChangedError):
+                    BASELINES._inspect_selected(self.root, BASELINES._relative_locator("docs/a"), root_mapping)
+        finally:
+            if moved_parent.exists() and not parent.exists():
+                moved_parent.rename(parent)
+
+        with self.assertRaises(BASELINES.SourceBaselineError) as missing:
+            self.observe(locator="absent/a")
+        self.assertNotIsInstance(missing.exception, BASELINES.SourceChangedError)
+
+    def test_mapping_component_removed_after_enumeration_is_typed_as_change(self):
+        moved = self.root.with_name(self.root.name + "-moved")
+        original_lstat = BASELINES.Path.lstat
+        fired = False
+
+        def remove_listed_component_before_lstat(path):
+            nonlocal fired
+            if path == self.root and not fired:
+                fired = True
+                self.root.rename(moved)
+            return original_lstat(path)
+
+        try:
+            with mock.patch.object(BASELINES.Path, "lstat", remove_listed_component_before_lstat):
+                with self.assertRaises(BASELINES.SourceChangedError):
+                    BASELINES._mapping_snapshot(self.root)
+        finally:
+            if moved.exists() and not self.root.exists():
+                moved.rename(self.root)
+
+    def test_mapping_unicode_alias_checks_are_opt_in_for_existing_helpers(self):
+        parent = self.root.parent
+        name = "é-ancestor"
+        root = parent / name / "source-root"
+        root.mkdir(parents=True)
+        alias = unicodedata.normalize("NFD", name)
+        self.assertNotEqual(alias, name)
+        original_listdir = BASELINES.os.listdir
+
+        def listdir_with_alias(path):
+            names = original_listdir(path)
+            if isinstance(path, (str, os.PathLike)) and Path(path) == parent:
+                return [*names, alias]
+            return names
+
+        with mock.patch.object(BASELINES.os, "listdir", side_effect=listdir_with_alias):
+            mapping = BASELINES._mapping_snapshot(root)
+            BASELINES._assert_mapping(mapping)
+            self.assertEqual(BASELINES._absolute_root(root), root)
+            with self.assertRaises(BASELINES.SourceBaselineError):
+                BASELINES._mapping_snapshot(root, strict_aliases=True)
+            with self.assertRaises(BASELINES.SourceBaselineError):
+                BASELINES._absolute_root(root, strict_aliases=True)
+            with self.assertRaises(BASELINES.SourceBaselineError):
+                BASELINES._assert_mapping(mapping, strict_aliases=True)
 
     def test_parent_symlink_and_root_case_collision_are_refused(self):
         parent = Path(self.temp.name) / "actual-parent"

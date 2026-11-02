@@ -194,6 +194,7 @@ for read-only structured search and doctor commands from any folder:
 obsidian-second-brain search "query terms" --json
 obsidian-second-brain doctor --json
 obsidian-second-brain evidence-report --json
+obsidian-second-brain source-check --root-id research-notes --source-root "/absolute/path/to/selected sources" --json
 ```
 
 Pi and Claude plugin installation does not necessarily put that npm bin on
@@ -209,8 +210,11 @@ configuration, dependencies, vault, cache-exclusion, lifecycle, and retrieval
 status without repairing them. `evidence-report` is also read-only; optional
 source/claim records are not migrated or required, and its structural,
 freshness, and relationship output does not establish factual truth or source
-verification. Citation scanning follows markdown-it-py's CommonMark parsing; it
-does not enable Obsidian-specific Markdown extensions. Use the wiki's generated
+verification. `source-check` is a separate, explicitly selected, read-only
+comparison of recorded local sources; it reports review signals, not truth or
+reconciliation. See the [source-check contract](docs/source-drift.md). Citation
+scanning follows markdown-it-py's CommonMark parsing; it does not enable
+Obsidian-specific Markdown extensions. Use the wiki's generated
 index hierarchy when search is unavailable or has no useful result. Focused workflow limits and
 selected-conversation save rules are documented in
 [the shared workflow reference](skills/wiki/references/focused-workflows.md).
