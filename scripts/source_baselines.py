@@ -38,7 +38,7 @@ def _directory_identity(info: os.stat_result) -> tuple[int, int]:
     return info.st_dev, info.st_ino
 
 
-def _mapping_snapshot(path: Path) -> tuple[tuple[Path, tuple[int, int]], ...]:
+def _mapping_snapshot(path: Path, *, strict_aliases: bool = False) -> tuple[tuple[Path, tuple[int, int]], ...]:
     """Capture and validate every public ancestor that maps to the selected root."""
     absolute = Path(os.path.abspath(path))
     chain: list[Path] = []
@@ -47,36 +47,55 @@ def _mapping_snapshot(path: Path) -> tuple[tuple[Path, tuple[int, int]], ...]:
     try:
         for part in absolute.parts[1:]:
             names = os.listdir(cursor)
-            matches = [name for name in names if name.casefold() == part.casefold()]
+            if strict_aliases:
+                folded = unicodedata.normalize("NFC", part).casefold()
+                matches = [name for name in names if unicodedata.normalize("NFC", name).casefold() == folded]
+            else:
+                matches = [name for name in names if name.casefold() == part.casefold()]
             if matches and matches != [part]:
                 raise SourceBaselineError("mapped root has a case-insensitive path collision")
             cursor = cursor / part
-            info = cursor.lstat()
+            try:
+                info = cursor.lstat()
+            except OSError as exc:
+                if exc.errno == errno.ENOENT and part in names:
+                    raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+                raise
             if stat.S_ISLNK(info.st_mode):
                 raise SourceBaselineError("mapped source root traverses a symlink")
             chain.append(cursor)
-        final = chain[-1].lstat()
+        try:
+            final = chain[-1].lstat()
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+            raise
         if not stat.S_ISDIR(final.st_mode):
             raise SourceBaselineError("mapped source root must be a directory")
-        return tuple((entry, _directory_identity(entry.lstat())) for entry in chain)
+        try:
+            return tuple((entry, _directory_identity(entry.lstat())) for entry in chain)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+            raise
     except SourceBaselineError:
         raise
     except OSError as exc:
         raise SourceBaselineError(f"cannot verify mapped source root: {exc}") from exc
 
 
-def _absolute_root(root: Path) -> Path:
+def _absolute_root(root: Path, *, strict_aliases: bool = False) -> Path:
     requested = Path(root).expanduser()
     if not requested.is_absolute():
         raise SourceBaselineError("mapped source root must be an explicit absolute path")
     absolute = Path(os.path.abspath(requested))
-    _mapping_snapshot(absolute)
+    _mapping_snapshot(absolute, strict_aliases=strict_aliases)
     return absolute
 
 
-def _assert_mapping(snapshot: tuple[tuple[Path, tuple[int, int]], ...]) -> None:
+def _assert_mapping(snapshot: tuple[tuple[Path, tuple[int, int]], ...], *, strict_aliases: bool = False) -> None:
     try:
-        current = _mapping_snapshot(snapshot[-1][0])
+        current = _mapping_snapshot(snapshot[-1][0], strict_aliases=strict_aliases)
     except SourceBaselineError as exc:
         cause: BaseException | None = exc
         while cause is not None:
@@ -122,12 +141,17 @@ def _inspect_selected(root: Path, relative: PurePosixPath,
     dirs: list[tuple[Path, int, tuple[int, int]]] = []
     source_fd = -1
     try:
-        fd = os.open(root, dir_flags)
+        try:
+            fd = os.open(root, dir_flags)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise SourceChangedError("mapped source root or an ancestor changed during observation") from exc
+            raise
         descriptors.append(fd)
         info = os.fstat(fd)
         dirs.append((root, fd, _directory_identity(info)))
         for part in relative.parts[:-1]:
-            _assert_mapping(mapping)
+            _assert_mapping(mapping, strict_aliases=strict_aliases)
             _public_directory(dirs[-1][0], fd, dirs[-1][2])
             names = os.listdir(fd)
             if strict_aliases and unicodedata.normalize("NFC", part) != part:
@@ -136,12 +160,17 @@ def _inspect_selected(root: Path, relative: PurePosixPath,
             matching = [name for name in names if (unicodedata.normalize("NFC", name).casefold() if strict_aliases else name.casefold()) == folded]
             if matching and matching != [part]:
                 raise SourceBaselineError("source locator has a case-insensitive path collision")
-            fd = os.open(part, dir_flags, dir_fd=fd)
+            try:
+                fd = os.open(part, dir_flags, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno == errno.ENOENT and part in names:
+                    raise SourceChangedError("source root or parent directory changed during observation") from exc
+                raise
             descriptors.append(fd)
             directory_path = dirs[-1][0] / part
             info = os.fstat(fd)
             dirs.append((directory_path, fd, _directory_identity(info)))
-        _assert_mapping(mapping)
+        _assert_mapping(mapping, strict_aliases=strict_aliases)
         _public_directory(dirs[-1][0], fd, dirs[-1][2])
         names = os.listdir(fd)
         if strict_aliases and unicodedata.normalize("NFC", relative.name) != relative.name:
@@ -153,6 +182,8 @@ def _inspect_selected(root: Path, relative: PurePosixPath,
         try:
             before_name = os.stat(relative.name, dir_fd=fd, follow_symlinks=False)
         except OSError as exc:
+            if exc.errno == errno.ENOENT and relative.name in names:
+                raise SourceChangedError("selected source changed while being observed") from exc
             raise SourceBaselineError(f"cannot inspect selected source: {exc}") from exc
         if not stat.S_ISREG(before_name.st_mode):
             raise SourceBaselineError("selected source must be a regular file")
@@ -182,7 +213,7 @@ def _inspect_selected(root: Path, relative: PurePosixPath,
         if (_identity(before) != _identity(opened_after) or _identity(before) != _identity(after_name)
                 or before.st_size != opened_after.st_size or before.st_size != after_name.st_size):
             raise SourceChangedError("selected source changed while being observed")
-        _assert_mapping(mapping)
+        _assert_mapping(mapping, strict_aliases=strict_aliases)
         for dir_path, dir_fd, identity in dirs:
             _public_directory(dir_path, dir_fd, identity)
         stamp = (opened_after.st_dev, opened_after.st_ino, opened_after.st_mode, opened_after.st_nlink,

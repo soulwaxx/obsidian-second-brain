@@ -463,11 +463,15 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
     inspected_assets: set[str] = set()
     mapping = None
     root_error = None
+    root_validated = False
     try:
-        root = BASELINES._absolute_root(source_root)
-        mapping = BASELINES._mapping_snapshot(root)
+        root = BASELINES._absolute_root(source_root, strict_aliases=True)
+        root_validated = True
+        mapping = BASELINES._mapping_snapshot(root, strict_aliases=True)
     except (OSError, ValueError) as exc:
         root_error = _reason(exc)
+        if root_validated and root_error == "missing":
+            root_error = "unstable"
         root_state = "operational-error" if root_error == "missing" else _state(root_error)
         issues.append({"state": root_state, "reason": "selected-root-unavailable"})
 
@@ -563,12 +567,16 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
         if not isinstance(claim_refs, list):
             issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-claims"})
             page["reviewReasons"].append("invalid-page-claims")
+            if page["state"] != "unstable":
+                page["state"] = "unsafe-unresolvable"
         else:
             for claim_id in claim_refs:
                 if (not isinstance(claim_id, str) or not claim_id.startswith("claim-")
                         or not LEDGER._identifier(claim_id)):
                     issues.append({"path": page_path, "state": "invalid", "reason": "invalid-page-claim-reference"})
                     page["reviewReasons"].append("invalid-page-claim-reference")
+                    if page["state"] != "unstable":
+                        page["state"] = "unsafe-unresolvable"
                 else:
                     page["claims"].append(claim_id)
         refs = meta.get("sources", [])
@@ -778,7 +786,7 @@ def check(vault: Path, root_id: str, source_root: Path) -> dict[str, Any]:
             except (OSError, ValueError):
                 selected[asset_id].update(state="unstable", reason="source-state-changed-during-check")
         try:
-            BASELINES._assert_mapping(mapping)
+            BASELINES._assert_mapping(mapping, strict_aliases=True)
         except (OSError, ValueError):
             issues.append({"state": "unstable", "reason": "selected-root-remapped"})
             for item in selected.values():

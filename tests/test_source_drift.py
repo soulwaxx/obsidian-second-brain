@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -740,6 +741,46 @@ class SourceDriftTests(unittest.TestCase):
         self.assertEqual(pages["wiki/claim.md"]["claims"], [])
         self.assertFalse(result["complete"])
 
+    def test_source_removed_after_directory_enumeration_is_unstable_in_cli_report(self):
+        _asset, source, *_ = self.setup_asset(content=b"list-stat-race", claims=["claim-list-stat"])
+        self.save(LEDGER.make_claim("claim-list-stat", "Synthetic list-stat claim", support=[source["id"]]))
+        target = self.source / "notes/a.txt"
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        bootstrap = f"""
+import runpy, sys
+from pathlib import Path
+sys.path.insert(0, {str(ROOT / 'scripts')!r})
+import module_loading
+real_load = module_loading.load_source
+def hooked_load(name, path):
+    module = real_load(name, path)
+    if name == "obsidian_cli_source_drift":
+        baseline = module.BASELINES
+        real_stat = baseline.os.stat
+        fired = False
+        def stat_spy(path, *args, **kwargs):
+            nonlocal fired
+            if path == "a.txt" and kwargs.get("dir_fd") is not None and not fired:
+                fired = True
+                Path({str(target)!r}).unlink()
+            return real_stat(path, *args, **kwargs)
+        baseline.os.stat = stat_spy
+    return module
+module_loading.load_source = hooked_load
+sys.argv = [{str(CLI)!r}, "source-check", "--root-id", "root-notes", "--source-root", {str(self.source)!r}, "--json"]
+runpy.run_path({str(CLI)!r}, run_name="__main__")
+"""
+        result = subprocess.run([sys.executable, "-c", bootstrap], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["snapshotValidity"], "unstable")
+        asset = next(row for row in report["assets"] if row["id"] == "asset-one")
+        self.assertEqual(asset["state"], "unstable")
+        self.assertNotIn(str(self.source), result.stdout + result.stderr)
+
     def test_source_removed_between_stat_and_open_is_unstable_in_cli_report(self):
         _asset, source, *_ = self.setup_asset(content=b"open-race-payload", claims=["claim-open-race"])
         self.save(LEDGER.make_claim("claim-open-race", "Synthetic open-race claim", support=[source["id"]]))
@@ -834,6 +875,58 @@ runpy.run_path({str(CLI)!r}, run_name="__main__")
         claim = next(row for row in report["claims"] if row["id"] == "claim-source-race")
         self.assertEqual(claim["evidence"][0]["state"], "unstable")
         self.assertNotIn(str(self.source), result.stdout + result.stderr)
+
+    def test_invalid_claim_references_make_pages_unsafe_but_preserve_valid_edges(self):
+        _asset, source, *_ = self.setup_asset()
+        self.save(LEDGER.make_claim("claim-safe", "Synthetic safe claim", support=[source["id"]]))
+        references = {
+            "scalar": "17",
+            "array": "[17]",
+            "syntax": "[not-a-claim]",
+            "mixed": "[claim-safe, 17]",
+        }
+        for name, claims in references.items():
+            (self.vault / "wiki" / f"invalid-{name}.md").write_text(
+                f"---\ntype: Note\nclaims: {claims}\n---\nSynthetic body\n", encoding="utf-8")
+        before = self.snapshot()
+        env = {**os.environ, "HOME": str(self.base / "empty-home"), "OBSIDIAN_AGENT_CONFIG": str(self.config)}
+        env.pop("OBSIDIAN_VAULT_PATH", None)
+        result = subprocess.run([sys.executable, str(CLI), "source-check", "--root-id", "root-notes",
+                                 "--source-root", str(self.source), "--json"], cwd=self.base,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        report = json.loads(result.stdout)
+        pages = {page["path"]: page for page in report["pages"]}
+        for name in references:
+            page = pages[f"wiki/invalid-{name}.md"]
+            self.assertEqual(page["state"], "unsafe-unresolvable")
+        mixed = pages["wiki/invalid-mixed.md"]
+        self.assertEqual(mixed["claims"], ["claim-safe"])
+        claim = next(row for row in report["claims"] if row["id"] == "claim-safe")
+        self.assertIn("wiki/invalid-mixed.md", claim["pages"])
+        self.assertEqual(pages["wiki/claim.md"]["state"], "current")
+
+    def test_invalid_claim_does_not_downgrade_unstable_page(self):
+        self.setup_asset()
+        page = self.vault / "wiki/claim.md"
+        page.write_text("---\ntype: Note\nclaims: 17\n---\nOriginal\n", encoding="utf-8")
+        original_read = DRIFT._read_page
+        changed = False
+
+        def mutate_after_read(*args, **kwargs):
+            nonlocal changed
+            result = original_read(*args, **kwargs)
+            if not changed:
+                changed = True
+                page.write_text("---\ntype: Note\nclaims: 17\n---\nChanged\n", encoding="utf-8")
+            return result
+
+        with mock.patch.object(DRIFT, "_read_page", side_effect=mutate_after_read):
+            result = self.run_check()
+        page_row = next(row for row in result["pages"] if row["path"] == "wiki/claim.md")
+        self.assertEqual(page_row["state"], "unstable")
+        self.assertTrue(any(issue.get("reason") == "invalid-page-claims" for issue in result["issues"]))
 
     def test_source_policy_legacy_ids_are_unchecked_with_or_without_resource(self):
         self.setup_asset()
@@ -972,6 +1065,90 @@ runpy.run_path({str(CLI)!r}, run_name="__main__")
         with mock.patch.object(DRIFT.BASELINES.subprocess, "Popen", side_effect=AssertionError("runtime invoked Git")):
             result = self.run_check()
         self.assertEqual(result["assets"][0]["state"], "changed")
+
+    def test_absolute_source_root_rejects_unicode_sibling_aliases(self):
+        self.setup_asset()
+        parent = self.base / "unicode-parent"
+        parent.mkdir()
+        name = "é-ancestor"
+        root = parent / name / "source-root"
+        (root / "notes").mkdir(parents=True)
+        (root / "notes/a.txt").write_bytes(b"v1")
+        alias = unicodedata.normalize("NFD", name)
+        self.assertNotEqual(alias, name)
+        original_listdir = DRIFT.BASELINES.os.listdir
+
+        def listdir_with_alias(path):
+            names = original_listdir(path)
+            if isinstance(path, (str, os.PathLike)) and Path(path) == parent:
+                return [*names, alias]
+            return names
+
+        with mock.patch.object(DRIFT.BASELINES.os, "listdir", side_effect=listdir_with_alias):
+            result = DRIFT.check(self.vault, "root-notes", root)
+        self.assertFalse(result["complete"])
+        self.assertTrue(any(issue.get("reason") == "selected-root-unavailable" for issue in result["issues"]))
+        asset = next(row for row in result["assets"] if row["id"] == "asset-one")
+        self.assertEqual(asset["state"], "unsafe-unresolvable")
+        self.assertNotIn(str(root), json.dumps(result))
+
+    def test_root_removed_after_validation_is_unstable_before_selected_open(self):
+        self.setup_asset()
+        moved = self.source.with_name("source-moved-before-open")
+        original_snapshot = DRIFT.BASELINES._mapping_snapshot
+        calls = 0
+
+        def remove_after_root_validation(path, **kwargs):
+            nonlocal calls
+            result = original_snapshot(path, **kwargs)
+            calls += 1
+            if calls == 1:
+                self.source.rename(moved)
+            return result
+
+        try:
+            with mock.patch.object(DRIFT.BASELINES, "_mapping_snapshot", side_effect=remove_after_root_validation):
+                result = self.run_check()
+        finally:
+            if moved.exists() and not self.source.exists():
+                moved.rename(self.source)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["snapshotValidity"], "unstable")
+        self.assertEqual(result["assets"][0]["state"], "unstable")
+
+    def test_final_absolute_source_mapping_rejects_new_unicode_alias(self):
+        self.setup_asset()
+        parent = self.base / "unicode-parent"
+        parent.mkdir()
+        name = "é-ancestor"
+        root = parent / name / "source-root"
+        (root / "notes").mkdir(parents=True)
+        (root / "notes/a.txt").write_bytes(b"v1")
+        alias = unicodedata.normalize("NFD", name)
+        active = False
+        original_listdir = DRIFT.BASELINES.os.listdir
+        original_inspect = DRIFT.BASELINES._inspect_selected
+
+        def listdir_with_alias(path):
+            names = original_listdir(path)
+            if active and isinstance(path, (str, os.PathLike)) and Path(path) == parent:
+                return [*names, alias]
+            return names
+
+        def activate_after_initial_inspection(*args, **kwargs):
+            nonlocal active
+            result = original_inspect(*args, **kwargs)
+            active = True
+            return result
+
+        with mock.patch.object(DRIFT.BASELINES.os, "listdir", side_effect=listdir_with_alias):
+            with mock.patch.object(DRIFT.BASELINES, "_inspect_selected", side_effect=activate_after_initial_inspection):
+                result = DRIFT.check(self.vault, "root-notes", root)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["snapshotValidity"], "unstable")
+        asset = next(row for row in result["assets"] if row["id"] == "asset-one")
+        self.assertEqual(asset["state"], "unstable")
+        self.assertNotIn(str(root), json.dumps(result))
 
     def test_source_root_remap_during_check_is_unstable(self):
         self.setup_asset()
