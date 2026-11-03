@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { installedPackage } from "../../tests/pi-runtime-paths.mjs";
-import { createPiRunner } from "./pi-runner.mjs";
+import { assertSupportedGitMetadataLayout, createPiRunner } from "./pi-runner.mjs";
 import { codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "./live-support.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -127,7 +127,7 @@ function persistFile(directory, name, value) {
 export function validateRunMetadata(metadata) {
   const exact = (value, keys, label) => { if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key))) throw new Error(`${label}-schema-invalid`); };
   exact(metadata, ["schemaVersion", "identities", "limits", "runtime", "backendRevision", "backendRevisionStatus", "stopCode", "attempts", "sessions", "stages", "timing", "pricing"], "metadata");
-  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
+  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
   exact(metadata.limits, ["calls", "minutes", "outputTokens", "maxOutputTokens"], "limits");
   if (!Object.values(metadata.limits).every((value) => Number.isSafeInteger(value) && value > 0)) throw new Error("metadata-limits-invalid");
   exact(metadata.identities, ["sourceHash", "goldHash", "fixtureHash", "rubricHash", "settingsHash", "promptHash", "code"], "identities");
@@ -286,6 +286,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   if (!config.vaultRoot) throw new Error("explicit-synthetic-vault-required");
   if (config.solver.provider !== "openai" || config.judge.provider !== "openai") throw new Error("unsupported-provider-route");
   const vaultRoot = safeDirectory(config.vaultRoot);
+  assertSupportedGitMetadataLayout(vaultRoot);
   const workdir = validateWorkdir(config.workdir);
   const isWithin = (parent, target) => { const relative = path.relative(parent, target); return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)); };
   if (isWithin(vaultRoot, workdir) || isWithin(workdir, vaultRoot)) throw new Error("workdir-vault-overlap");
@@ -356,7 +357,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
     const provider = runtime.getProvider("openai");
     if (!provider) throw new Error("openai-provider-unavailable");
     runtime.registerNativeProvider(wrapOpenAIProvider(provider, budget, { maxOutputTokens: config.limits.maxOutputTokens, fetchImpl: deps.fetchImpl,
-      effort: (model) => model.id === solverModel.id ? config.solver.effort : config.judge.effort,
+      effort: () => currentPhase.startsWith("judge-") ? config.judge.effort : config.solver.effort,
       beforeDispatch: identityCheck,
       onAttempt: (attempt) => { attempt.phase = currentPhase; persistMetadata(); }, onAttemptComplete: persistMetadata }));
     runner = await runnerFactory({ vaultRoot, workspaceRoot: externalWorkspace, modelRuntime: runtime,
@@ -504,7 +505,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
       }
     }
   } catch (error) {
-    const safeCodes = new Set(["code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "response-model-drift", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped"]);
+    const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "response-model-drift", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped"]);
     sidecar.stopCode ??= budget.state.stopCode ?? (safeCodes.has(error?.message) ? error.message : "run-stopped");
     sidecar.stages.push({ phase: "coordinator", status: "stopped", code: sidecar.stopCode });
     for (const trial of artifact.trials) if (trial.status === "missing") trial.status = "missing";

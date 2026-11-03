@@ -217,6 +217,71 @@ try {
   });
   const model = runtime.getModel("km-stub", "deterministic");
   assert.ok(model);
+  const separateGitVault = path.join(tmp, "separate-git-vault");
+  const externalGitDir = path.join(tmp, "separate-git-dir");
+  const separateGitWorkspace = path.join(tmp, "separate-git-workspace");
+  fs.mkdirSync(path.join(separateGitVault, "wiki"), { recursive: true });
+  fs.mkdirSync(separateGitWorkspace);
+  fs.writeFileSync(path.join(separateGitVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+  execFileSync("git", ["init", "--quiet", "--separate-git-dir", externalGitDir, separateGitVault], { cwd: tmp, env: process.env });
+  const externalGitBefore = fs.readdirSync(externalGitDir).sort();
+  assert.ok(fs.lstatSync(path.join(separateGitVault, ".git")).isFile(), "separate-git-dir fixture uses a regular .git indirection file");
+  await assert.rejects(createPiRunner({ vaultRoot: separateGitVault, workspaceRoot: separateGitWorkspace, modelRuntime: runtime, model, sdkPackage: packageRoot }), /unsupported-git-metadata-layout/);
+  assert.equal(fs.existsSync(path.join(separateGitWorkspace, ".knowledge-maintenance")), false, "unsupported external Git metadata is rejected before runner setup");
+  assert.deepEqual(fs.readdirSync(externalGitDir).sort(), externalGitBefore, "rejection does not read/write external lifecycle journals or locks");
+
+  const ancestorRepo = path.join(tmp, "ancestor-repository");
+  const ancestorVault = path.join(ancestorRepo, "vault");
+  const ancestorWorkspace = path.join(tmp, "ancestor-workspace");
+  fs.mkdirSync(path.join(ancestorVault, "wiki"), { recursive: true });
+  fs.mkdirSync(ancestorWorkspace);
+  fs.writeFileSync(path.join(ancestorVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+  execFileSync("git", ["init", "--quiet", ancestorRepo], { cwd: tmp, env: process.env });
+  const ancestorGitDir = path.join(ancestorRepo, ".git");
+  const externalJournal = path.join(ancestorGitDir, "okf-index-ownership.json");
+  const externalLock = path.join(ancestorGitDir, "okf-index-ownership.lock");
+  fs.writeFileSync(externalJournal, "sentinel journal\n");
+  fs.writeFileSync(externalLock, "sentinel lock\n");
+  protectedFileReads.add(externalJournal);
+  protectedFileReads.add(externalLock);
+  const ancestorGitBefore = fs.readdirSync(ancestorGitDir).sort();
+  const providerTurnsBefore = requests;
+  await assert.rejects(createPiRunner({ vaultRoot: ancestorVault, workspaceRoot: ancestorWorkspace, modelRuntime: runtime, model, sdkPackage: packageRoot }), /unsupported-git-metadata-layout/);
+  assert.equal(fs.existsSync(path.join(ancestorWorkspace, ".knowledge-maintenance")), false, "ancestor repository is rejected before runner setup");
+  assert.equal(requests, providerTurnsBefore, "ancestor repository is rejected before a provider turn");
+  assert.deepEqual(protectedReadAttempts, [], "ancestor repository journals and locks were not read");
+  assert.deepEqual(fs.readdirSync(ancestorGitDir).sort(), ancestorGitBefore, "ancestor repository metadata is unchanged");
+  protectedFileReads.delete(externalJournal);
+  protectedFileReads.delete(externalLock);
+  assert.equal(originalReadFileSync.call(fsMutable, externalJournal, "utf8"), "sentinel journal\n");
+  assert.equal(originalReadFileSync.call(fsMutable, externalLock, "utf8"), "sentinel lock\n");
+
+  const ambientVault = path.join(tmp, "ambient-git-vault");
+  const ambientWorkspace = path.join(tmp, "ambient-git-workspace");
+  const ambientExternalGit = path.join(tmp, "ambient-external-git");
+  fs.mkdirSync(path.join(ambientVault, "wiki"), { recursive: true });
+  fs.mkdirSync(ambientWorkspace);
+  fs.writeFileSync(path.join(ambientVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+  execFileSync("git", ["init", "--quiet", ambientVault], { cwd: tmp, env: process.env });
+  execFileSync("git", ["init", "--quiet", ambientExternalGit], { cwd: tmp, env: process.env });
+  const ambientGitBefore = fs.readdirSync(ambientExternalGit).sort();
+  for (const variable of ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"]) {
+    const previous = process.env[variable];
+    process.env[variable] = variable === "GIT_WORK_TREE" ? ancestorRepo : ambientExternalGit;
+    try {
+      await assert.rejects(createPiRunner({ vaultRoot: ambientVault, workspaceRoot: ambientWorkspace, modelRuntime: runtime, model, sdkPackage: packageRoot }), /ambient-git-layout-override/);
+    } finally { if (previous === undefined) delete process.env[variable]; else process.env[variable] = previous; }
+    assert.equal(fs.existsSync(path.join(ambientWorkspace, ".knowledge-maintenance")), false, `${variable} is rejected before runner setup`);
+  }
+  assert.deepEqual(fs.readdirSync(ambientExternalGit).sort(), ambientGitBefore, "ambient Git overrides do not touch external metadata");
+
+  const nonGitVault = path.join(tmp, "non-git-vault");
+  const nonGitWorkspace = path.join(tmp, "non-git-workspace");
+  fs.mkdirSync(path.join(nonGitVault, "wiki"), { recursive: true });
+  fs.mkdirSync(nonGitWorkspace);
+  fs.writeFileSync(path.join(nonGitVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+  const nonGitRunner = await createPiRunner({ vaultRoot: nonGitVault, workspaceRoot: nonGitWorkspace, modelRuntime: runtime, model, sdkPackage: packageRoot });
+  assert.deepEqual(nonGitRunner.assertVaultTreeSafe(), undefined, "supported non-Git synthetic vault remains accepted");
   const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, "experiments/knowledge-maintenance/fixtures.json"), "utf8"));
   allCheckpoints = fixture.checkpoints.map((checkpoint) => checkpoint.id);
 

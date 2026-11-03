@@ -200,6 +200,34 @@ function makeScopedExtension({ vaultRoot, sourceRecords, sourceEnabled, wikiEnab
   };
 }
 
+export function assertSupportedGitMetadataLayout(root) {
+  const redirects = new Set(["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"]);
+  if (Object.keys(process.env).some((key) => redirects.has(key) || key.startsWith("GIT_CONFIG") || key.startsWith("GIT_TRACE"))) {
+    fail("ambient-git-layout-override");
+  }
+  const git = path.join(root, ".git");
+  let stat;
+  try { stat = fs.lstatSync(git); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (stat) {
+    if (stat.isSymbolicLink() || !stat.isDirectory()) fail("unsupported-git-metadata-layout");
+    for (const relative of ["commondir", "gitdir", path.join("objects", "info", "alternates")]) {
+      try { fs.lstatSync(path.join(git, relative)); fail("unsupported-git-metadata-layout"); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+    return;
+  }
+  let ancestor = path.dirname(root);
+  for (;;) {
+    const ancestorGit = path.join(ancestor, ".git");
+    try { fs.lstatSync(ancestorGit); fail("unsupported-git-metadata-layout"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) return;
+    ancestor = parent;
+  }
+}
+
 /**
  * Build an offline, injectable Pi SDK experiment adapter. The host owns vault
  * preparation/BM25 builds and supplies the already configured ModelRuntime.
@@ -222,6 +250,7 @@ export async function createPiRunner(options) {
   const marker = path.join(vault, ".knowledge-maintenance-synthetic");
   const markerStat = fs.lstatSync(marker);
   if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink !== 1 || fs.readFileSync(marker, "utf8") !== "obsidian-second-brain synthetic knowledge-maintenance vault v1\n") fail("synthetic-vault-marker-required");
+  assertSupportedGitMetadataLayout(vault);
   const fixture = loadFixture(suppliedFixture);
   const sdkRoot = sdkPackage ?? installedPackage();
   if (!sdkRoot) fail("UNVERIFIED: installed Pi SDK unavailable; runner requires the actual installed SDK");
@@ -374,6 +403,7 @@ export async function createPiRunner(options) {
   }
 
   function assertVaultTreeSafe(root) {
+    assertSupportedGitMetadataLayout(root);
     const unsafe = unsafeVaultEntries(root);
     if (unsafe.length) fail(`unsafe-vault-entry:${unsafe.map((item) => item.kind).join(",")}`);
   }

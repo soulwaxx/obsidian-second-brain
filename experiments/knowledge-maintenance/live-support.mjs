@@ -108,7 +108,12 @@ export function resolveConfig({ argv = [], env = process.env, cwd = process.cwd(
   if (args.live && args.dryRun) fail("live-and-dry-run-conflict");
   const dedicated = args.configFile ?? env.OSB_KM_CONFIG ?? configPath;
   const fileConfig = loadConfigFile(dedicated);
-  const resolved = mergeConfig(fileConfig, env, args);
+  const withRoleDefaults = { ...fileConfig };
+  for (const role of ["solver", "judge"]) {
+    if (fileConfig[role] !== undefined) exactObject(fileConfig[role], new Set(["provider", "model", "effort"]), role);
+    withRoleDefaults[role] = { ...DEFAULTS[role], ...fileConfig[role] };
+  }
+  const resolved = mergeConfig(withRoleDefaults, env, args);
   exactObject(resolved, KEYS, "resolved-config");
   const solver = parsePair(resolved.solver, "solver") ?? DEFAULTS.solver;
   const judge = parsePair(resolved.judge, "judge") ?? DEFAULTS.judge;
@@ -243,13 +248,10 @@ function parseUsage(data) {
   };
 }
 
-function inspectResponsesBody(raw, maxOutputTokens, effort) {
+function inspectResponsesBody(raw) {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed.startsWith("{")) return null;
-  let body;
-  try { body = JSON.parse(trimmed); } catch { return null; }
-  if (body.max_output_tokens !== maxOutputTokens || body.reasoning?.effort !== effort) fail("request-contract-mismatch");
-  return body;
+  try { return JSON.parse(trimmed); } catch { return null; }
 }
 
 export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, effort = "medium", fetchImpl = globalThis.fetch, beforeDispatch = () => {}, onAttempt = () => {}, onAttemptComplete = () => {} } = {}) {
@@ -274,9 +276,12 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
       const fetch = async (input, init = {}) => {
         let rawBody = init.body;
         if (rawBody === undefined && typeof Request !== "undefined" && input instanceof Request) rawBody = await input.clone().text();
-        const body = inspectResponsesBody(rawBody, responseLimit, requestEffort);
-        if (!body) { requestViolation = "request-body-unavailable"; fail(requestViolation); }
-        if (body.max_output_tokens !== responseLimit || body.reasoning?.effort !== requestEffort || body.model !== model.id || body.store !== false || body.stream !== true) { requestViolation = "request-contract-mismatch"; fail(requestViolation); }
+        const body = inspectResponsesBody(rawBody);
+        if (!body) { requestViolation = "request-body-unavailable"; budget.stop(requestViolation); }
+        if (body.max_output_tokens !== responseLimit || body.reasoning?.effort !== requestEffort || body.model !== model.id || body.store !== false || body.stream !== true) {
+          requestViolation = "request-contract-mismatch";
+          budget.stop(requestViolation);
+        }
         const request = input instanceof Request ? input : null;
         const requestUrl = new URL(request ? request.url : String(input));
         const method = init.method ?? request?.method;

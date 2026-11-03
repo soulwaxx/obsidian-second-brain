@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -29,6 +29,27 @@ try {
   assert.equal(resolved.solver.effort, "high");
   assert.equal(resolved.limits.maxOutputTokens, 32);
   assert.equal(resolved.limits.calls, 12);
+  const partialConfigPath = path.join(outside, "partial-config.json");
+  fs.writeFileSync(partialConfigPath, JSON.stringify({ workdir, solver: { provider: "openai", model: "file-solver" }, judge: { model: "file-judge" } }));
+  const partial = resolveConfig({ argv: ["--config", partialConfigPath, "--solver-effort", "high", "--solver-model", "cli-solver", "--judge-effort", "high"],
+    env: { OSB_KM_SOLVER_MODEL: "env-solver", OSB_KM_JUDGE_EFFORT: "low" } });
+  assert.deepEqual(partial.solver, { provider: "openai", model: "cli-solver", effort: "high" }, "CLI role fields override environment/file while missing fields inherit defaults");
+  assert.deepEqual(partial.judge, { provider: "openai", model: "file-judge", effort: "high" }, "judge file/environment/CLI precedence preserves default provider");
+  assert.deepEqual(partial.limits, { calls: 750, minutes: 90, outputTokens: 500000, maxOutputTokens: 4096 }, "omitted limits inherit documented defaults");
+  fs.writeFileSync(partialConfigPath, JSON.stringify({ workdir, solver: { model: "file-solver" } }));
+  const fileDefaults = resolveConfig({ argv: ["--config", partialConfigPath], env: {} });
+  assert.deepEqual(fileDefaults.solver, { provider: "openai", model: "file-solver", effort: "medium" });
+  assert.deepEqual(fileDefaults.judge, { provider: "openai", model: "gpt-6.1-terra", effort: "medium" });
+  fs.writeFileSync(partialConfigPath, JSON.stringify({ workdir }));
+  const envDefaults = resolveConfig({ argv: ["--config", partialConfigPath], env: { OSB_KM_SOLVER_MODEL: "env-solver", OSB_KM_JUDGE_EFFORT: "high" } });
+  assert.deepEqual(envDefaults.solver, { provider: "openai", model: "env-solver", effort: "medium" });
+  assert.deepEqual(envDefaults.judge, { provider: "openai", model: "gpt-6.1-terra", effort: "high" });
+  fs.writeFileSync(partialConfigPath, JSON.stringify({ workdir, solver: { model: "" } }));
+  assert.throws(() => resolveConfig({ argv: ["--config", partialConfigPath], env: {} }), /invalid-solver/);
+  fs.writeFileSync(partialConfigPath, JSON.stringify({ workdir, solver: null }));
+  assert.throws(() => resolveConfig({ argv: ["--config", partialConfigPath], env: {} }), /solver-must-be-object/);
+  fs.writeFileSync(partialConfigPath, JSON.stringify({ workdir, solver: { typo: "x" } }));
+  assert.throws(() => resolveConfig({ argv: ["--config", partialConfigPath], env: {} }), /solver-unknown-key/);
   assert.throws(() => resolveConfig({ argv: ["--config", configPath], env: { OSB_KM_UNKNOWN: "x" } }), /unknown-prefixed-environment-key/);
   fs.writeFileSync(configPath, JSON.stringify({ ...config, live: true }));
   assert.throws(() => resolveConfig({ argv: ["--config", configPath], env: {} }), /config-unknown-key/);
@@ -46,6 +67,20 @@ try {
   assert.ok(manifest.identities.sourceHash && manifest.identities.goldHash && manifest.identities.promptHash && manifest.identities.rubricHash && manifest.identities.code.hash);
   assert.equal(fs.existsSync(workdir), false, "dry-run cannot create output paths");
   assert.equal(Object.hasOwn(manifest, "authFile"), false, "manifest must not include credential path");
+  const ancestorRepo = path.join(outside, "preflight-ancestor-repo");
+  const ancestorVault = path.join(ancestorRepo, "vault");
+  const ancestorWorkdir = path.join(outside, "preflight-ancestor-run");
+  fs.mkdirSync(path.join(ancestorVault, "wiki"), { recursive: true });
+  fs.writeFileSync(path.join(ancestorVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+  fs.mkdirSync(path.join(ancestorRepo, ".git"));
+  const ancestorConfig = { ...dry, live: true, dryRun: false, workdir: ancestorWorkdir, authFile: path.join(outside, "missing-auth.json"), vaultRoot: ancestorVault };
+  const ancestorManifest = dryRun({ ...ancestorConfig, live: false, dryRun: true }, fixture);
+  let ancestorAuthLoads = 0;
+  await assert.rejects(runLive(ancestorConfig, { ...ancestorManifest, liveEnabled: true, mode: "live", externalWorkdir: ancestorWorkdir }, fixture, "owner-ancestor", {
+    loadAuth: () => { ancestorAuthLoads++; throw new Error("auth loading must not be reached"); },
+  }), /unsupported-git-metadata-layout/);
+  assert.equal(fs.existsSync(ancestorWorkdir), false, "ancestor Git discovery is rejected before run output/host preparation");
+  assert.equal(ancestorAuthLoads, 0, "ancestor Git discovery is rejected before auth or provider setup");
   const checkpoint = fixture.checkpoints[0];
   const sources = checkpoint.sources.map((source) => ({ checkpoint: checkpoint.id, path: source.path, text: source.text, sha256: source.sha256 }));
   const judgeInput = buildAnswerJudgePrompt({ candidateId: "opaque-candidate-uuid", answerHash: hash("safe answer"), rubric: { fixed: true },
@@ -378,6 +413,66 @@ try {
     assert.equal(actualRunMetadata.attempts.length, 1);
     assert.equal(actualRunMetadata.sessions[0].phase, "maintenance:2025-01-10");
     assert.ok(fs.existsSync(path.join(actualRunConfig.workdir, "artifact-v2.json")));
+
+    const exerciseJudgeEffort = async (label, judgeModel) => {
+      const roleVault = path.join(outside, `${label}-vault`);
+      const roleWiki = path.join(roleVault, "wiki");
+      const roleWorkdir = path.join(outside, `${label}-run`);
+      fs.mkdirSync(roleWiki, { recursive: true });
+      fs.writeFileSync(path.join(roleVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+      execFileSync("git", ["init", "--quiet", roleVault], { cwd: tmp, env: process.env });
+      fs.writeFileSync(path.join(roleVault, ".gitignore"), ".vault-meta/\n");
+      const roleConfig = { ...liveConfig, workdir: roleWorkdir, vaultRoot: roleVault, solver: { ...liveConfig.solver, effort: "medium" },
+        judge: { provider: "openai", model: judgeModel, effort: "high" }, limits: { calls: 8, minutes: 2, outputTokens: 10000, maxOutputTokens: 256 } };
+      const initialRoleManifest = dryRun({ ...roleConfig, live: false }, fixture);
+      const roleRuntime = await loadSelectedOpenAIAuth({ AuthStorage, ModelRuntime: sdk.ModelRuntime, readStoredCredential: authModule.readStoredCredential, authFile: syntheticAuthFile });
+      const roleRequests = [];
+      const roleFetch = async (_url, init) => {
+        const request = JSON.parse(init.body);
+        roleRequests.push(request);
+        const responseId = `role-effort-${roleRequests.length}`;
+        const output = "{}";
+        const events = [
+          { type: "response.created", response: { id: responseId, model: request.model } },
+          { type: "response.output_item.added", output_index: 0, item: { id: `msg-${responseId}`, type: "message", role: "assistant", content: [] } },
+          { type: "response.output_text.delta", output_index: 0, item_id: `msg-${responseId}`, content_index: 0, delta: output },
+          { type: "response.output_item.done", output_index: 0, item: { id: `msg-${responseId}`, type: "message", role: "assistant", status: "completed", phase: "final_answer", content: [{ type: "output_text", text: output, annotations: [] }] } },
+          { type: "response.completed", response: { id: responseId, model: request.model, status: "completed", output: [], usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } },
+        ];
+        return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+      };
+      const result = await runLive(roleConfig, { ...initialRoleManifest, liveEnabled: true, mode: "live", externalWorkdir: roleWorkdir }, fixture, `owner-${label}`, {
+        sdk, authModule, runtime: roleRuntime, createPiRunner: async (options) => {
+          const runner = await createPiRunner({ ...options, sdkPackage: packageRoot });
+          runner.rows = [];
+          return runner;
+        },
+        buildRetrieval: async ({ vaultRoot }) => { buildBm25(vaultRoot); }, fetchImpl: roleFetch,
+      });
+      const metadata = JSON.parse(fs.readFileSync(path.join(roleWorkdir, "run-metadata.json"), "utf8"));
+      validateRunMetadata(metadata);
+      return { result, metadata, requests: roleRequests };
+    };
+    const sameModelEffort = await exerciseJudgeEffort("same-model-effort", "gpt-6.1-sol");
+    assert.ok((sameModelEffort.requests.length === 1 && sameModelEffort.result.stopCode === "request-contract-mismatch") ||
+      (sameModelEffort.requests.length === fixture.checkpoints.length * 2 && sameModelEffort.result.stopCode === null),
+    JSON.stringify({ stopCode: sameModelEffort.result.stopCode, requests: sameModelEffort.requests.map((request) => request.reasoning?.effort), attempts: sameModelEffort.metadata.attempts }));
+    assert.equal(sameModelEffort.metadata.runtime.solver.effort, "medium");
+    assert.equal(sameModelEffort.metadata.runtime.judge.effort, "high");
+    assert.equal(sameModelEffort.requests[0].model, "gpt-6.1-sol");
+    assert.equal(sameModelEffort.requests[0].reasoning?.effort, "medium", "same-model solver request uses the solver's configured effort");
+    assert.ok(sameModelEffort.requests.slice(1).every((request) => request.reasoning?.effort === "high"), "same-model judge requests use the judge effort or are rejected before fetch");
+    assert.ok(sameModelEffort.metadata.attempts.every((attempt) => attempt.model === "gpt-6.1-sol"));
+    assert.ok(sameModelEffort.metadata.attempts[0].phase.startsWith("maintenance:"));
+    const distinctModelEffort = await exerciseJudgeEffort("distinct-model-effort", "gpt-6.1-terra");
+    assert.equal(distinctModelEffort.result.stopCode, "request-contract-mismatch", "the installed SDK's native medium payload cannot satisfy configured high judge effort");
+    assert.equal(distinctModelEffort.requests.length, 1, "distinct-model judge mismatch is rejected before fake fetch after the solver dispatch");
+    assert.equal(distinctModelEffort.requests[0].model, "gpt-6.1-sol");
+    assert.equal(distinctModelEffort.requests[0].reasoning?.effort, "medium");
+    assert.equal(distinctModelEffort.metadata.runtime.solver.effort, "medium");
+    assert.equal(distinctModelEffort.metadata.runtime.judge.effort, "high");
+    assert.equal(distinctModelEffort.metadata.attempts.length, 1, "rejected judge request is not recorded as dispatched");
+    assert.equal(distinctModelEffort.metadata.attempts[0].phase, "maintenance:2025-01-10");
 
     const checkUnsafeVaultEntries = (root) => {
       const unsafe = [];
