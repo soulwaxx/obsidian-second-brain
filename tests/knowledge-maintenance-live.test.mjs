@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "../experiments/knowledge-maintenance/live-support.mjs";
 import { buildAnswerJudgePrompt, buildMaintenanceJudgePrompt, dryRun, runLive, validateRunMetadata } from "../experiments/knowledge-maintenance/run.mjs";
-import { installedPackage } from "./pi-runtime-paths.mjs";
+import { installedPackage, resolveRuntimeDependencies } from "./pi-runtime-paths.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -52,7 +52,24 @@ try {
     topic: fixture.visibleTasks[0].topic, sourceHistory: sources, answer: "safe answer", schema: JSON.parse(fs.readFileSync("experiments/knowledge-maintenance/annotation-schema.json", "utf8")) });
   assert.match(judgeInput, /opaque-candidate-uuid/);
   assert.doesNotMatch(judgeInput, /sources\\+wiki|gpt-6\\.1-sol|reasoning trace|2025-02-10|2025-03-10/);
-  const wikiJudgeInput = buildMaintenanceJudgePrompt({ checkpoint: checkpoint.id, snapshotHash: hash("snapshot"), rubric: { fixed: true }, topics: fixture.gold.topics, gold: {}, sourceHistory: sources, pages: [], schema: JSON.parse(fs.readFileSync("experiments/knowledge-maintenance/annotation-schema.json", "utf8")) });
+  const currentPages = [{ path: "wiki/policy.md", content: "Current snapshot text", sha256: hash("Current snapshot text") }];
+  const currentSnapshotHash = hash("snapshot");
+  const wikiJudgeInput = buildMaintenanceJudgePrompt({ checkpoint: checkpoint.id, snapshotHash: currentSnapshotHash, previousSnapshotHash: null,
+    previousSnapshot: null, changeAssessment: "initialization", rubric: { fixed: true }, topics: fixture.gold.topics, gold: {}, sourceHistory: sources,
+    pages: currentPages, schema: JSON.parse(fs.readFileSync("experiments/knowledge-maintenance/annotation-schema.json", "utf8")) });
+  assert.match(wikiJudgeInput, /changeAssessment=initialization/);
+  assert.match(wikiJudgeInput, /Previous frozen candidate snapshot: null/);
+  const previousA = { checkpoint: "2024-12-01", status: "complete", contentHash: hash("previous A"), pages: [{ path: "wiki/policy.md", content: "Prior policy A", sha256: hash("Prior policy A") }] };
+  const previousB = { checkpoint: "2024-12-01", status: "complete", contentHash: hash("previous B"), pages: [{ path: "wiki/policy.md", content: "Prior policy B", sha256: hash("Prior policy B") }] };
+  const revisionPromptA = buildMaintenanceJudgePrompt({ checkpoint: checkpoint.id, snapshotHash: currentSnapshotHash, previousSnapshotHash: previousA.contentHash,
+    previousSnapshot: previousA, changeAssessment: "assessed", rubric: { fixed: true }, topics: fixture.gold.topics, gold: {}, sourceHistory: sources,
+    pages: currentPages, schema: JSON.parse(fs.readFileSync("experiments/knowledge-maintenance/annotation-schema.json", "utf8")) });
+  const revisionPromptB = buildMaintenanceJudgePrompt({ checkpoint: checkpoint.id, snapshotHash: currentSnapshotHash, previousSnapshotHash: previousB.contentHash,
+    previousSnapshot: previousB, changeAssessment: "assessed", rubric: { fixed: true }, topics: fixture.gold.topics, gold: {}, sourceHistory: sources,
+    pages: currentPages, schema: JSON.parse(fs.readFileSync("experiments/knowledge-maintenance/annotation-schema.json", "utf8")) });
+  assert.notEqual(revisionPromptA, revisionPromptB, "same current snapshot with a different frozen predecessor changes maintenance judge inputs");
+  assert.match(revisionPromptA, /Prior policy A/);
+  assert.match(revisionPromptB, /Prior policy B/);
   assert.doesNotMatch(wikiJudgeInput, /solver model|sources\\+wiki|reasoning trace|2025-02-10|2025-03-10/);
   assert.throws(() => validateWorkdir(path.join(fakeHome, "vault"), { repoRoot: outside, home: fakeHome }), /personal-home/);
   assert.throws(() => validateWorkdir(outside, { repoRoot: outside, home: fakeHome }), /repository/);
@@ -150,6 +167,8 @@ try {
   const sdkUrl = pathToFileURL(path.join(packageRoot, "dist/index.js")).href;
   const authUrl = pathToFileURL(path.join(packageRoot, "dist/core/auth-storage.js")).href;
   const [sdk, authModule] = await Promise.all([import(sdkUrl), import(authUrl)]);
+  const [aiUrl] = resolveRuntimeDependencies(packageRoot);
+  const piAi = await import(aiUrl);
   const { ModelRuntime } = sdk;
   const { AuthStorage } = authModule;
   const syntheticAuthFile = path.join(outside, "synthetic-auth.json");
@@ -197,6 +216,64 @@ try {
     assert.equal(requestBody.reasoning.effort, "medium", "the actual installed serializer must preserve native reasoning mapping");
     assert.equal(nativeBudget.state.calls, 1);
     assert.equal(nativeBudget.state.records[0].usage.outputTokens, 3);
+
+    async function runLazyNativeCase({ outputTokens = 5, responseModel = model.id, includeUsage = true, delayedCapture = false, limit = 5 } = {}) {
+      const lazyBudget = createBudget({ limits: { calls: 3, minutes: 1, outputTokens: limit } });
+      let fetchCount = 0;
+      let releaseCapture;
+      const rawEvents = [
+        { type: "response.created", response: { id: "lazy-native", model: model.id } },
+        { type: "response.output_item.added", output_index: 0, item: { id: "lazy-msg", type: "message", role: "assistant", content: [] } },
+        { type: "response.output_text.delta", output_index: 0, item_id: "lazy-msg", content_index: 0, delta: "bounded response" },
+        { type: "response.output_item.done", output_index: 0, item: { id: "lazy-msg", type: "message", role: "assistant", status: "completed", phase: "final_answer", content: [{ type: "output_text", text: "bounded response", annotations: [] }] } },
+        { type: "response.completed", response: { id: "lazy-native", model: responseModel, status: "completed", output: [], ...(includeUsage ? { usage: { input_tokens: 2, output_tokens: outputTokens, total_tokens: outputTokens + 2 } } : {}) } },
+      ];
+      const payload = `${rawEvents.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+      const wrappedNative = wrapOpenAIProvider(nativeProvider, lazyBudget, { maxOutputTokens: 4096, effort: "medium", fetchImpl: async () => {
+        fetchCount++;
+        const response = new Response(payload, { status: 200, headers: { "content-type": "text/event-stream" } });
+        Object.defineProperty(response, "clone", { value: () => new Response(new ReadableStream({ start(controller) {
+          const release = () => { controller.enqueue(new TextEncoder().encode(payload)); controller.close(); };
+          if (delayedCapture) releaseCapture = release; else release();
+        } }), { status: 200, headers: { "content-type": "text/event-stream" } }) });
+        return response;
+      } });
+      const stream = piAi.lazyStream(model, async () => wrappedNative.streamSimple(model,
+        { messages: [{ role: "user", content: "synthetic bounded request" }] }, { apiKey: "sk-offline-synthetic-key", reasoning: "medium", maxTokens: 4096 }));
+      const observed = [];
+      const consuming = (async () => { for await (const event of stream) observed.push(event); })();
+      let resultSettled = false;
+      const resultPromise = stream.result().then((result) => { resultSettled = true; return result; });
+      if (delayedCapture) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.equal(resultSettled, false, "Pi lazyStream must not resolve terminal completion before cloned raw usage is captured");
+        assert.equal(lazyBudget.state.records[0].status, "attempted");
+        assert.equal(lazyBudget.state.outputTokens, 0);
+        assert.throws(() => wrappedNative.streamSimple(model, { messages: [] }, {}), /provider-attempt-in-flight/);
+        assert.equal(fetchCount, 1, "an unfinished ledger blocks any subsequent dispatch");
+        releaseCapture();
+      }
+      await consuming;
+      const result = await resultPromise;
+      return { result, events: observed, budget: lazyBudget.state, fetchCount };
+    }
+    const delayedLazy = await runLazyNativeCase({ delayedCapture: true, outputTokens: 5, limit: 5 });
+    assert.equal(delayedLazy.result.stopReason, "stop", "exact output ceiling is accepted after capture finalizes");
+    assert.equal(delayedLazy.budget.outputTokens, 5);
+    assert.equal(delayedLazy.fetchCount, 1);
+    const overLimitLazy = await runLazyNativeCase({ outputTokens: 6, limit: 5 });
+    assert.equal(overLimitLazy.budget.stopCode, "output-token-limit");
+    assert.ok(overLimitLazy.events.some((event) => event.type === "error"));
+    assert.ok(!overLimitLazy.events.some((event) => event.type === "done"), "over-limit completion never escapes as a successful terminal event");
+    assert.equal(overLimitLazy.fetchCount, 1);
+    const missingUsageLazy = await runLazyNativeCase({ includeUsage: false });
+    assert.equal(missingUsageLazy.budget.stopCode, "usage-unavailable");
+    assert.ok(!missingUsageLazy.events.some((event) => event.type === "done"));
+    assert.equal(missingUsageLazy.fetchCount, 1);
+    const modelDriftLazy = await runLazyNativeCase({ responseModel: "unexpected-backend" });
+    assert.equal(modelDriftLazy.budget.stopCode, "response-model-drift");
+    assert.ok(!modelDriftLazy.events.some((event) => event.type === "done"));
+    assert.equal(modelDriftLazy.fetchCount, 1);
 
     const missingUsageBudget = createBudget({ limits: { calls: 2, minutes: 1, outputTokens: 100 } });
     const missingUsageProvider = wrapOpenAIProvider({ streamSimple: (_model, _context, options) => ({ async *[Symbol.asyncIterator]() {
@@ -269,6 +346,38 @@ try {
       id: `${checkpoint.id}/${task.id}/${language}/${condition}`, checkpoint: checkpoint.id, taskId: task.id, intent: task.intent, topic: task.topic,
       language, condition, question: task.question[language] })))));
     const failedRow = fullRows.at(-1);
+    const overlapConfig = { ...liveConfig, workdir: path.join(vault, "nested-workdir") };
+    await assert.rejects(runLive(overlapConfig, offlineManifest, fixture, "owner-overlap", { sdk, authModule, runtime }), /workdir-vault-overlap/);
+    assert.equal(fs.existsSync(overlapConfig.workdir), false, "coordinator rejects vault/workdir overlap before creating outputs");
+
+    const actualRunConfig = { ...liveConfig, workdir: path.join(outside, "actual-pi-runner"), limits: { ...liveConfig.limits, calls: 1 } };
+    const actualRuntime = await loadSelectedOpenAIAuth({ AuthStorage, ModelRuntime: sdk.ModelRuntime, readStoredCredential: authModule.readStoredCredential, authFile: syntheticAuthFile });
+    let actualFetchCount = 0;
+    const actualOutput = "Maintenance finished without changing the synthetic wiki.";
+    const actualFetch = async (_url, init) => {
+      actualFetchCount++;
+      const request = JSON.parse(init.body);
+      const responseId = "actual-runner-fake-response";
+      const messageId = "actual-runner-fake-message";
+      const events = [
+        { type: "response.created", response: { id: responseId, model: request.model } },
+        { type: "response.output_item.added", output_index: 0, item: { id: messageId, type: "message", role: "assistant", content: [] } },
+        { type: "response.output_text.delta", output_index: 0, item_id: messageId, content_index: 0, delta: actualOutput },
+        { type: "response.output_item.done", output_index: 0, item: { id: messageId, type: "message", role: "assistant", status: "completed", phase: "final_answer", content: [{ type: "output_text", text: actualOutput, annotations: [] }] } },
+        { type: "response.completed", response: { id: responseId, model: request.model, status: "completed", output: [], usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } } },
+      ];
+      return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const actualRunResult = await runLive(actualRunConfig, { ...offlineManifest, externalWorkdir: actualRunConfig.workdir }, fixture, "owner-actual-runner", {
+      sdk, authModule, runtime: actualRuntime, fetchImpl: actualFetch,
+    });
+    const actualRunMetadata = JSON.parse(fs.readFileSync(path.join(actualRunConfig.workdir, "run-metadata.json"), "utf8"));
+    assert.equal(actualRunResult.stopCode, "call-limit", JSON.stringify({ message: "actual runner construction reaches the bounded next judge attempt", actualFetchCount, attempts: actualRunMetadata.attempts, sessions: actualRunMetadata.sessions, stages: actualRunMetadata.stages }));
+    assert.equal(actualFetchCount, 1, "actual Pi runner performs exactly one fake provider HTTP call before the shared call ceiling");
+    assert.equal(actualRunMetadata.attempts.length, 1);
+    assert.equal(actualRunMetadata.sessions[0].phase, "maintenance:2025-01-10");
+    assert.ok(fs.existsSync(path.join(actualRunConfig.workdir, "artifact-v2.json")));
+
     let answerCalls = 0;
     const fakeRunner = {
       rows: fullRows, sessionLog: [],
@@ -292,11 +401,16 @@ try {
       const prompt = JSON.stringify(request.input);
       inputs.push(prompt);
       let output;
-      if (prompt.includes("v2 wikiJudgment schema")) {
+      if (prompt.includes("v3 wikiJudgment schema")) {
         const topicRows = fixture.gold.topics.map((topic) => ({ topic, status: "unknown", path: null, pageHash: null, quote: null, start: null, end: null,
           temporal: "unknown", relation: "unknown", priorSupport: "unknown", currentEvidence: [], historicalEvidence: [], history: "unknown", qualifiers: "unknown" }));
-        output = JSON.stringify({ schemaVersion: 2, checkpoint: cpOne.id, snapshotHash: hash("placeholder"), complete: false, topics: topicRows,
-          pageTopics: [{ path: pagePath, topics: [] }], unnecessaryChanges: [], unauthorizedWriteAttempts: [] });
+        const binding = prompt.match(/Host-bound checkpoint is ([0-9-]+); copy snapshotHash ([0-9a-f]{64}) and previousSnapshotHash (null|\\?"[0-9a-f]{64}\\?")/u);
+        assert.ok(binding, "fake maintenance judge must copy exact host-supplied snapshot bindings");
+        const checkpoint = binding[1];
+        const checkpointIndex = fixture.checkpoints.findIndex((item) => item.id === checkpoint);
+        output = JSON.stringify({ schemaVersion: 3, checkpoint, snapshotHash: binding[2], previousSnapshotHash: binding[3] === "null" ? null : binding[3].match(/[0-9a-f]{64}/u)[0],
+          changeAssessment: checkpointIndex === 0 ? "initialization" : "assessed", complete: false, topics: topicRows,
+          pageTopics: [{ path: pagePath, topics: [] }], unnecessaryChanges: checkpointIndex === 0 ? null : [], unauthorizedWriteAttempts: [] });
       } else {
         answerCalls++;
         if (answerCalls === 1) {
@@ -305,10 +419,10 @@ try {
           const source = cpOne.sources[0];
           const sourceStart = source.text.indexOf(phrase);
           const boundHash = prompt.match(/answerHash ([0-9a-f]{64})/u)?.[1];
-          output = JSON.stringify({ schemaVersion: 2, answerHash: boundHash, complete: true, outcome: "supported", coveredTopics: [retention.topic], explanation: "supported",
+          output = JSON.stringify({ schemaVersion: 3, answerHash: boundHash, complete: true, outcome: "supported", coveredTopics: [retention.topic], explanation: "supported",
             claims: [{ quote: phrase, start, end: start + phrase.length, unitQuote: phrase, unitStart: start, unitEnd: start + phrase.length, disposition: "supported", temporal: "current", relation: "supported", priorSupport: "unknown", qualifiers: "not-applicable", explanation: "matched", currentEvidence: [{ checkpoint: cpOne.id, path: source.path, sourceHash: source.sha256, start: sourceStart, end: sourceStart + phrase.length, quote: phrase }], historicalEvidence: [] }] });
         } else if (answerCalls === 2) {
-          output = JSON.stringify({ schemaVersion: 2, answerHash: prompt.match(/answerHash ([0-9a-f]{64})/u)?.[1], complete: true, outcome: "abstained", coveredTopics: [], explanation: "abstained", claims: [] });
+          output = JSON.stringify({ schemaVersion: 3, answerHash: prompt.match(/answerHash ([0-9a-f]{64})/u)?.[1], complete: true, outcome: "abstained", coveredTopics: [], explanation: "abstained", claims: [] });
         } else output = "{malformed";
       }
       const responseId = `fake-${inputs.length}`;
@@ -327,14 +441,14 @@ try {
       sdk, authModule, runtime, createPiRunner: async () => fakeRunner, fetchImpl: fetchFake,
     });
     const metadata = JSON.parse(fs.readFileSync(path.join(workdirPath, "run-metadata.json"), "utf8"));
-    assert.equal(coordinatorResult.stopCode, "answer-failed", JSON.stringify({ stopCode: coordinatorResult.stopCode, stages: metadata.stages }));
+    assert.equal(coordinatorResult.stopCode, "answer-failed", JSON.stringify({ stopCode: coordinatorResult.stopCode, inputs: inputs.length, lastPrompt: inputs.at(-1)?.slice(0, 600), attempts: metadata.attempts, stages: metadata.stages }));
     const artifact = JSON.parse(fs.readFileSync(path.join(workdirPath, "artifact-v2.json"), "utf8"));
     const report = JSON.parse(fs.readFileSync(path.join(workdirPath, "score.json"), "utf8"));
     assert.equal(artifact.trials.length, 144);
     const completedTrials = artifact.trials.filter((trial) => trial.status === "success");
     assert.deepEqual(completedTrials.slice(0, 3).map((trial) => trial.answerJudgment.outcome), ["supported", "abstained", "unknown"]);
     assert.equal(completedTrials.length, 143);
-    assert.ok(completedTrials.every((trial) => trial.answerJudgment.schemaVersion === 2));
+    assert.ok(completedTrials.every((trial) => trial.answerJudgment.schemaVersion === 3));
     assert.equal(artifact.trials.filter((trial) => trial.status === "missing").length, 0, "all 144 cells are durably terminal after the final solver failure");
     const failedTrial = artifact.trials.find((trial) => trial.id === failedRow.id);
     assert.equal(failedTrial.status, "failed");
@@ -362,7 +476,7 @@ try {
     assert.equal(metadata.attempts.length, 147);
     const maintenanceJudgePrompts = inputs.filter((prompt) => prompt.includes("Required topic IDs:"));
     assert.equal(maintenanceJudgePrompts.length, 4);
-    assert.ok(maintenanceJudgePrompts.every((prompt, index) => prompt.includes(`copy snapshotHash ${artifact.wikiSnapshots[index].contentHash} verbatim`)));
+    assert.ok(maintenanceJudgePrompts.every((prompt, index) => prompt.includes(`copy snapshotHash ${artifact.wikiSnapshots[index].contentHash} and previousSnapshotHash`)));
     const answerJudgePrompts = inputs.filter((prompt) => prompt.includes("Required topic ID:"));
     const evidenceByTask = new Map();
     for (const prompt of answerJudgePrompts) {
@@ -382,6 +496,60 @@ try {
     assert.equal(answerJudgePrompts.length, 143);
     assert.equal(evidenceByTask.size, 48);
     assert.ok([...evidenceByTask.values()].every((records) => new Set(records).size === 1), "answer judges receive identical source/gold context across arms");
+
+    const bindingRuntime = await loadSelectedOpenAIAuth({ AuthStorage, ModelRuntime, readStoredCredential: authModule.readStoredCredential, authFile: syntheticAuthFile });
+    const bindingWorkdir = path.join(outside, "strict-binding-run");
+    const bindingRow = fullRows.find((row) => row.checkpoint === cpOne.id && row.condition === "sources" && row.language === "en");
+    const bindingRunner = { rows: [bindingRow], sessionLog: [],
+      async maintain(checkpoint) { return { unauthorizedWriteAttempts: [], result: { sessionId: `binding-maint-${checkpoint}`, durationMs: 1, answer: "done" }, wiki: pages }; },
+      async answerCell(row) {
+        const visible = fixture.checkpoints.filter((item) => item.id <= row.checkpoint).flatMap((item) => item.sources.map((source) => ({ checkpoint: item.id, path: source.path, sha256: source.sha256 })));
+        return { status: "success", answer: "I cannot determine that.", sourceHistoryHash: hash(JSON.stringify(visible)), unauthorizedWriteAttempts: [],
+          result: { sessionId: `binding-answer-${row.id}`, durationMs: 1, answer: "I cannot determine that." } };
+      }, snapshotWiki: () => pages };
+    const bindingFetch = async (_url, init) => {
+      const request = JSON.parse(init.body);
+      const prompt = JSON.stringify(request.input);
+      let output;
+      if (prompt.includes("v3 wikiJudgment schema")) {
+        const binding = prompt.match(/Host-bound checkpoint is ([0-9-]+); copy snapshotHash ([0-9a-f]{64}) and previousSnapshotHash (null|\\?"[0-9a-f]{64}\\?")/u);
+        assert.ok(binding, "strict-binding judge fixture reads host-supplied bindings");
+        const checkpoint = binding[1];
+        const index = fixture.checkpoints.findIndex((item) => item.id === checkpoint);
+        const topicRows = fixture.gold.topics.map((topic) => ({ topic, status: "unknown", path: null, pageHash: null, quote: null, start: null, end: null,
+          temporal: "unknown", relation: "unknown", priorSupport: "unknown", currentEvidence: [], historicalEvidence: [], history: "unknown", qualifiers: "unknown" }));
+        const pageRows = [{ path: pagePath, topics: [] }];
+        if (index === 1) topicRows[1] = { ...topicRows[0] };
+        if (index === 2) pageRows.push({ ...pageRows[0] });
+        const previousHash = binding[3] === "null" ? null : binding[3].match(/[0-9a-f]{64}/u)[0];
+        output = JSON.stringify({ schemaVersion: 3, checkpoint: index === 3 ? fixture.checkpoints[2].id : checkpoint,
+          snapshotHash: index === 0 ? hash("wrong snapshot") : binding[2], previousSnapshotHash: previousHash,
+          changeAssessment: index === 0 ? "initialization" : "assessed", complete: true, topics: topicRows,
+          pageTopics: pageRows, unnecessaryChanges: index === 0 ? null : [], unauthorizedWriteAttempts: [] });
+      } else output = JSON.stringify({ schemaVersion: 3, complete: true, outcome: "abstained", coveredTopics: [], explanation: "no binding", claims: [] });
+      const responseId = `binding-${bindingFetch.calls++}`;
+      const events = [
+        { type: "response.created", response: { id: responseId, model: request.model } },
+        { type: "response.output_item.added", output_index: 0, item: { id: `msg-${responseId}`, type: "message", role: "assistant", content: [] } },
+        { type: "response.output_text.delta", output_index: 0, item_id: `msg-${responseId}`, content_index: 0, delta: output },
+        { type: "response.output_item.done", output_index: 0, item: { id: `msg-${responseId}`, type: "message", status: "completed", phase: "final_answer", content: [{ type: "output_text", text: output, annotations: [] }] } },
+        { type: "response.completed", response: { id: responseId, model: request.model, status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ];
+      return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    bindingFetch.calls = 1;
+    const bindingInitial = dryRun({ ...liveConfig, live: false, workdir: bindingWorkdir }, fixture);
+    await runLive({ ...liveConfig, workdir: bindingWorkdir }, { ...bindingInitial, liveEnabled: true, mode: "live", externalWorkdir: bindingWorkdir }, fixture, "owner-binding", {
+      sdk, authModule, runtime: bindingRuntime, createPiRunner: async () => bindingRunner, fetchImpl: bindingFetch,
+    });
+    const bindingArtifact = JSON.parse(fs.readFileSync(path.join(bindingWorkdir, "artifact-v2.json"), "utf8"));
+    const bindingMetadata = JSON.parse(fs.readFileSync(path.join(bindingWorkdir, "run-metadata.json"), "utf8"));
+    assert.equal(bindingMetadata.attempts.length, 5, JSON.stringify({ stopCode: bindingMetadata.stopCode, attempts: bindingMetadata.attempts, stages: bindingMetadata.stages }));
+    assert.ok(bindingArtifact.wikiJudgments.every((judgment) => !judgment.complete && judgment.topics.every((topic) => topic.status === "unknown")),
+      "wrong snapshot/checkpoint and duplicate topic/page identities fall back to unknown annotations");
+    const boundAnswer = bindingArtifact.trials.find((trial) => trial.id === bindingRow.id);
+    assert.equal(boundAnswer.answerJudgment.outcome, "unknown", "an answer judge missing its required answer hash is not repaired by the host");
+    assert.equal(boundAnswer.answerJudgment.complete, false);
 
     const setupRuntime = await loadSelectedOpenAIAuth({ AuthStorage, ModelRuntime, readStoredCredential: authModule.readStoredCredential, authFile: syntheticAuthFile });
     let setupDisposed = false;

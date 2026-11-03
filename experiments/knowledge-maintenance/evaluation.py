@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FIXTURE_PATH = HERE / "fixtures.json"
-ARTIFACT_SCHEMA = 2
-ANNOTATION_SCHEMA = 2
+ARTIFACT_SCHEMA = 3
+ANNOTATION_SCHEMA = 3
 CONDITIONS = ("sources", "sources+wiki", "wiki-only")
 LANGUAGES = ("en", "it")
 TASK_CONTRACT = "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files."
@@ -22,6 +23,8 @@ PROTOCOL = {
     "oneAttemptPerCell": True, "coordinates": "unicode-code-points",
     "temporalEvidence": "current-at-active-checkpoint; historical-no-later-than-as-of",
     "emptyCoverage": "null-accuracy-and-explicit-missing-counts",
+    "answerCitations": "syntactic-local-target-inventory-v1-with-codepoint-spans",
+    "maintenanceTransitions": "previous-frozen-wiki-snapshot-bound-v1",
 }
 SETTING_KEYS = {"model", "effort", "attemptCount", "taskContract", "taskContractHash", "readOnly", "limits"}
 JUDGE_SETTING_KEYS = {"model", "effort", "rubric", "rubricHash", "maxOutputTokens"}
@@ -307,11 +310,25 @@ def _validate_wiki(artifact, fixture):
     _require(set(snapshot_map) == set(cps), "wiki snapshot checkpoints incomplete")
     for judgment in judgments:
         _obj(judgment, "wiki judgment")
-        _require(set(judgment) == {"schemaVersion", "checkpoint", "snapshotHash", "complete", "topics", "pageTopics", "unnecessaryChanges", "unauthorizedWriteAttempts"}, "wiki judgment has unknown/missing fields")
+        _require(set(judgment) == {"schemaVersion", "checkpoint", "snapshotHash", "previousSnapshotHash", "changeAssessment", "complete", "topics", "pageTopics", "unnecessaryChanges", "unauthorizedWriteAttempts"}, "wiki judgment has unknown/missing fields")
         _validate_write_attempts(judgment.get("unauthorizedWriteAttempts"))
         cp_id = judgment.get("checkpoint")
         _require(cp_id in cps and cp_id not in judgment_map and judgment.get("schemaVersion") == ANNOTATION_SCHEMA
                  and judgment.get("snapshotHash") == snapshot_map.get(cp_id, {}).get("record", {}).get("contentHash"), "wiki judgment schema/snapshot binding mismatch")
+        ordered_checkpoints = [item["id"] for item in fixture["checkpoints"]]
+        checkpoint_index = ordered_checkpoints.index(cp_id)
+        previous_id = ordered_checkpoints[checkpoint_index - 1] if checkpoint_index else None
+        previous_record = snapshot_map[previous_id]["record"] if previous_id else None
+        expected_previous_hash = previous_record["contentHash"] if previous_record and previous_record["status"] == "complete" else None
+        _require(judgment.get("previousSnapshotHash") == expected_previous_hash, "maintenance previous snapshot binding mismatch")
+        assessment = judgment.get("changeAssessment")
+        _require(assessment in {"initialization", "assessed", "unknown"}, "maintenance transition assessment invalid")
+        if assessment == "initialization":
+            _require(checkpoint_index == 0 and judgment.get("unnecessaryChanges") is None, "initialization cannot claim a measured change list")
+        elif assessment == "assessed":
+            _require(checkpoint_index > 0 and expected_previous_hash is not None and judgment.get("complete") is True and isinstance(judgment.get("unnecessaryChanges"), list), "assessed transition requires a complete judgment, previous frozen snapshot, and list")
+        else:
+            _require(judgment.get("unnecessaryChanges") is None, "unknown transition assessment must not be represented as zero changes")
         _require(type(judgment.get("complete")) is bool and isinstance(judgment.get("topics"), list), "wiki judgment completeness/topics invalid")
         snapshot_status = snapshot_map[cp_id]["record"]["status"]
         _require(snapshot_status == "complete" or (judgment["complete"] is False and all(topic.get("status") == "unknown" for topic in judgment["topics"])),
@@ -339,12 +356,23 @@ def _validate_wiki(artifact, fixture):
                 _require(all(value is None for value in candidate_fields), "unbound partial wiki candidate citation")
             _require(topic.get("history") in {"preserved", "lost", "not-applicable", "unknown"}, "wiki history judgment missing")
             _require(topic.get("qualifiers") in {"preserved", "dropped", "not-applicable", "unknown"}, "wiki qualifier judgment missing")
-            _require(topic.get("relation") in {"supported", "contradicted", "not-addressed", "unknown"}
-                     and topic.get("priorSupport") in {"supported", "unsupported", "unknown"}, "wiki semantic relation/prior support missing")
+            _require(topic.get("temporal") in {"current", "historical", "mixed", "unknown"}
+                     and topic.get("relation") in {"supported", "contradicted", "not-addressed", "unknown"}
+                     and topic.get("priorSupport") in {"supported", "unsupported", "unknown"}, "wiki semantic relation/prior support/temporal scope missing")
             topic_task = next(task["id"] for task in fixture["visibleTasks"] if task["topic"] == name)
             judgment_trial = {"checkpoint": cp_id, "taskId": topic_task}
             _validate_evidence(topic.get("currentEvidence"), "current", {"temporal": topic.get("temporal", "current"), "priorSupport": topic["priorSupport"]}, judgment_trial, fixture)
             _validate_evidence(topic.get("historicalEvidence"), "historical", {"temporal": topic.get("temporal", "current"), "priorSupport": topic["priorSupport"]}, judgment_trial, fixture)
+            if topic["relation"] == "contradicted":
+                _require(bool(topic["currentEvidence"]), "wiki current contradiction requires active evidence")
+            if topic["priorSupport"] == "supported":
+                _require(bool(topic["historicalEvidence"]) and all(item["checkpoint"] < cp_id for item in topic["historicalEvidence"]), "wiki established prior support requires dated evidence before the active checkpoint")
+            if topic["temporal"] == "current" and topic["historicalEvidence"]:
+                _require(topic["priorSupport"] == "supported", "historical evidence on a current wiki topic only establishes explicit prior support")
+            if topic["temporal"] == "historical":
+                _require(not topic["currentEvidence"], "historical wiki topic cannot be certified by active evidence")
+                if status == "supported":
+                    _require(bool(topic["historicalEvidence"]), "supported historical wiki topic requires historical evidence")
             if status == "abstained":
                 _require(topic.get("temporal") == "unknown" and topic.get("relation") in {"not-addressed", "unknown"}
                          and not topic["currentEvidence"] and not topic["historicalEvidence"], "wiki abstention must be an explicit non-factual decision")
@@ -364,11 +392,12 @@ def _validate_wiki(artifact, fixture):
             _obj(item, "page topic inventory item")
             _require(set(item) == {"path", "topics"}, "page-topic inventory item has unknown/missing fields")
             path, values = item.get("path"), item.get("topics")
-            _require(path in snapshot_map[cp_id]["pages"] and isinstance(values, list) and set(values) <= topics, "invalid page topic inventory")
+            _require(path in snapshot_map[cp_id]["pages"] and isinstance(values, list) and len(values) == len(set(values)) and set(values) <= topics, "invalid page topic inventory")
+            _require(path not in listed, "duplicate page path in topic inventory")
             listed.add(path)
         _require(listed == set(snapshot_map[cp_id]["pages"]), "page-topic inventory must include every candidate page")
-        _require(isinstance(judgment.get("unnecessaryChanges"), list), "unnecessaryChanges must be explicit")
-        for item in judgment["unnecessaryChanges"]:
+        _require(judgment.get("unnecessaryChanges") is None or isinstance(judgment.get("unnecessaryChanges"), list), "unnecessaryChanges must be explicit when assessed")
+        for item in judgment["unnecessaryChanges"] or []:
             _obj(item, "change judgment")
             _require(set(item) == {"path", "reason"}, "change judgment has unknown/missing fields")
             _require(item.get("path") in snapshot_map[cp_id]["pages"] and isinstance(item.get("reason"), str), "invalid unnecessary-change judgment")
@@ -482,9 +511,65 @@ def _answer_label(trial, expected):
     return judgment["outcome"]
 
 
+def _inventory_answer_citations(answer: str, trial: dict, fixture: dict, pages: dict) -> list[dict]:
+    """Inventory documented local citation syntaxes with Python code-point spans."""
+    patterns = [
+        ("markdown-link", re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^)\s]+)(?:\s+[^)]*)?\)")),
+        ("wiki-link", re.compile(r"\[\[([^]|]+)(?:\|[^]]*)?\]\]")),
+        ("bracket-path", re.compile(r"(?<!!)\[((?:wiki/|sources/|[0-9]{4}-[0-9]{2}-[0-9]{2}/sources/)[^\]\n]+)\]")),
+    ]
+    matches = []
+    for form, pattern in patterns:
+        for match in pattern.finditer(answer):
+            target = match.group(2) if form == "markdown-link" else match.group(1).strip()
+            matches.append((match.start(), match.end(), form, target, match.group(0)))
+    selected = []
+    for citation in sorted(matches, key=lambda item: (item[0], -(item[1] - item[0]))):
+        if any(citation[0] < previous[1] and previous[0] < citation[1] for previous in selected):
+            continue
+        selected.append(citation)
+
+    checkpoints = [cp["id"] for cp in fixture["checkpoints"]]
+    sources = {f"{cp['id']}/{source['path']}": source for cp in fixture["checkpoints"] for source in cp["sources"]}
+    output = []
+    for start, end, form, target, quote in sorted(selected):
+        target_path = target.split("#", 1)[0]
+        target_kind, checkpoint, resolved_path, target_hash = "other", None, None, None
+        resolution = "unsupported-target"
+        if target_path.startswith("wiki/"):
+            target_kind = "wiki"
+            if trial["condition"] == "sources":
+                resolution = "unavailable-in-arm"
+            elif target_path in pages:
+                resolution, resolved_path, target_hash = "resolved", target_path, pages[target_path]["sha256"]
+            else:
+                resolution = "missing"
+        else:
+            qualified = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2})/(sources/.+)", target_path)
+            if qualified or target_path.startswith("sources/"):
+                target_kind = "source"
+                checkpoint = qualified.group(1) if qualified else trial["checkpoint"]
+                source_path = qualified.group(2) if qualified else target_path
+                if checkpoint > trial["checkpoint"]:
+                    resolution = "future"
+                elif trial["condition"] == "wiki-only":
+                    resolution = "unavailable-in-arm"
+                elif checkpoint not in checkpoints or f"{checkpoint}/{source_path}" not in sources:
+                    resolution = "missing"
+                else:
+                    source = sources[f"{checkpoint}/{source_path}"]
+                    resolution, resolved_path, target_hash = "resolved", f"{checkpoint}/{source_path}", source["sha256"]
+            elif re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target_path):
+                target_kind, resolution = "external", "unsupported-target"
+        output.append({"quote": quote, "start": start, "end": end, "target": target, "targetKind": target_kind,
+                       "checkpoint": checkpoint, "resolution": resolution, "resolvedPath": resolved_path, "targetHash": target_hash})
+    return output
+
+
 def score(artifact: dict, fixture: dict | None = None) -> dict:
     fixture = load_fixture() if fixture is None else fixture
     validate_artifact(artifact, fixture)
+    snapshot_map, _ = _validate_wiki(artifact, fixture)
     expected_gold = fixture["gold"]["expectedAnswers"]
     expected_rows = {r["id"]: r for r in task_matrix(fixture)}
     scored, details = 0, []
@@ -499,11 +584,14 @@ def score(artifact: dict, fixture: dict | None = None) -> dict:
         judgment = trial.get("answerJudgment", {}) if trial["status"] == "success" else {}
         claims = judgment.get("claims", [])
         labels = [_claim_label(claim) for claim in claims]
+        citations = _inventory_answer_citations(trial["answer"], trial, fixture, snapshot_map[row["checkpoint"]]["pages"]) if trial["status"] == "success" else []
         details.append({"id": trial["id"], "checkpoint": row["checkpoint"], "taskId": row["taskId"],
                         "topic": row["topic"], "intent": row["intent"], "language": row["language"],
                         "condition": row["condition"], "expectedOutcome": expected_outcome,
                         "observedOutcome": observed, "correct": correct, "claimLabels": labels,
-                        "unresolvedCitations": sum(not (claim["currentEvidence"] or claim["historicalEvidence"]) for claim in claims),
+                        "answerCitations": citations,
+                        "unresolvedAnswerCitations": sum(item["resolution"] != "resolved" for item in citations),
+                        "unresolvedJudgeEvidenceClaims": sum(not (claim["currentEvidence"] or claim["historicalEvidence"]) for claim in claims),
                         "unauthorizedWriteAttempts": len(trial.get("unauthorizedWriteAttempts", [])),
                         "abstained": observed == "abstained", "covered": bool(judgment.get("coveredTopics")),
                         "complete": bool(judgment.get("complete"))})
@@ -536,11 +624,13 @@ def score(artifact: dict, fixture: dict | None = None) -> dict:
                           "contradictedWithoutHistoricalSupport": sum(labels.count("contradicted-without-historical-support") for labels in (r["claimLabels"] for r in rows)),
                           "unverifiedClaims": sum(labels.count("unverified") for labels in (r["claimLabels"] for r in rows)),
                           "droppedQualifiers": sum(claim.get("qualifiers") == "dropped" for trial in artifact["trials"] if trial["id"] in {r["id"] for r in rows} and trial["status"] == "success" for claim in trial["answerJudgment"]["claims"]),
-                          "unresolvedCitations": sum(r["unresolvedCitations"] for r in rows),
+                          "unresolvedAnswerCitations": sum(r["unresolvedAnswerCitations"] for r in rows),
+                          "unresolvedJudgeEvidenceClaims": sum(r["unresolvedJudgeEvidenceClaims"] for r in rows),
                           "unauthorizedWriteAttempts": sum(r["unauthorizedWriteAttempts"] for r in rows),
                           "scored": scored_local, "trials": len(rows)})
     maintenance = score_maintenance(artifact, fixture)
-    return {"schemaVersion": 2, "judgmentCaveat": "Semantic annotations are model judgments, not independent factual verification; extraction completeness is model-reported.",
+    return {"schemaVersion": 3, "judgmentCaveat": "Semantic annotations are model judgments, not independent factual verification; extraction completeness is model-reported.",
+            "citationInventoryNote": "Answer citations are a syntactic inventory of Markdown links, Obsidian wiki links, bracketed wiki paths, and bracketed checkpoint/source paths; spans use Unicode code points. Only exact local targets supplied to that answer arm resolve. This does not detect uncited natural-language references, aliases/encoded paths, or whether a resolved target supports the answer. No citations is an explicit zero count. Missing judge evidence is separate as unresolvedJudgeEvidenceClaims.",
             "answerSummaries": summaries, "answerAccuracy": sum(r["correct"] is True for r in details) / denominator if denominator else None,
             "expectedCells": len(details), "scoredCells": scored_cells, "missingOrUnknownCells": len(details) - scored_cells,
             "pairedDifferences": paired, "answers": details, "maintenance": maintenance,
@@ -606,11 +696,13 @@ def score_maintenance(artifact, fixture: dict | None = None) -> dict:
                        "abstentions": sum(label == "abstained" for label in topic_labels.values()),
                        "unauthorizedWriteAttempts": len(judgment["unauthorizedWriteAttempts"]),
                        "canonicalReuse": {t: canonical[t] in page_topics[t] for t in topics},
-                       "duplicateTopicPages": {t: sorted(paths) for t, paths in page_topics.items() if len(paths) > 1},
+                       "duplicateTopicPages": {t: sorted(set(paths)) for t, paths in page_topics.items() if len(set(paths)) > 1},
                        "historyPreserved": {t: topic_map[t]["history"] for t in topics},
                        "droppedQualifiers": [t for t in topics if topic_map[t]["qualifiers"] == "dropped"],
                        "changedOrRemovedPaths": sorted(changes),
-                       "judgeMarkedUnnecessaryChanges": judgment["unnecessaryChanges"],
+                       "changeAssessment": judgment["changeAssessment"],
+                       "unnecessaryChanges": judgment["unnecessaryChanges"] if judgment["changeAssessment"] == "assessed" else None,
+                       "unnecessaryChangeCount": len(judgment["unnecessaryChanges"]) if judgment["changeAssessment"] == "assessed" else None,
                        "complete": judgment["complete"]})
         previous = {path: page["sha256"] for path, page in page_map.items()}
     return {"checkpoints": result, "judgmentCaveat": "Maintenance quality labels are model judgments; page hashes and cited spans are mechanically checked."}
@@ -627,7 +719,7 @@ def compare_compatibility(left: dict, right: dict, fixture: dict | None = None) 
 
 
 def empty_artifact(settings: dict, judge_settings: dict, candidate_system_hash: str, fixture: dict | None = None) -> dict:
-    """Create a complete v2 pilot artifact whose not-yet-run cells are explicit missing/unknown."""
+    """Create a complete v3 pilot artifact whose not-yet-run cells are explicit missing/unknown."""
     fixture = load_fixture() if fixture is None else fixture
     identities = identity_manifest(fixture, settings, candidate_system_hash, judge_settings)
     topics = fixture["gold"]["topics"]
@@ -637,12 +729,13 @@ def empty_artifact(settings: dict, judge_settings: dict, candidate_system_hash: 
         snapshots.append({"checkpoint": cp["id"], "status": "missing", "pages": [], "contentHash": snapshot_hash})
         wiki_judgments.append({
             "schemaVersion": ANNOTATION_SCHEMA, "checkpoint": cp["id"], "snapshotHash": snapshot_hash,
+            "previousSnapshotHash": None, "changeAssessment": "initialization" if len(snapshots) == 1 else "unknown",
             "complete": False,
             "topics": [{"topic": topic, "status": "unknown", "path": None, "pageHash": None, "quote": None,
                         "start": None, "end": None, "temporal": "unknown", "relation": "unknown",
                         "priorSupport": "unknown", "currentEvidence": [], "historicalEvidence": [],
                         "history": "unknown", "qualifiers": "unknown"} for topic in topics],
-            "pageTopics": [], "unnecessaryChanges": [], "unauthorizedWriteAttempts": [],
+            "pageTopics": [], "unnecessaryChanges": None, "unauthorizedWriteAttempts": [],
         })
     source_hashes = {}
     for cp in fixture["checkpoints"]:

@@ -255,17 +255,22 @@ function inspectResponsesBody(raw, maxOutputTokens, effort) {
 export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, effort = "medium", fetchImpl = globalThis.fetch, beforeDispatch = () => {}, onAttempt = () => {}, onAttemptComplete = () => {} } = {}) {
   if (!provider || typeof provider.streamSimple !== "function" || typeof fetchImpl !== "function") fail("openai-provider-unavailable");
   const original = provider.streamSimple;
+  let inFlight = false;
+  const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "response-model-drift", "usage-unavailable", "output-token-limit", "time-limit", "call-limit", "code-identity-drift", "transport-error", "provider-error"]);
   return {
     ...provider,
     streamSimple(model, context, options = {}) {
+      if (inFlight) fail("provider-attempt-in-flight");
       if (model.provider !== "openai" || model.api !== "openai-responses" || model.baseUrl !== "https://api.openai.com/v1") fail("unsupported-openai-route");
       if (model.compat?.supportsMaxOutputTokens === false) fail("output-cap-unsupported");
       const responseLimit = typeof maxOutputTokens === "function" ? maxOutputTokens(model) : maxOutputTokens;
       const requestEffort = typeof effort === "function" ? effort(model) : effort;
       const reports = [];
       let attempt;
+      let captureReader;
       let captureJob;
       let requestViolation;
+      inFlight = true;
       const fetch = async (input, init = {}) => {
         let rawBody = init.body;
         if (rawBody === undefined && typeof Request !== "undefined" && input instanceof Request) rawBody = await input.clone().text();
@@ -286,17 +291,26 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
         }
         try {
           const response = await fetchImpl(input, { ...init, redirect: "error" });
-          const clone = response.clone();
-          captureJob = clone.text().then((text) => {
-            for (const line of text.split(/\r?\n/u)) {
+          const capture = response.clone();
+          captureReader = capture.body?.getReader();
+          captureJob = (async () => {
+            if (!captureReader) return;
+            const decoder = new TextDecoder();
+            let raw = "";
+            for (;;) {
+              const { done, value } = await captureReader.read();
+              if (done) break;
+              raw += decoder.decode(value, { stream: true });
+            }
+            raw += decoder.decode();
+            for (const line of raw.split(/\r?\n/u)) {
               if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
               try {
-                const event = JSON.parse(line.slice(6));
-                const usage = parseUsage(event);
+                const usage = parseUsage(JSON.parse(line.slice(6)));
                 if (usage) reports.push(usage);
               } catch { /* malformed provider events are rejected after stream completion */ }
             }
-          }).catch(() => {});
+          })().catch(() => {});
           return response;
         } catch {
           budget.failAttempt(attempt, "transport-error");
@@ -311,13 +325,30 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
         }
         return options.onProviderStreamEvent?.(event, eventModel);
       };
-      const stream = original.call(provider, model, context, { ...options, maxTokens: responseLimit, maxRetries: 0, fetch, onProviderStreamEvent });
+      let stream;
+      try { stream = original.call(provider, model, context, { ...options, maxTokens: responseLimit, maxRetries: 0, fetch, onProviderStreamEvent }); }
+      catch (error) { inFlight = false; throw error; }
       return (async function* () {
+        const terminalEvents = [];
+        const cancelCapture = async () => {
+          try { await captureReader?.cancel(); } catch { /* Capture may already be settled. */ }
+          if (captureJob) await captureJob;
+        };
         try {
-          for await (const event of stream) yield event;
+          for await (const event of stream) {
+            if (event.type === "done" || event.type === "error") terminalEvents.push(event);
+            else yield event;
+          }
           if (captureJob) await captureJob;
           if (!attempt) fail(requestViolation ?? "dispatch-not-observed");
           if (attempt.status === "failed") fail(attempt.errorCode ?? budget.state.stopCode ?? "provider-call-failed");
+          if (terminalEvents.some((event) => event.type === "error")) {
+            if (attempt.status === "attempted") {
+              budget.failAttempt(attempt, "provider-error");
+              onAttemptComplete(attempt);
+            }
+            fail(budget.state.stopCode ?? "provider-error");
+          }
           const usage = reports.at(-1);
           try {
             if (!usage) budget.finishAttempt(attempt, null);
@@ -325,9 +356,19 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
             budget.finishAttempt(attempt, usage);
             if (usage.responseModel && usage.responseModel !== model.id) budget.stop("response-model-drift");
           } finally { onAttemptComplete(attempt); }
+          for (const event of terminalEvents) yield event;
         } catch (error) {
+          await cancelCapture();
           if (!budget.state.stopped && attempt?.status === "attempted") { budget.failAttempt(attempt, "provider-error"); onAttemptComplete(attempt); }
-          throw new Error(error?.message === "response-model-drift" ? "response-model-drift" : error?.message === "request-body-unavailable" || error?.message === "request-contract-mismatch" ? error.message : budget.state.stopCode ?? "provider-call-failed");
+          const code = budget.state.stopCode ?? (safeCodes.has(error?.message) ? error.message : "provider-call-failed");
+          throw new Error(code);
+        } finally {
+          if (captureReader && captureJob) await cancelCapture();
+          if (attempt?.status === "attempted") {
+            budget.failAttempt(attempt, budget.state.stopCode ?? "provider-error");
+            try { onAttemptComplete(attempt); } catch { /* Preserve the stable failed-attempt ledger code. */ }
+          }
+          inFlight = false;
         }
       })();
     },

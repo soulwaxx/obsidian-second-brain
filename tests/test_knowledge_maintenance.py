@@ -68,10 +68,13 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
                                "currentEvidence": current, "historicalEvidence": historical,
                                "history": "preserved" if name == "retention-history" and status == "supported" else "not-applicable",
                                "qualifiers": "preserved" if status == "supported" else "unknown"})
-            judgments.append({"schemaVersion": E.ANNOTATION_SCHEMA, "checkpoint": cp, "snapshotHash": content_hash, "complete": True, "topics": topics,
+            previous_hash = snapshots[-2]["contentHash"] if len(snapshots) > 1 else None
+            assessment = "assessed" if previous_hash else "initialization"
+            judgments.append({"schemaVersion": E.ANNOTATION_SCHEMA, "checkpoint": cp, "snapshotHash": content_hash,
+                              "previousSnapshotHash": previous_hash, "changeAssessment": assessment, "complete": True, "topics": topics,
                               "unauthorizedWriteAttempts": [], "pageTopics": [{"path": "wiki/policy.md", "topics": ["retention", "response-target", "retention-history", "retention-conflict"]},
                                              {"path": "wiki/operations.md", "topics": ["maintenance-day", "rehearsal-date"]}],
-                              "unnecessaryChanges": []})
+                              "unnecessaryChanges": None if assessment == "initialization" else []})
         return snapshots, judgments
 
     def artifact(self):
@@ -100,7 +103,7 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
                                "disposition": "supported", "temporal": expected["temporal"], "relation": "supported", "priorSupport": "unknown",
                                "qualifiers": "preserved", "explanation": "fixed synthetic annotation", "currentEvidence": current, "historicalEvidence": hist})
                 covered = [row["topic"]]
-            judgment = {"schemaVersion": 2, "answerHash": E.sha256(answer), "complete": True,
+            judgment = {"schemaVersion": E.ANNOTATION_SCHEMA, "answerHash": E.sha256(answer), "complete": True,
                         "outcome": expected["outcome"], "coveredTopics": covered,
                         "explanation": "fixed synthetic answer-level decision", "claims": claims}
             cp_sources = [] if row["condition"] == "wiki-only" else [s for c in self.fixture["checkpoints"] if c["id"] <= cp for s in c["sources"]]
@@ -111,7 +114,7 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
                            "sourceHistoryHash": source_hash,
                            "wikiHash": None if row["condition"] == "sources" else snapshot_map[cp]["contentHash"],
                            "settings": settings, "unauthorizedWriteAttempts": []})
-        return E.seal_artifact({"schemaVersion": 2, "identities": identities, "settings": settings,
+        return E.seal_artifact({"schemaVersion": E.ARTIFACT_SCHEMA, "identities": identities, "settings": settings,
                 "judgeSettings": judge_settings, "wikiSnapshots": snapshots,
                 "wikiJudgments": wiki_judgments, "trials": trials})
 
@@ -130,6 +133,9 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
         maintenance = report["maintenance"]["checkpoints"]
         self.assertEqual(len(maintenance), 4)
         self.assertTrue(all(item["accuracy"] is None and item["coverage"] == 0 for item in maintenance))
+        self.assertEqual(maintenance[0]["changeAssessment"], "initialization")
+        self.assertIsNone(maintenance[0]["unnecessaryChanges"])
+        self.assertIsNone(maintenance[0]["unnecessaryChangeCount"], "initialization is not scored as zero unnecessary changes")
         self.assertTrue(all(len(judgment["topics"]) == 6 for judgment in artifact["wikiJudgments"]))
 
     def test_fixture_matrix_solver_view_and_gold_time_scope(self):
@@ -345,6 +351,24 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "144"):
             E.validate_artifact(bad, self.fixture)
 
+    def test_maintenance_stale_requires_active_contradiction_and_dated_prior_support(self):
+        artifact = self.artifact()
+        topic = next(item for item in artifact["wikiJudgments"][3]["topics"] if item["topic"] == "retention")
+        topic.update(status="unsupported", temporal="current", relation="contradicted", priorSupport="supported",
+                     currentEvidence=[], historicalEvidence=[self._evidence("2025-02-10", lambda source: "45 days" in source["text"])])
+        artifact = E.seal_artifact(artifact)
+        with self.assertRaisesRegex(ValueError, "wiki current contradiction requires active evidence"):
+            E.validate_artifact(artifact, self.fixture)
+        topic["currentEvidence"] = [self._evidence("2025-04-10", lambda source: "no longer retains" in source["text"])]
+        topic["historicalEvidence"] = []
+        artifact = E.seal_artifact(artifact)
+        with self.assertRaisesRegex(ValueError, "wiki established prior support requires dated evidence"):
+            E.validate_artifact(artifact, self.fixture)
+        topic["historicalEvidence"] = [self._evidence("2025-02-10", lambda source: "45 days" in source["text"])]
+        artifact = E.seal_artifact(artifact)
+        E.validate_artifact(artifact, self.fixture)
+        self.assertEqual(E._wiki_topic_label(topic), "stale")
+
     def test_maintenance_stale_candidate_is_byte_bound_and_diagnostic(self):
         artifact = self.artifact()
         cp = artifact["wikiSnapshots"][3]
@@ -408,18 +432,87 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
         cp["pages"].append({"path": "wiki/retention-copy.md", "content": duplicate_content, "sha256": E.sha256(duplicate_content)})
         cp["contentHash"] = E.canonical_hash([{"path": p["path"], "sha256": p["sha256"]} for p in sorted(cp["pages"], key=lambda p: p["path"])])
         artifact["wikiJudgments"][2]["snapshotHash"] = cp["contentHash"]
+        artifact["wikiJudgments"][3]["previousSnapshotHash"] = cp["contentHash"]
         artifact["wikiJudgments"][2]["pageTopics"].append({"path": "wiki/retention-copy.md", "topics": ["retention"]})
         for trial in artifact["trials"]:
             if trial["checkpoint"] == cp["checkpoint"] and trial["condition"] != "sources":
                 trial["wikiHash"] = cp["contentHash"]
         artifact = E.seal_artifact(artifact)
         report = E.score_maintenance(artifact, self.fixture)["checkpoints"][2]
-        self.assertIn("retention", report["duplicateTopicPages"])
+        self.assertEqual(report["duplicateTopicPages"]["retention"], ["wiki/policy.md", "wiki/retention-copy.md"])
+        self.assertEqual(report["changeAssessment"], "assessed")
+        self.assertEqual(report["unnecessaryChangeCount"], 0)
         self.assertIn("wiki/retention-copy.md", report["changedOrRemovedPaths"])
+        duplicate_topic = self.artifact()
+        duplicate_topic["wikiJudgments"][0]["pageTopics"][0]["topics"].append("retention")
+        duplicate_topic = E.seal_artifact(duplicate_topic)
+        with self.assertRaisesRegex(ValueError, "invalid page topic inventory"):
+            E.validate_artifact(duplicate_topic, self.fixture)
+        duplicate_path = self.artifact()
+        duplicate_path["wikiJudgments"][0]["pageTopics"].append(copy.deepcopy(duplicate_path["wikiJudgments"][0]["pageTopics"][0]))
+        duplicate_path = E.seal_artifact(duplicate_path)
+        with self.assertRaisesRegex(ValueError, "duplicate page path"):
+            E.validate_artifact(duplicate_path, self.fixture)
         incomplete = copy.deepcopy(artifact)
         incomplete["wikiJudgments"][0]["complete"] = False
         incomplete = E.seal_artifact(incomplete)
         self.assertIsNone(E.score_maintenance(incomplete, self.fixture)["checkpoints"][0]["accuracy"])
+
+    def test_answer_citation_inventory_resolves_only_applicable_frozen_local_targets(self):
+        artifact = self.artifact()
+        trial = next(item for item in artifact["trials"] if item["taskId"] == "rehearsal-date" and item["checkpoint"] == "2025-01-10" and item["condition"] == "sources+wiki")
+        answer = "🧭 I cannot determine that. [Policy](sources/policy.md) [[wiki/policy.md|policy]] [wiki/missing.md] [2025-04-10/sources/policy.md]"
+        trial["answer"] = answer
+        trial["answerHash"] = E.sha256(answer)
+        trial["answerJudgment"]["answerHash"] = trial["answerHash"]
+        artifact = E.seal_artifact(artifact)
+        report = E.score(artifact, self.fixture)
+        detail = next(item for item in report["answers"] if item["id"] == trial["id"])
+        citations = detail["answerCitations"]
+        self.assertEqual([item["resolution"] for item in citations], ["resolved", "resolved", "missing", "future"])
+        self.assertEqual(detail["unresolvedAnswerCitations"], 2)
+        self.assertEqual(detail["unresolvedJudgeEvidenceClaims"], 0)
+        self.assertTrue(all(answer[item["start"]:item["end"]] == item["quote"] for item in citations))
+        self.assertTrue(all(answer[item["start"]:item["end"]].startswith(("[", "[[")) for item in citations))
+        self.assertIsNotNone(detail["correct"], "citation inventory does not turn answer-citation absence into a quality-false result")
+        uncited = next(item for item in report["answers"] if item["id"] != trial["id"] and item["answerCitations"] == [])
+        self.assertEqual(uncited["unresolvedAnswerCitations"], 0)
+        self.assertIn("syntactic inventory", report["citationInventoryNote"])
+        self.assertNotIn("unresolvedCitations", detail)
+
+    def test_transition_assessment_unknown_is_not_scored_as_zero_churn(self):
+        artifact = self.artifact()
+        first = artifact["wikiJudgments"][0]
+        self.assertEqual(first["changeAssessment"], "initialization")
+        self.assertIsNone(first["unnecessaryChanges"])
+        bad_initialization = copy.deepcopy(artifact)
+        bad_initialization["wikiJudgments"][0]["unnecessaryChanges"] = []
+        bad_initialization = E.seal_artifact(bad_initialization)
+        with self.assertRaisesRegex(ValueError, "initialization cannot claim"):
+            E.validate_artifact(bad_initialization, self.fixture)
+        unknown = copy.deepcopy(artifact)
+        unknown["wikiJudgments"][1].update(changeAssessment="unknown", unnecessaryChanges=None)
+        unknown = E.seal_artifact(unknown)
+        E.validate_artifact(unknown, self.fixture)
+        scored = E.score_maintenance(unknown, self.fixture)["checkpoints"][1]
+        self.assertEqual(scored["changeAssessment"], "unknown")
+        self.assertIsNone(scored["unnecessaryChanges"])
+        self.assertIsNone(scored["unnecessaryChangeCount"])
+        bad_unknown = copy.deepcopy(unknown)
+        bad_unknown["wikiJudgments"][1]["unnecessaryChanges"] = []
+        bad_unknown = E.seal_artifact(bad_unknown)
+        with self.assertRaisesRegex(ValueError, "unknown transition assessment"):
+            E.validate_artifact(bad_unknown, self.fixture)
+        bad_incomplete = copy.deepcopy(artifact)
+        bad_incomplete["wikiJudgments"][1]["complete"] = False
+        bad_incomplete = E.seal_artifact(bad_incomplete)
+        with self.assertRaisesRegex(ValueError, "assessed transition requires a complete judgment"):
+            E.validate_artifact(bad_incomplete, self.fixture)
+        bad_binding = copy.deepcopy(artifact)
+        bad_binding["wikiJudgments"][1]["previousSnapshotHash"] = E.sha256("wrong previous")
+        bad_binding = E.seal_artifact(bad_binding)
+        with self.assertRaisesRegex(ValueError, "previous snapshot binding"):
+            E.validate_artifact(bad_binding, self.fixture)
 
     def test_full_identity_settings_bindings_and_compatibility(self):
         left = self.artifact()

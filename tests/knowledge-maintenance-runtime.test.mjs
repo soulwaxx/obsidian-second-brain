@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import fsMutable from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { installedPackage, resolveRuntimeDependencies } from "./pi-runtime-paths.mjs";
 import { canonicalHash, createPiRunner } from "../experiments/knowledge-maintenance/pi-runner.mjs";
 
@@ -21,9 +23,27 @@ const { ModelRuntime } = await import(sdkUrl);
 const { AuthStorage } = await import(pathToFileURL(path.join(packageRoot, "dist/core/auth-storage.js")).href);
 const { createAssistantMessageEventStream } = await import(aiUrl);
 const ROOT = process.cwd();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "knowledge-maintenance-pi-"));
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "knowledge-maintenance-pi-")));
 const runnerHome = path.join(tmp, "home");
 fs.mkdirSync(runnerHome);
+const sentinelRoots = [path.join(runnerHome, ".agents", "skills"), path.join(tmp, "valid-workspace", ".agents", "skills")];
+for (const [index, root] of sentinelRoots.entries()) {
+  const directory = path.join(root, `sentinel-${index}`);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name: `sentinel-${index}`, metadataMustNotBeRead: true }));
+  fs.writeFileSync(path.join(directory, "SKILL.md"), `---\\nname: sentinel-${index}\\ndescription: SECRET_SENTINEL_SKILL_${index}\\n---\\nDo not load this skill.\\n`);
+}
+const forbiddenReads = [];
+const originalReadFileSync = fsMutable.readFileSync;
+fsMutable.readFileSync = function (file, ...args) {
+  const target = path.resolve(file instanceof URL ? fileURLToPath(file) : String(file));
+  if (sentinelRoots.some((root) => target === root || target.startsWith(`${root}${path.sep}`))) {
+    forbiddenReads.push(target);
+    throw new Error("sentinel-resource-read");
+  }
+  return originalReadFileSync.call(this, file, ...args);
+};
+syncBuiltinESMExports();
 const priorHome = process.env.HOME;
 const priorEnv = Object.fromEntries(["OBSIDIAN_AGENT_CONFIG", "OBSIDIAN_VAULT_PATH", "WIKI_MIDDLEWARE_DIR"].map((key) => [key, process.env[key]]));
 process.env.HOME = runnerHome;
@@ -162,6 +182,11 @@ async function makeRunner(runtime, model, label, options = {}) {
   const vault = path.join(workspaceRoot, "vault");
   fs.mkdirSync(path.join(vault, "wiki"), { recursive: true });
   fs.mkdirSync(workspaceRoot, { recursive: true });
+  if (label === "valid") {
+    fs.mkdirSync(path.join(workspaceRoot, ".agents", "skills"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, ".agents", "skills", "sentinel-valid.md"), "SECRET_ANCESTOR_SKILL_MUST_NOT_BE_READ\n");
+  }
+  fs.writeFileSync(path.join(vault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
   execFileSync("git", ["init", "--quiet", vault], { cwd: tmp, env: process.env });
   fs.writeFileSync(path.join(vault, ".gitignore"), ".vault-meta/\n");
   activeVault = vault;
@@ -332,8 +357,12 @@ try {
   assert.equal(failedSessionDisposed, true);
   assert.deepEqual({ OBSIDIAN_AGENT_CONFIG: process.env.OBSIDIAN_AGENT_CONFIG, OBSIDIAN_VAULT_PATH: process.env.OBSIDIAN_VAULT_PATH, WIKI_MIDDLEWARE_DIR: process.env.WIKI_MIDDLEWARE_DIR }, priorEnv);
   assert.equal(createCount, 5);
+  assert.deepEqual(forbiddenReads, [], "synthetic HOME and ancestor .agents skill files/metadata are not read by explicit resource loading");
+  assert.doesNotMatch(JSON.stringify(providerContexts), /SECRET_SENTINEL_SKILL|SECRET_ANCESTOR_SKILL/u);
   console.log(`Pi knowledge-maintenance installed-SDK contract PASS: ${experiment.timings.length} distinct orchestration sessions, ${requests} fake provider turns, actual lifecycle and native tool roundtrip.`);
 } finally {
+  fsMutable.readFileSync = originalReadFileSync;
+  syncBuiltinESMExports();
   runtime?.dispose?.();
   if (priorHome === undefined) delete process.env.HOME; else process.env.HOME = priorHome;
   for (const [key, value] of Object.entries(priorEnv)) if (value === undefined) delete process.env[key]; else process.env[key] = value;

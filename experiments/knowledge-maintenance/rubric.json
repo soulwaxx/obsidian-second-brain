@@ -1,14 +1,14 @@
 {
-  "schemaVersion": 2,
-  "identity": "knowledge-maintenance-judge-rubric-v2",
+  "schemaVersion": 3,
+  "identity": "knowledge-maintenance-judge-rubric-v3",
   "principles": [
     "Evaluate only the active checkpoint and evidence through that checkpoint; never use future evidence.",
     "Inspect every factual claim and qualification in the complete candidate unit; do not hide additional claims behind a correct first claim.",
     "Mechanically cite exact candidate and source quotes with Unicode code-point offsets and the supplied hashes.",
     "Keep current support, contradiction, established prior support, historical narration, abstention, and unknown separate.",
     "Treat extraction completeness as model-reported and use unknown rather than repairing malformed or incomplete output.",
-    "Judge maintenance quality separately from answer quality, including topic coverage, canonical reuse, history, churn, duplication, and qualifiers."
+    "Judge maintenance quality separately from answer quality, including topic coverage, canonical reuse, history, transition churn with the preceding frozen wiki, duplication, and qualifiers."
   ],
-  "answerJudgmentSchema": "v2 answerJudgment JSON Schema in annotation-schema.json; mechanically enforced by evaluation.py",
-  "maintenanceJudgmentSchema": "v2 wikiJudgment JSON Schema in annotation-schema.json; mechanically enforced by evaluation.py"
+  "answerJudgmentSchema": "v3 answerJudgment JSON Schema in annotation-schema.json; mechanically enforced by evaluation.py",
+  "maintenanceJudgmentSchema": "v3 wikiJudgment JSON Schema in annotation-schema.json; mechanically enforced by evaluation.py"
 }

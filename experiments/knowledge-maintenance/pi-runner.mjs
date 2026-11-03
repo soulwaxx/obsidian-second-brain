@@ -201,18 +201,30 @@ export async function createPiRunner(options) {
   const { vaultRoot, workspaceRoot, modelRuntime, model, effort = "medium", maxOutputTokens = 4096, fixture: suppliedFixture, sdkPackage, signal, onSession, onProviderEvent } = options ?? {};
   if (!vaultRoot || !workspaceRoot || !modelRuntime || !model) fail("vaultRoot, workspaceRoot, modelRuntime, and model are required");
   for (const root of [vaultRoot, workspaceRoot]) {
-    const stat = fs.lstatSync(root);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) fail("experiment roots must be real directories, not linked paths");
+    let current = path.parse(path.resolve(root)).root;
+    for (const part of path.resolve(root).slice(current.length).split(path.sep).filter(Boolean)) {
+      current = path.join(current, part);
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink()) fail("experiment roots must not traverse symlinks");
+    }
+    if (!fs.lstatSync(root).isDirectory()) fail("experiment roots must be real directories");
   }
   const vault = fs.realpathSync(vaultRoot);
   const workspace = fs.realpathSync(workspaceRoot);
-  if (!inside(workspace, vault) || !inside(path.join(vault, "wiki"), path.join(vault, "wiki"))) fail("synthetic vault must be inside the explicit workspace");
+  if (inside(vault, workspace)) fail("workspace-overlaps-vault");
+  const marker = path.join(vault, ".knowledge-maintenance-synthetic");
+  const markerStat = fs.lstatSync(marker);
+  if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink !== 1 || fs.readFileSync(marker, "utf8") !== "obsidian-second-brain synthetic knowledge-maintenance vault v1\n") fail("synthetic-vault-marker-required");
   const fixture = loadFixture(suppliedFixture);
   const sdkRoot = sdkPackage ?? installedPackage();
   if (!sdkRoot) fail("UNVERIFIED: installed Pi SDK unavailable; runner requires the actual installed SDK");
   if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 4096) fail("maxOutputTokens must be between 1 and 4096");
   const [sdk] = await loadSdk(sdkRoot);
-  const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = sdk;
+  const { createAgentSession, SessionManager, SettingsManager } = sdk;
+  const extensionLoaderUrl = pathToFileURL(path.join(sdkRoot, "dist/core/extensions/loader.js")).href;
+  const skillsLoaderUrl = pathToFileURL(path.join(sdkRoot, "dist/core/skills.js")).href;
+  const eventBusUrl = pathToFileURL(path.join(sdkRoot, "dist/core/event-bus.js")).href;
+  const [{ loadExtensions, loadExtensionFromFactory, createExtensionRuntime }, { loadSkills }, { createEventBus }] = await Promise.all([import(extensionLoaderUrl), import(skillsLoaderUrl), import(eventBusUrl)]);
   const skills = skillAllowlist();
   const configDir = path.join(workspace, ".knowledge-maintenance");
   if (fs.existsSync(configDir)) fail("experiment config directory already exists; refusing to overwrite host files");
@@ -256,15 +268,20 @@ export async function createPiRunner(options) {
     try {
       const scoped = makeScopedExtension({ vaultRoot: vault, sourceRecords, sourceEnabled, wikiEnabled, writable, skills, writeAttempts, accessDenials, providerEvents, onProviderEvent });
       const settingsManager = SettingsManager.inMemory({ retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } }, compaction: { enabled: false }, cacheWarming: "off", defaultTools: [] });
-      loader = new DefaultResourceLoader({
-        cwd: sessionCwd, agentDir, settingsManager,
-        additionalExtensionPaths: [path.join(ROOT, "extensions/obsidian.ts")],
-        additionalSkillPaths: [...new Set([...skills].map((file) => file.endsWith("SKILL.md") ? path.dirname(file) : path.dirname(path.dirname(file))))],
-        extensionFactories: [scoped], extensionsOverride: (loaded) => ({ ...loaded, extensions: [...loaded.extensions].reverse() }),
-        noPromptTemplates: true, noThemes: true, noContextFiles: true,
-        systemPrompt: "You are completing a bounded synthetic knowledge-maintenance evaluation. Do not access any other files or tools.",
-      });
-      await loader.reload();
+      const eventBus = createEventBus();
+      const extensionRuntime = createExtensionRuntime();
+      const loadedExtensions = await loadExtensions([path.join(ROOT, "extensions/obsidian.ts")], sessionCwd, eventBus, extensionRuntime);
+      const scopedExtension = await loadExtensionFromFactory(scoped, sessionCwd, eventBus, extensionRuntime, "<knowledge-maintenance-scope>");
+      const loadedSkills = loadSkills({ cwd: sessionCwd, agentDir, skillPaths: [...new Set([...skills].map((file) => file.endsWith("SKILL.md") ? path.dirname(file) : path.dirname(path.dirname(file))))], includeDefaults: false });
+      loader = {
+        getExtensions: () => ({ ...loadedExtensions, extensions: [scopedExtension, ...loadedExtensions.extensions] }),
+        getSkills: () => loadedSkills,
+        getPrompts: () => ({ prompts: [], diagnostics: [] }), getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
+        getSystemPrompt: () => "You are completing a bounded synthetic knowledge-maintenance evaluation. Do not access any other files or tools.",
+        getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
+        extendResources: () => fail("dynamic-resource-discovery-disabled"), reload: async () => {},
+      };
+      if (loadedExtensions.errors.length) fail(`extension-load:${loadedExtensions.errors.map((entry) => entry.error).join(";")}`);
       if (loader.getExtensions().errors.length) fail(`extension-load:${loader.getExtensions().errors.map((entry) => entry.error).join(";")}`);
       const wikiTools = wikiEnabled ? ["wiki_search", "wiki_outline", "wiki_read"] : [];
       const tools = [...(writable ? ["write", "edit"] : []), ...wikiTools, "experiment_source_read", "experiment_skill_read"];

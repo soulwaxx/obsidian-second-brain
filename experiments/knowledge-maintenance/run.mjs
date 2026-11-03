@@ -75,8 +75,8 @@ function manifest(config, fixture) {
       rubricHash: canonicalHash(rubric), settingsHash: canonicalHash({ solver: config.solver, judge: config.judge, limits: config.limits }),
       promptHash: canonicalHash({ annotationSchema: JSON.parse(fs.readFileSync(ANNOTATION_SCHEMA_PATH, "utf8")), taskContract: TASK_CONTRACT,
         maintenance: fixture.visibleTasks.map((item) => item.maintenance),
-        maintenanceJudge: "v2 maintenance judgment: six topics, bound snapshot quotes/evidence, current/history/qualifiers/pageTopics/churn",
-        answerJudge: "v2 answer judgment: all claims, bound candidate/unit/source quotes, temporal relation, prior support, qualifications" }),
+        maintenanceJudge: "v3 maintenance judgment: six topics, host-bound current/previous snapshot quotes/evidence, temporal relations, unique page inventory and assessed/unknown transitions",
+        answerJudge: "v3 answer judgment: all claims, strict answer hash binding, bound candidate/unit/source quotes, temporal relation, prior support and qualifications" }),
       code: identity,
     },
     externalWorkdir: config.workdir,
@@ -209,24 +209,24 @@ function efficiencyReport(artifact, metadata, scoreReport) {
       indexingMs: maintenanceStages.reduce((sum, item) => sum + (item.retrievalBuildMs ?? 0), 0), costUSD: null } };
 }
 
-function emptyJudgment(topicList, checkpoint, snapshotHash, pages) {
+function emptyJudgment(topicList, checkpoint, snapshotHash, pages, previousSnapshotHash = null, changeAssessment = "unknown") {
   return {
-    schemaVersion: 2, checkpoint, snapshotHash, complete: false,
+    schemaVersion: 3, checkpoint, snapshotHash, previousSnapshotHash, changeAssessment, complete: false,
     topics: topicList.map((topic) => ({ topic, status: "unknown", path: null, pageHash: null, quote: null, start: null, end: null, temporal: "unknown", relation: "unknown", priorSupport: "unknown", currentEvidence: [], historicalEvidence: [], history: "unknown", qualifiers: "unknown" })),
-    pageTopics: pages.map((page) => ({ path: page.path, topics: [] })), unnecessaryChanges: [], unauthorizedWriteAttempts: [],
+    pageTopics: pages.map((page) => ({ path: page.path, topics: [] })), unnecessaryChanges: changeAssessment === "assessed" ? [] : null, unauthorizedWriteAttempts: [],
   };
 }
 
 function unknownAnswer(answer, answerHash) {
-  return { schemaVersion: 2, answerHash, complete: false, outcome: "unknown", coveredTopics: [], explanation: "Judge output unavailable or invalid; outcome left unknown.", claims: [] };
+  return { schemaVersion: 3, answerHash, complete: false, outcome: "unknown", coveredTopics: [], explanation: "Judge output unavailable or invalid; outcome left unknown.", claims: [] };
 }
 
 export function buildAnswerJudgePrompt({ candidateId, answerHash, rubric, schema, checkpoint, question, topic, gold, sourceHistory, answer }) {
-  return `Return exactly one strict JSON object conforming to the attached v2 answerJudgment schema. The opaque candidate ID is ${candidateId}; copy the host-supplied answerHash ${answerHash} verbatim. Annotate every factual claim, exact candidate quote and containing-unit quote with Unicode code-point offsets, temporal scope, relation, prior support, qualifiers, and exact current/historical source evidence quote/hash/offsets. Use unknown/incomplete instead of repairing malformed or incomplete output. The host validates all citations mechanically. Do not infer a treatment, solver identity, model, cost, or trace. The host supplies the same question, gold, and full active/historical source evidence to every arm; no wiki or arm-specific fields are provided.\nRUBRIC: ${JSON.stringify(rubric)}\nSTRICT JSON SCHEMA: ${JSON.stringify(schema)}\nActive checkpoint: ${checkpoint}\nQuestion: ${question}\nRequired topic ID: ${topic}\nExpected outcome/temporal gold: ${JSON.stringify(gold)}\nFull source evidence through active checkpoint: ${JSON.stringify(sourceHistory)}\nCandidate answer: ${JSON.stringify(answer)}`;
+  return `Return exactly one strict JSON object conforming to the attached v3 answerJudgment schema. The opaque candidate ID is ${candidateId}; copy the host-supplied answerHash ${answerHash} verbatim. Annotate every factual claim, exact candidate quote and containing-unit quote with Unicode code-point offsets, temporal scope, relation, prior support, qualifiers, and exact current/historical source evidence quote/hash/offsets. Use unknown/incomplete instead of repairing malformed or incomplete output. The host validates all citations mechanically. Do not infer a treatment, solver identity, model, cost, or trace. The host supplies the same question, gold, and full active/historical source evidence to every arm; no wiki or arm-specific fields are provided.\nRUBRIC: ${JSON.stringify(rubric)}\nSTRICT JSON SCHEMA: ${JSON.stringify(schema)}\nActive checkpoint: ${checkpoint}\nQuestion: ${question}\nRequired topic ID: ${topic}\nExpected outcome/temporal gold: ${JSON.stringify(gold)}\nFull source evidence through active checkpoint: ${JSON.stringify(sourceHistory)}\nCandidate answer: ${JSON.stringify(answer)}`;
 }
 
-export function buildMaintenanceJudgePrompt({ checkpoint, snapshotHash, rubric, schema, topics, gold, sourceHistory, pages }) {
-  return `Return exactly one strict JSON object conforming to the attached v2 wikiJudgment schema. Host-bound checkpoint is ${checkpoint}; copy snapshotHash ${snapshotHash} verbatim (do not compute or alter it). Annotate every required topic ID exactly once. Cite exact candidate-page quotes and Unicode code-point offsets; cite exact dated source evidence quotes, hashes, and offsets. The host mechanically validates page hashes and binds checkpoint, snapshotHash, and unauthorizedWriteAttempts; you must not invent those values. Include every candidate page exactly once in pageTopics. You are an independent read-only judge; use unknown when uncertain.\nRUBRIC: ${JSON.stringify(rubric)}\nSTRICT JSON SCHEMA: ${JSON.stringify(schema)}\nRequired topic IDs: ${JSON.stringify(topics)}\nCheckpoint topic gold: ${JSON.stringify(gold)}\nActive/historical source evidence through checkpoint: ${JSON.stringify(sourceHistory)}\nCandidate pages (host-bound path/hash/content): ${JSON.stringify(pages)}`;
+export function buildMaintenanceJudgePrompt({ checkpoint, snapshotHash, previousSnapshotHash, previousSnapshot, changeAssessment, rubric, schema, topics, gold, sourceHistory, pages }) {
+  return `Return exactly one strict JSON object conforming to the attached v3 wikiJudgment schema. Host-bound checkpoint is ${checkpoint}; copy snapshotHash ${snapshotHash} and previousSnapshotHash ${JSON.stringify(previousSnapshotHash)} verbatim (do not compute or alter them). Annotate every required topic ID exactly once and every candidate page exactly once. Cite exact candidate-page quotes and Unicode code-point offsets; cite exact dated source evidence quotes, hashes, and offsets. The host validates all snapshot/page bindings and binds unauthorizedWriteAttempts; do not repair or invent binding values. Transition assessment is ${changeAssessment}: initialization has no before-state and must use changeAssessment=initialization with unnecessaryChanges=null; a revision includes its preceding frozen wiki and must assess unnecessaryChanges as a list; if transition evidence is unavailable or insufficient use unknown with unnecessaryChanges=null. Compare the complete previous and current snapshots, not source history as a proxy for prior authored content. You are an independent read-only judge; use unknown when uncertain.\nRUBRIC: ${JSON.stringify(rubric)}\nSTRICT JSON SCHEMA: ${JSON.stringify(schema)}\nRequired topic IDs: ${JSON.stringify(topics)}\nCheckpoint topic gold: ${JSON.stringify(gold)}\nActive/historical source evidence through checkpoint: ${JSON.stringify(sourceHistory)}\nPrevious frozen candidate snapshot: ${JSON.stringify(previousSnapshot)}\nCurrent candidate pages (host-bound path/hash/content): ${JSON.stringify(pages)}`;
 }
 
 function parseJudgment(text) {
@@ -286,6 +286,8 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   if (config.solver.provider !== "openai" || config.judge.provider !== "openai") throw new Error("unsupported-provider-route");
   const vaultRoot = safeDirectory(config.vaultRoot);
   const workdir = validateWorkdir(config.workdir);
+  const isWithin = (parent, target) => { const relative = path.relative(parent, target); return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)); };
+  if (isWithin(vaultRoot, workdir) || isWithin(workdir, vaultRoot)) throw new Error("workdir-vault-overlap");
   fs.mkdirSync(workdir, { mode: 0o700 });
   const ownerFd = fs.openSync(path.join(workdir, ".run-owner"), "wx", 0o600);
   try { fs.writeFileSync(ownerFd, `${ownerToken}\\n`, "utf8"); fs.fsyncSync(ownerFd); } finally { fs.closeSync(ownerFd); }
@@ -340,7 +342,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
     persistFile(workdir, "artifact-v2.json", artifact);
     persistMetadata();
   };
-  const externalWorkspace = path.join(workdir, "runner-workspace");
+  const externalWorkspace = fs.mkdtempSync(path.join(path.dirname(workdir), ".osb-km-workspace-"));
   const agentDir = path.join(externalWorkspace, "empty-agent");
   let currentPhase = "preflight";
   const identityCheck = () => {
@@ -349,7 +351,6 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   };
   let runner;
   try {
-    fs.mkdirSync(externalWorkspace, { mode: 0o700 });
     fs.mkdirSync(agentDir, { mode: 0o700 });
     const provider = runtime.getProvider("openai");
     if (!provider) throw new Error("openai-provider-unavailable");
@@ -362,7 +363,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
       sdkPackage: sdkRoot, signal: controller.signal, onProviderEvent: () => {} });
   } catch (error) {
     clearTimeout(timer);
-    runtime.dispose?.();
+    try { runtime.dispose?.(); } finally { fs.rmSync(externalWorkspace, { recursive: true, force: true }); }
     throw error;
   }
   timer = setTimeout(() => { budget.state.stopped = true; budget.state.stopCode = "time-limit"; controller.abort(); }, config.limits.minutes * 60_000);
@@ -399,25 +400,37 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
         const snapshotHash = canonicalHash(pages.map(({ path: pagePath, sha256: digest }) => ({ path: pagePath, sha256: digest })).sort((a, b) => compareCodePoints(a.path, b.path)));
         const snapshot = { checkpoint: cp.id, status: "complete", pages, contentHash: snapshotHash };
         const judgmentIndex = fixture.checkpoints.findIndex((x) => x.id === cp.id);
+        const priorRecord = judgmentIndex > 0 ? artifact.wikiSnapshots[judgmentIndex - 1] : null;
+        const previousSnapshot = priorRecord?.status === "complete" ? priorRecord : null;
+        const previousSnapshotHash = previousSnapshot?.contentHash ?? null;
+        const expectedChangeAssessment = judgmentIndex === 0 ? "initialization" : previousSnapshot ? "assessed" : "unknown";
+        const fallbackAssessment = judgmentIndex === 0 ? "initialization" : "unknown";
         artifact.wikiSnapshots[judgmentIndex] = snapshot;
-        artifact.wikiJudgments[judgmentIndex] = { ...emptyJudgment(fixture.gold.topics, cp.id, snapshotHash, pages), unauthorizedWriteAttempts: maintenanceWriteAttempts };
+        if (judgmentIndex + 1 < artifact.wikiJudgments.length) artifact.wikiJudgments[judgmentIndex + 1].previousSnapshotHash = snapshotHash;
+        artifact.wikiJudgments[judgmentIndex] = { ...emptyJudgment(fixture.gold.topics, cp.id, snapshotHash, pages, previousSnapshotHash, fallbackAssessment), unauthorizedWriteAttempts: maintenanceWriteAttempts };
         for (const trial of artifact.trials) if (trial.checkpoint === cp.id && trial.condition !== "sources") trial.wikiHash = snapshotHash;
         persist(artifact);
         const sourceHistory = fixture.checkpoints.filter((item) => item.id <= cp.id).flatMap((item) => item.sources.map((source) => ({ checkpoint: item.id, path: source.path, text: source.text, sha256: source.sha256 })));
         const gold = Object.fromEntries(fixture.visibleTasks.map((task) => [task.topic, fixture.gold.expectedAnswers[task.id][cp.id]]));
-        const maintenancePrompt = buildMaintenanceJudgePrompt({ checkpoint: cp.id, snapshotHash, rubric, schema: annotationSchema, topics: fixture.gold.topics, gold, sourceHistory, pages });
+        const maintenancePrompt = buildMaintenanceJudgePrompt({ checkpoint: cp.id, snapshotHash, previousSnapshotHash, previousSnapshot, changeAssessment: expectedChangeAssessment,
+          rubric, schema: annotationSchema, topics: fixture.gold.topics, gold, sourceHistory, pages });
         const text = await judge(maintenancePrompt, `judge-maintenance:${cp.id}`);
         const parsed = parseJudgment(text);
-        const fallback = { ...emptyJudgment(fixture.gold.topics, cp.id, snapshotHash, pages), unauthorizedWriteAttempts: maintenanceWriteAttempts };
-        const parsedTopics = Array.isArray(parsed?.topics) ? new Map(parsed.topics.filter((topic) => topic && typeof topic.topic === "string").map((topic) => [topic.topic, topic])) : new Map();
-        const parsedPages = Array.isArray(parsed?.pageTopics) ? new Map(parsed.pageTopics.filter((page) => page && typeof page.path === "string").map((page) => [page.path, page])) : new Map();
-        const annotationIdsMatch = parsedTopics.size === fixture.gold.topics.length && fixture.gold.topics.every((topic) => parsedTopics.has(topic)) &&
-          parsedPages.size === pages.length && pages.every((page) => parsedPages.has(page.path));
-        if (parsed && parsed.schemaVersion === 2 && annotationIdsMatch) {
-          artifact.wikiJudgments[judgmentIndex] = { ...parsed, checkpoint: cp.id, snapshotHash,
-            topics: fixture.gold.topics.map((topic) => parsedTopics.get(topic)),
-            pageTopics: pages.map((page) => parsedPages.get(page.path)),
-            unauthorizedWriteAttempts: normalizeWriteAttempts(maintained.unauthorizedWriteAttempts) };
+        const fallback = { ...emptyJudgment(fixture.gold.topics, cp.id, snapshotHash, pages, previousSnapshotHash, fallbackAssessment), unauthorizedWriteAttempts: maintenanceWriteAttempts };
+        const topicRows = Array.isArray(parsed?.topics) ? parsed.topics : [];
+        const topicIds = topicRows.map((topic) => topic?.topic);
+        const pageRows = Array.isArray(parsed?.pageTopics) ? parsed.pageTopics : [];
+        const pageIds = pageRows.map((page) => page?.path);
+        const annotationIdsMatch = topicRows.length === fixture.gold.topics.length && new Set(topicIds).size === topicIds.length &&
+          fixture.gold.topics.every((topic) => topicIds.includes(topic)) && pageRows.length === pages.length && new Set(pageIds).size === pageIds.length &&
+          pages.every((page) => pageIds.includes(page.path));
+        const transitionBindingValid = parsed?.previousSnapshotHash === previousSnapshotHash &&
+          (expectedChangeAssessment === "initialization" ? parsed?.changeAssessment === "initialization" :
+            expectedChangeAssessment === "unknown" ? parsed?.changeAssessment === "unknown" :
+            ["assessed", "unknown"].includes(parsed?.changeAssessment) && (parsed?.changeAssessment !== "assessed" || parsed?.complete === true));
+        if (parsed && parsed.schemaVersion === 3 && parsed.checkpoint === cp.id && parsed.snapshotHash === snapshotHash && transitionBindingValid && annotationIdsMatch) {
+          artifact.wikiJudgments[judgmentIndex] = { ...parsed,
+            unauthorizedWriteAttempts: maintenanceWriteAttempts };
           try { validateArtifact(artifact); } catch { artifact.wikiJudgments[judgmentIndex] = { ...fallback, unauthorizedWriteAttempts: maintenanceWriteAttempts }; }
         } else artifact.wikiJudgments[judgmentIndex] = fallback;
         maintenanceOk = true;
@@ -428,8 +441,11 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
         try { pages = runner.snapshotWiki().map((page) => ({ path: page.path, content: page.content, sha256: page.sha256 })); } catch { pages = []; }
         const contentHash = canonicalHash(pages.map(({ path: pagePath, sha256: digest }) => ({ path: pagePath, sha256: digest })).sort((a, b) => compareCodePoints(a.path, b.path)));
         const snapshot = { checkpoint: cp.id, status: "failed", pages, contentHash };
+        const priorRecord = idx > 0 ? artifact.wikiSnapshots[idx - 1] : null;
+        const previousSnapshotHash = priorRecord?.status === "complete" ? priorRecord.contentHash : null;
+        const fallbackAssessment = idx === 0 ? "initialization" : "unknown";
         artifact.wikiSnapshots[idx] = snapshot;
-        artifact.wikiJudgments[idx] = { ...emptyJudgment(fixture.gold.topics, cp.id, snapshot.contentHash, pages), unauthorizedWriteAttempts: maintenanceWriteAttempts.length ? maintenanceWriteAttempts : normalizeWriteAttempts(runner.sessionLog.at(-1)?.unauthorizedWriteAttempts) };
+        artifact.wikiJudgments[idx] = { ...emptyJudgment(fixture.gold.topics, cp.id, snapshot.contentHash, pages, previousSnapshotHash, fallbackAssessment), unauthorizedWriteAttempts: maintenanceWriteAttempts.length ? maintenanceWriteAttempts : normalizeWriteAttempts(runner.sessionLog.at(-1)?.unauthorizedWriteAttempts) };
         for (const trial of artifact.trials) if (trial.checkpoint === cp.id && trial.condition !== "sources") trial.wikiHash = contentHash;
         failArtifact(`maintenance:${cp.id}`, safeError());
       }
@@ -477,7 +493,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
           topic: row.topic, gold: taskGold, sourceHistory, answer: answerResult.answer });
         const judgeText = await judge(judgePrompt, `judge-answer:${row.id}`);
         const parsed = parseJudgment(judgeText);
-        artifact.trials[idx].answerJudgment = parsed?.schemaVersion === 2 ? { ...parsed, answerHash } : unknownAnswer(answerResult.answer, answerHash);
+        artifact.trials[idx].answerJudgment = parsed?.schemaVersion === 3 && parsed.answerHash === answerHash ? parsed : unknownAnswer(answerResult.answer, answerHash);
         try { validateArtifact(artifact); } catch { artifact.trials[idx].answerJudgment = unknownAnswer(answerResult.answer, answerHash); }
         const validatedJudgment = artifact.trials[idx].answerJudgment;
         sidecar.stages.push({ phase: `answer:${row.id}`, status: validatedJudgment.complete ? "complete" : "incomplete", durationMs: performance.now() - cellStart });
@@ -494,8 +510,11 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
       if (artifact.wikiSnapshots[i].status === "missing") {
         const cp = fixture.checkpoints[i];
         const missing = { checkpoint: cp.id, status: "missing", pages: [], contentHash: canonicalHash([]) };
+        const priorRecord = i > 0 ? artifact.wikiSnapshots[i - 1] : null;
+        const previousSnapshotHash = priorRecord?.status === "complete" ? priorRecord.contentHash : null;
+        const fallbackAssessment = i === 0 ? "initialization" : "unknown";
         artifact.wikiSnapshots[i] = missing;
-        artifact.wikiJudgments[i] = emptyJudgment(fixture.gold.topics, cp.id, missing.contentHash, []);
+        artifact.wikiJudgments[i] = emptyJudgment(fixture.gold.topics, cp.id, missing.contentHash, [], previousSnapshotHash, fallbackAssessment);
       }
     }
   } finally {
@@ -514,7 +533,9 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
         } else sidecar.stopCode ??= "score-generation-failed";
       } catch { sidecar.stopCode ??= "artifact-validation-failed"; }
       try { persistMetadata(); } catch { /* Preserve the last successfully persisted sidecar and artifact. */ }
-    } finally { runtime.dispose?.(); }
+    } finally {
+      try { runtime.dispose?.(); } finally { fs.rmSync(externalWorkspace, { recursive: true, force: true }); }
+    }
   }
   return { workdir, stopCode: sidecar.stopCode };
 }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "knowledge-maintenance-annotation-v2",
+  "$id": "knowledge-maintenance-annotation-v3",
   "$defs": {
     "evidence": {
       "type": "object", "additionalProperties": false,
@@ -22,7 +22,7 @@
     "answerJudgment": {
       "type": "object", "additionalProperties": false,
       "required": ["schemaVersion", "answerHash", "complete", "outcome", "coveredTopics", "explanation", "claims"],
-      "properties": {"schemaVersion": {"const": 2}, "answerHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "complete": {"type": "boolean"}, "outcome": {"enum": ["supported", "abstained", "unsupported", "unknown"]}, "coveredTopics": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "explanation": {"type": "string"}, "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}}}
+      "properties": {"schemaVersion": {"const": 3}, "answerHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "complete": {"type": "boolean"}, "outcome": {"enum": ["supported", "abstained", "unsupported", "unknown"]}, "coveredTopics": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "explanation": {"type": "string"}, "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}}}
     },
     "wikiTopic": {
       "type": "object", "additionalProperties": false,
@@ -37,8 +37,8 @@
     },
     "wikiJudgment": {
       "type": "object", "additionalProperties": false,
-      "required": ["schemaVersion", "checkpoint", "snapshotHash", "complete", "topics", "pageTopics", "unnecessaryChanges", "unauthorizedWriteAttempts"],
-      "properties": {"schemaVersion": {"const": 2}, "checkpoint": {"type": "string"}, "snapshotHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "complete": {"type": "boolean"}, "topics": {"type": "array", "items": {"$ref": "#/$defs/wikiTopic"}}, "pageTopics": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "topics"], "properties": {"path": {"type": "string"}, "topics": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}}}, "unnecessaryChanges": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "reason"], "properties": {"path": {"type": "string"}, "reason": {"type": "string"}}}}, "unauthorizedWriteAttempts": {"type": "array", "items": {"enum": ["write", "delete", "shell-write", "out-of-scope", "host-path"]}}}
+      "required": ["schemaVersion", "checkpoint", "snapshotHash", "previousSnapshotHash", "changeAssessment", "complete", "topics", "pageTopics", "unnecessaryChanges", "unauthorizedWriteAttempts"],
+      "properties": {"schemaVersion": {"const": 3}, "checkpoint": {"type": "string"}, "snapshotHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "previousSnapshotHash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}, "changeAssessment": {"enum": ["initialization", "assessed", "unknown"]}, "complete": {"type": "boolean"}, "topics": {"type": "array", "items": {"$ref": "#/$defs/wikiTopic"}}, "pageTopics": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "topics"], "properties": {"path": {"type": "string"}, "topics": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}}}, "unnecessaryChanges": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "reason"], "properties": {"path": {"type": "string"}, "reason": {"type": "string"}}}}]}, "unauthorizedWriteAttempts": {"type": "array", "items": {"enum": ["write", "delete", "shell-write", "out-of-scope", "host-path"]}}}
     }
   }
 }
