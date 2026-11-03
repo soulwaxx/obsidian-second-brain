@@ -141,7 +141,8 @@ export function validateRunMetadata(metadata) {
     exact(attempt, ["id", "provider", "api", "model", "responseModel", "phase", "status", "usage", ...(Object.hasOwn(attempt, "errorCode") ? ["errorCode"] : [])], "attempt");
     if (!Number.isSafeInteger(attempt.id) || attempt.id < 1 || attempt.provider !== "openai" || attempt.api !== "openai-responses" || typeof attempt.model !== "string" || typeof attempt.phase !== "string") throw new Error("metadata-attempt-invalid");
     if (!attempt.phase || !["attempted", "completed", "failed", "usage-unavailable"].includes(attempt.status) || !(attempt.responseModel === null || typeof attempt.responseModel === "string")) throw new Error("metadata-attempt-invalid");
-    if (Object.hasOwn(attempt, "errorCode") && !["transport-error", "provider-error"].includes(attempt.errorCode)) throw new Error("metadata-attempt-invalid");
+    if ((attempt.status === "failed" && !Object.hasOwn(attempt, "errorCode")) ||
+      (Object.hasOwn(attempt, "errorCode") && !["transport-error", "provider-error"].includes(attempt.errorCode))) throw new Error("metadata-attempt-invalid");
     if (attempt.usage !== null) {
       exact(attempt.usage, ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "pricing", "responseId", "responseModel"], "usage");
       if (![attempt.usage.inputTokens, attempt.usage.outputTokens, attempt.usage.totalTokens].every(Number.isSafeInteger) || !(attempt.usage.cachedInputTokens === null || Number.isSafeInteger(attempt.usage.cachedInputTokens)) || attempt.usage.pricing !== null || !(attempt.usage.responseId === null || typeof attempt.usage.responseId === "string") || !(attempt.usage.responseModel === null || typeof attempt.usage.responseModel === "string")) throw new Error("metadata-usage-invalid");
@@ -366,8 +367,8 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
     try { runtime.dispose?.(); } finally { fs.rmSync(externalWorkspace, { recursive: true, force: true }); }
     throw error;
   }
-  timer = setTimeout(() => { budget.state.stopped = true; budget.state.stopCode = "time-limit"; controller.abort(); }, config.limits.minutes * 60_000);
-  timer.unref?.();
+  timer = (deps.setTimeoutImpl ?? setTimeout)(() => { budget.state.stopped = true; budget.state.stopCode = "time-limit"; controller.abort(); }, config.limits.minutes * 60_000);
+  timer?.unref?.();
   const judge = async (prompt, phase) => {
     currentPhase = phase;
     await identityCheck();
@@ -392,6 +393,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
         const maintained = await runner.maintain(cp.id, {});
         maintenanceWriteAttempts = normalizeWriteAttempts(maintained.unauthorizedWriteAttempts);
         recordSolverSession(`maintenance:${cp.id}`, maintained.result, maintenanceWriteAttempts);
+        runner.assertVaultTreeSafe?.();
         const retrievalStart = performance.now();
         const build = spawnSync("python3", [path.join(ROOT, "scripts/bm25-index.py"), "build", "--vault", vaultRoot], { cwd: workdir, encoding: "utf8", timeout: 120000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
         retrievalBuildMs = performance.now() - retrievalStart;

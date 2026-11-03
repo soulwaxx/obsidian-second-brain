@@ -34,9 +34,12 @@ for (const [index, root] of sentinelRoots.entries()) {
   fs.writeFileSync(path.join(directory, "SKILL.md"), `---\\nname: sentinel-${index}\\ndescription: SECRET_SENTINEL_SKILL_${index}\\n---\\nDo not load this skill.\\n`);
 }
 const forbiddenReads = [];
+const protectedFileReads = new Set();
+const protectedReadAttempts = [];
 const originalReadFileSync = fsMutable.readFileSync;
 fsMutable.readFileSync = function (file, ...args) {
   const target = path.resolve(file instanceof URL ? fileURLToPath(file) : String(file));
+  if (protectedFileReads.has(target)) { protectedReadAttempts.push(target); throw new Error("protected-hardlink-content-read"); }
   if (sentinelRoots.some((root) => target === root || target.startsWith(`${root}${path.sep}`))) {
     forbiddenReads.push(target);
     throw new Error("sentinel-resource-read");
@@ -242,6 +245,8 @@ try {
   assert.ok(fs.readFileSync(path.join(vault, "wiki/log.md"), "utf8").trim().length > 0, "actual lifecycle generated the hook-owned log");
   assert.equal(fs.existsSync(path.join(vault, ".vault-meta/retrieval")), false, "lifecycle retrieval refresh is disabled until host preparation");
   buildBm25(vault);
+  const cachePath = path.join(vault, ".vault-meta/retrieval/bm25.json");
+  assert.equal(fs.lstatSync(cachePath).nlink, 1, "ordinary host-built BM25 cache remains a single-link file");
   const prepared = runner.wikiHash();
   assert.equal(prepared, canonicalHash(maintained.wiki.map(({ path: pagePath, sha256: digest }) => ({ path: pagePath, sha256: digest }))));
 
@@ -275,12 +280,33 @@ try {
   fs.writeFileSync(outside, "SECRET_OUTSIDE_BYTES_must_not_leak\n");
   fs.symlinkSync(outside, path.join(vault, "wiki", "symlink-page.md"));
   fs.linkSync(outside, path.join(vault, "wiki", "hardlink-page.md"));
-  const safePages = runner.snapshotWiki();
-  assert.ok(!safePages.some((page) => page.path.includes("symlink-page") || page.path.includes("hardlink-page")));
-  assert.ok(!JSON.stringify(safePages).includes("SECRET_OUTSIDE_BYTES_must_not_leak"));
-  await assert.rejects(runner.answerCell(sequenceRow, prepared), /unsafe-wiki-entry/);
+  assert.throws(() => runner.snapshotWiki(), /unsafe-vault-entry/);
+  await assert.rejects(runner.answerCell(sequenceRow, prepared), /unsafe-vault-entry/);
   fs.unlinkSync(path.join(vault, "wiki", "symlink-page.md"));
   fs.unlinkSync(path.join(vault, "wiki", "hardlink-page.md"));
+
+  async function rejectExternalHardlinkBeforeSession(label, relativePath) {
+    const unsafe = await makeRunner(runtime, model, label);
+    const aliasPath = path.join(unsafe.vault, relativePath);
+    const externalPath = path.join(tmp, `${label}-external-sentinel.json`);
+    fs.mkdirSync(path.dirname(aliasPath), { recursive: true });
+    fs.writeFileSync(externalPath, `SECRET_${label.toUpperCase()}_MUST_NOT_BE_READ`);
+    fs.linkSync(externalPath, aliasPath);
+    protectedFileReads.add(aliasPath);
+    protectedFileReads.add(externalPath);
+    const requestCount = requests;
+    mode = "valid-maintenance";
+    await assert.rejects(unsafe.runner.maintain("2025-01-10"), /unsafe-vault-entry:hardlink/);
+    assert.equal(requests, requestCount, `${label} hardlink is rejected before the installed SDK/provider session starts`);
+    assert.deepEqual(protectedReadAttempts, [], `${label} hardlink and its external target are never content-read`);
+    assert.doesNotMatch(JSON.stringify(providerContexts), new RegExp(`SECRET_${label.toUpperCase()}_MUST_NOT_BE_READ`));
+    protectedFileReads.delete(aliasPath);
+    protectedFileReads.delete(externalPath);
+    fs.unlinkSync(aliasPath);
+    fs.unlinkSync(externalPath);
+  }
+  await rejectExternalHardlinkBeforeSession("cache-hardlink", ".vault-meta/retrieval/bm25.json");
+  await rejectExternalHardlinkBeforeSession("journal-hardlink", path.join(".git", "okf-index-ownership.json"));
 
   // Cross-language scorer hash compatibility for the exact source history returned by the runner.
   mode = "no-tools";
@@ -356,7 +382,7 @@ try {
   await assert.rejects(setupRunner.runner.answerCell(setupRow, null), /injected setup failure/);
   assert.equal(failedSessionDisposed, true);
   assert.deepEqual({ OBSIDIAN_AGENT_CONFIG: process.env.OBSIDIAN_AGENT_CONFIG, OBSIDIAN_VAULT_PATH: process.env.OBSIDIAN_VAULT_PATH, WIKI_MIDDLEWARE_DIR: process.env.WIKI_MIDDLEWARE_DIR }, priorEnv);
-  assert.equal(createCount, 5);
+  assert.equal(createCount, 7);
   assert.deepEqual(forbiddenReads, [], "synthetic HOME and ancestor .agents skill files/metadata are not read by explicit resource loading");
   assert.doesNotMatch(JSON.stringify(providerContexts), /SECRET_SENTINEL_SKILL|SECRET_ANCESTOR_SKILL/u);
   console.log(`Pi knowledge-maintenance installed-SDK contract PASS: ${experiment.timings.length} distinct orchestration sessions, ${requests} fake provider turns, actual lifecycle and native tool roundtrip.`);

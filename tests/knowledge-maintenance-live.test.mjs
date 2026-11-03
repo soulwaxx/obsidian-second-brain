@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "../experiments/knowledge-maintenance/live-support.mjs";
 import { buildAnswerJudgePrompt, buildMaintenanceJudgePrompt, dryRun, runLive, validateRunMetadata } from "../experiments/knowledge-maintenance/run.mjs";
 import { installedPackage, resolveRuntimeDependencies } from "./pi-runtime-paths.mjs";
+import { createPiRunner } from "../experiments/knowledge-maintenance/pi-runner.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -377,6 +378,73 @@ try {
     assert.equal(actualRunMetadata.attempts.length, 1);
     assert.equal(actualRunMetadata.sessions[0].phase, "maintenance:2025-01-10");
     assert.ok(fs.existsSync(path.join(actualRunConfig.workdir, "artifact-v2.json")));
+
+    const checkUnsafeVaultEntries = (root) => {
+      const unsafe = [];
+      const walk = (directory) => { for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const target = path.join(directory, entry.name); const stat = fs.lstatSync(target);
+        if (stat.isSymbolicLink()) unsafe.push(`${path.relative(root, target)}:symlink`);
+        else if (stat.isDirectory()) walk(target);
+        else if (stat.isFile() && stat.nlink !== 1) unsafe.push(`${path.relative(root, target)}:hardlink:${stat.nlink}`);
+      } };
+      walk(root); return unsafe;
+    };
+    assert.deepEqual(checkUnsafeVaultEntries(vault), [], "ordinary coordinator vault retains safe single-link derived state between runs");
+    const watchdogConfig = { ...liveConfig, workdir: path.join(outside, "watchdog-run"), limits: { ...liveConfig.limits, minutes: 1 } };
+    const watchdogBaseRuntime = await loadSelectedOpenAIAuth({ AuthStorage, ModelRuntime: sdk.ModelRuntime, readStoredCredential: authModule.readStoredCredential, authFile: syntheticAuthFile });
+    let watchdogRuntimeDisposed = false;
+    const disposeWatchdogRuntime = watchdogBaseRuntime.dispose?.bind(watchdogBaseRuntime) ?? (() => {});
+    watchdogBaseRuntime.dispose = () => { watchdogRuntimeDisposed = true; disposeWatchdogRuntime(); };
+    const watchdogRuntime = watchdogBaseRuntime;
+    let coordinatorWatchdog;
+    let watchdogRunner;
+    let watchdogFetchCount = 0;
+    let fetchSignalAborted = false;
+    const watchdogResult = await runLive(watchdogConfig, { ...offlineManifest, externalWorkdir: watchdogConfig.workdir }, fixture, "owner-watchdog", {
+      sdk, authModule, runtime: watchdogRuntime, createPiRunner: async (options) => {
+        watchdogRunner = await createPiRunner(options);
+        watchdogRunner.assertVaultTreeSafe();
+        return watchdogRunner;
+      },
+      setTimeoutImpl: (callback, delay) => { assert.equal(delay, 60_000); coordinatorWatchdog = callback; return null; },
+      fetchImpl: (_url, init) => {
+        watchdogFetchCount++;
+        return new Promise((_resolve, reject) => {
+          const signal = init.signal;
+          assert.ok(signal, "native provider request carries the coordinator's abort signal");
+          const onAbort = () => { fetchSignalAborted = true; reject(new DOMException("synthetic watchdog abort", "AbortError")); };
+          signal.addEventListener("abort", onAbort, { once: true });
+          assert.equal(typeof coordinatorWatchdog, "function", "coordinator watchdog is installed before dispatch");
+          coordinatorWatchdog();
+          if (signal.aborted) onAbort();
+        });
+      },
+    });
+    const watchdogMetadata = JSON.parse(fs.readFileSync(path.join(watchdogConfig.workdir, "run-metadata.json"), "utf8"));
+    const watchdogArtifact = JSON.parse(fs.readFileSync(path.join(watchdogConfig.workdir, "artifact-v2.json"), "utf8"));
+    assert.equal(watchdogResult.stopCode, "time-limit", JSON.stringify({ fetchCount: watchdogFetchCount, fetchSignalAborted, attempts: watchdogMetadata.attempts, sessions: watchdogMetadata.sessions, stages: watchdogMetadata.stages, runnerSessions: watchdogRunner?.sessionLog }));
+    assert.equal(watchdogFetchCount, 1, "watchdog abort finalizes the in-flight request without another provider dispatch");
+    assert.equal(fetchSignalAborted, true, "the coordinator watchdog aborts the native request signal");
+    assert.equal(watchdogMetadata.stopCode, "time-limit");
+    assert.equal(watchdogMetadata.attempts.length, 1);
+    assert.equal(watchdogMetadata.attempts[0].status, "failed");
+    assert.equal(watchdogMetadata.attempts[0].errorCode, "transport-error", "attempt cause stays separate from the global deadline stop reason");
+    validateRunMetadata(watchdogMetadata);
+    assert.ok(watchdogArtifact.trials.length === 144);
+    assert.ok(fs.existsSync(path.join(watchdogConfig.workdir, "score.json")), "partial artifact score is retained after watchdog cancellation");
+    assert.equal(watchdogRuntimeDisposed, true, "watchdog cancellation disposes the runtime after final persistence");
+    for (const stopCode of ["call-limit", "output-token-limit", "usage-unavailable", "response-model-drift"]) {
+      const canceledBudget = createBudget({ limits: { calls: 1, minutes: 1, outputTokens: 1 } });
+      const canceledAttempt = canceledBudget.beginAttempt({ provider: "openai", api: "openai-responses", model: "synthetic", responseModel: null, phase: "cancellation-test" });
+      assert.throws(() => canceledBudget.stop(stopCode), new RegExp(stopCode));
+      canceledBudget.failAttempt(canceledAttempt, "transport-error");
+      assert.equal(canceledBudget.state.stopCode, stopCode);
+      assert.equal(canceledAttempt.errorCode, "transport-error");
+      const validOtherLimit = structuredClone(watchdogMetadata);
+      validOtherLimit.stopCode = stopCode;
+      validOtherLimit.attempts[0].errorCode = canceledAttempt.errorCode;
+      validateRunMetadata(validOtherLimit);
+    }
 
     let answerCalls = 0;
     const fakeRunner = {

@@ -118,7 +118,7 @@ function skillAllowlist() {
   return files;
 }
 
-function makeScopedExtension({ vaultRoot, sourceRecords, sourceEnabled, wikiEnabled, writable, skills, writeAttempts, accessDenials, providerEvents, onProviderEvent }) {
+function makeScopedExtension({ vaultRoot, sourceRecords, sourceEnabled, wikiEnabled, writable, skills, writeAttempts, accessDenials, providerEvents, onProviderEvent, assertVaultTreeSafe }) {
   return (pi) => {
     const sourceMap = new Map(sourceRecords.map((item) => [item.path, item]));
     const allowedTools = new Set(["experiment_source_read", "experiment_skill_read", ...(wikiEnabled ? ["wiki_search", "wiki_outline", "wiki_read"] : []), ...(writable ? ["write", "edit"] : [])]);
@@ -153,6 +153,13 @@ function makeScopedExtension({ vaultRoot, sourceRecords, sourceEnabled, wikiEnab
       },
     });
     pi.on("tool_call", (event) => {
+      if (event.toolName.startsWith("wiki_")) {
+        try { assertVaultTreeSafe(vaultRoot); }
+        catch (error) {
+          accessDenials.push(error.message?.startsWith("unsafe-vault-entry:") ? error.message : "unsafe-vault-entry");
+          return { block: true, reason: "Denied because the synthetic vault contains linked files or paths." };
+        }
+      }
       if (!allowedTools.has(event.toolName)) {
         if (event.toolName === "write" || event.toolName === "edit") writeAttempts.push("write");
         else accessDenials.push("tool-out-of-scope");
@@ -242,7 +249,7 @@ export async function createPiRunner(options) {
   let sessionActive = false;
 
   async function runSession({ phase, sourceRecords, sourceEnabled, wikiEnabled, prompt, writable }) {
-    if (wikiEnabled) assertWikiTreeSafe(vault);
+    assertVaultTreeSafe(vault);
     if (signal?.aborted) fail("cancelled-before-session");
     if (sessionActive) fail("concurrent sessions are disabled for deterministic bounded orchestration");
     sessionActive = true;
@@ -266,7 +273,8 @@ export async function createPiRunner(options) {
     let loader;
     let session;
     try {
-      const scoped = makeScopedExtension({ vaultRoot: vault, sourceRecords, sourceEnabled, wikiEnabled, writable, skills, writeAttempts, accessDenials, providerEvents, onProviderEvent });
+      const scoped = makeScopedExtension({ vaultRoot: vault, sourceRecords, sourceEnabled, wikiEnabled, writable, skills, writeAttempts, accessDenials, providerEvents, onProviderEvent,
+        assertVaultTreeSafe: () => assertVaultTreeSafe(vault) });
       const settingsManager = SettingsManager.inMemory({ retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } }, compaction: { enabled: false }, cacheWarming: "off", defaultTools: [] });
       const eventBus = createEventBus();
       const extensionRuntime = createExtensionRuntime();
@@ -348,30 +356,30 @@ export async function createPiRunner(options) {
     return { checkpoint, result, wiki: snapshotWiki(vault), durationMs: result.durationMs, unauthorizedWriteAttempts: result.unauthorizedWriteAttempts, accessDenials: result.accessDenials };
   }
 
-  function unsafeWikiEntries(root) {
-    const wiki = path.join(root, "wiki");
+  function unsafeVaultEntries(root) {
     const unsafe = [];
-    const walk = (dir) => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const target = path.join(dir, entry.name);
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const target = path.join(directory, entry.name);
         const stat = fs.lstatSync(target);
         if (stat.isSymbolicLink()) { unsafe.push({ path: target, kind: "symlink" }); continue; }
         if (stat.isDirectory()) walk(target);
         else if (stat.isFile() && stat.nlink !== 1) unsafe.push({ path: target, kind: "hardlink" });
       }
     };
-    const stat = fs.lstatSync(wiki);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) fail("unsafe-wiki-root");
-    walk(wiki);
+    const stat = fs.lstatSync(root);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) fail("unsafe-vault-root");
+    walk(root);
     return unsafe;
   }
 
-  function assertWikiTreeSafe(root) {
-    const unsafe = unsafeWikiEntries(root);
-    if (unsafe.length) fail(`unsafe-wiki-entry:${unsafe.map((item) => item.kind).join(",")}`);
+  function assertVaultTreeSafe(root) {
+    const unsafe = unsafeVaultEntries(root);
+    if (unsafe.length) fail(`unsafe-vault-entry:${unsafe.map((item) => item.kind).join(",")}`);
   }
 
   function snapshotWiki(root, accessDenials = []) {
+    assertVaultTreeSafe(root);
     const wiki = path.join(root, "wiki");
     const pages = [];
     const walk = (dir) => {
@@ -418,7 +426,7 @@ export async function createPiRunner(options) {
     for (const cp of fixture.checkpoints) {
       const checkpoint = await maintain(cp.id, checkpoints.at(-1)?.wiki ?? {});
       checkpoints.push(checkpoint);
-      assertWikiTreeSafe(vault);
+      assertVaultTreeSafe(vault);
       const prepStart = performance.now();
       await buildRetrieval({ checkpoint: cp.id, vaultRoot: vault });
       checkpoint.retrievalBuildMs = performance.now() - prepStart;
@@ -430,5 +438,5 @@ export async function createPiRunner(options) {
     return { schemaVersion: 1, checkpoints, answers, timings: sessionLog, toolScopeViolations: sessionLog.flatMap((item) => item.accessDenials), unauthorizedWriteAttempts: sessionLog.flatMap((item) => item.unauthorizedWriteAttempts), matrixSize: answers.length };
   }
 
-  return { fixture, rows, maintain, answerCell: answer, runExperiment, snapshotWiki: () => snapshotWiki(vault), wikiHash: () => wikiContentHash(), sessionLog, vaultRoot: vault, model: `${model.provider}/${model.id}`, effort, maxOutputTokens };
+  return { fixture, rows, maintain, answerCell: answer, runExperiment, snapshotWiki: () => snapshotWiki(vault), assertVaultTreeSafe: () => assertVaultTreeSafe(vault), wikiHash: () => wikiContentHash(), sessionLog, vaultRoot: vault, model: `${model.provider}/${model.id}`, effort, maxOutputTokens };
 }

@@ -221,7 +221,7 @@ export function createBudget({ limits = DEFAULTS.limits, now = () => performance
     failAttempt(attempt, code = "provider-error") {
       attempt.status = "failed";
       if (!state.stopped) { state.stopped = true; state.stopCode = code; onStop(code); }
-      attempt.errorCode = state.stopCode;
+      attempt.errorCode = code === "transport-error" ? "transport-error" : "provider-error";
     },
     stop,
   };
