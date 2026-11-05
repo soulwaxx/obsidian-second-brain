@@ -6,16 +6,20 @@ import { installedPackage } from "../../tests/pi-runtime-paths.mjs";
 const INTERNAL_AUTH_SENTINEL = "sk-osb-native-dispatch-sentinel-not-a-credential";
 
 /** Build an isolated SDK runtime whose public streaming calls delegate to Pi's active registry. */
-export function preflightNativeProvider({ hostRegistry, models }) {
-  if (!hostRegistry?.getProvider || !hostRegistry?.getRegisteredNativeProvider || !hostRegistry?.getRegisteredProviderConfig || !Array.isArray(models) || models.length === 0) {
+export function preflightNativeProvider({ hostRegistry, baselineRegistry, models }) {
+  if (!hostRegistry?.getProvider || !hostRegistry?.getRegisteredNativeProvider || !hostRegistry?.getRegisteredProviderConfig || !baselineRegistry?.getProvider || !baselineRegistry?.getModel || !Array.isArray(models) || models.length === 0) {
     throw new Error("native-provider-bridge-unavailable");
   }
   const providerIds = new Set(models.map((model) => model?.provider));
   if (providerIds.size !== 1 || providerIds.has(undefined)) throw new Error("native-provider-bridge-requires-one-provider");
   const providerId = [...providerIds][0];
   const hostProvider = hostRegistry.getProvider(providerId);
+  const baselineProvider = baselineRegistry.getProvider(providerId);
   if (hostRegistry.getRegisteredNativeProvider(providerId) || hostRegistry.getRegisteredProviderConfig(providerId) ||
-    !hostProvider?.streamSimple || models.some((model) => model.provider !== providerId || model.api !== "openai-responses")) {
+    !hostProvider?.streamSimple || !baselineProvider?.streamSimple ||
+    hostProvider.auth?.apiKey?.check !== baselineProvider.auth?.apiKey?.check ||
+    models.some((model) => model.provider !== providerId || model.api !== "openai-responses" ||
+      JSON.stringify(model) !== JSON.stringify(baselineRegistry.getModel(model.provider, model.id)))) {
     throw new Error("unsupported-native-provider-route");
   }
   return { providerId, hostProvider };
@@ -23,7 +27,11 @@ export function preflightNativeProvider({ hostRegistry, models }) {
 
 export async function createNativeProviderRuntime({ sdk, AuthStorage, hostRegistry, models }) {
   if (!sdk?.ModelRuntime || !AuthStorage?.inMemory) throw new Error("native-provider-bridge-unavailable");
-  const { providerId, hostProvider } = preflightNativeProvider({ hostRegistry, models });
+  const baselineRuntime = await sdk.ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+  let providerId;
+  let hostProvider;
+  try { ({ providerId, hostProvider } = preflightNativeProvider({ hostRegistry, baselineRegistry: baselineRuntime, models })); }
+  finally { baselineRuntime.dispose?.(); }
   const runtime = await sdk.ModelRuntime.create({
     credentials: AuthStorage.inMemory({ [providerId]: { type: "api_key", key: INTERNAL_AUTH_SENTINEL } }),
     modelsPath: null,
@@ -65,7 +73,8 @@ function commandArgs(raw) {
 
 /** Pi extension entrypoint: /km-native --live --config <experiment-config.json> */
 export default function registerNativeKnowledgeMaintenance(pi) {
-  const run = async (rawArgs, ctx) => {
+  let activeRun;
+  const execute = async (rawArgs, ctx, signal) => {
     const argv = commandArgs(rawArgs ?? "");
     if (!argv.includes("--live")) throw new Error("native-live-requires-literal---live");
     if (argv.includes("--auth-file")) throw new Error("native-mode-does-not-accept-auth-files");
@@ -82,7 +91,6 @@ export default function registerNativeKnowledgeMaintenance(pi) {
       if (!selected || selected.provider !== provider || selected.id !== model || selected.api !== "openai-responses") throw new Error("configured-native-model-unavailable");
       return selected;
     });
-    preflightNativeProvider({ hostRegistry: ctx.modelRegistry, models });
     const sdkRoot = installedPackage();
     if (!sdkRoot) throw new Error("installed-pi-runtime-unavailable");
     const { AuthStorage } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/auth-storage.js")).href);
@@ -96,6 +104,7 @@ export default function registerNativeKnowledgeMaintenance(pi) {
         installedPackage: () => sdkRoot,
         runtime,
         nativeMode: true,
+        signal,
         nativeBaseUrls: new Map(models.map((model) => [`${model.provider}/${model.id}`, model.baseUrl])),
       });
       ctx.ui.notify(`Knowledge-maintenance run finished: ${result.stopCode ?? "complete"}. Review only sanitized run metadata and artifact output.`, result.stopCode ? "warning" : "info");
@@ -106,6 +115,21 @@ export default function registerNativeKnowledgeMaintenance(pi) {
       runtime.dispose?.();
     }
   };
+  const run = (rawArgs, ctx) => {
+    if (activeRun) throw new Error("native-run-already-active");
+    const controller = new AbortController();
+    const completion = execute(rawArgs, ctx, controller.signal);
+    const current = { controller, completion };
+    activeRun = current;
+    return completion.finally(() => { if (activeRun === current) activeRun = undefined; });
+  };
+
+  pi.on("session_shutdown", async () => {
+    const current = activeRun;
+    if (!current) return;
+    current.controller.abort();
+    await current.completion.catch(() => undefined);
+  });
 
   pi.registerCommand("km-native", {
     description: "Run the isolated knowledge-maintenance experiment through Pi's active provider (requires --live)",

@@ -480,6 +480,36 @@ class KnowledgeMaintenanceTests(unittest.TestCase):
         self.assertIn("syntactic inventory", report["citationInventoryNote"])
         self.assertNotIn("unresolvedCitations", detail)
 
+    def test_unnecessary_change_can_identify_deleted_prior_page_but_not_unknown_path(self):
+        artifact = self.artifact()
+        index = 1
+        previous = artifact["wikiSnapshots"][index - 1]
+        background = "---\ntype: note\ntitle: Background\n---\nUseful historical background.\n"
+        deleted = {"path": "wiki/background.md", "content": background, "sha256": E.sha256(background)}
+        previous["pages"].append(deleted)
+        previous["contentHash"] = E.canonical_hash([{"path": page["path"], "sha256": page["sha256"]}
+                                                     for page in sorted(previous["pages"], key=lambda page: page["path"])])
+        prior_judgment = artifact["wikiJudgments"][index - 1]
+        prior_judgment["snapshotHash"] = previous["contentHash"]
+        prior_judgment["pageTopics"].append({"path": deleted["path"], "topics": []})
+        for trial in artifact["trials"]:
+            if trial["checkpoint"] == previous["checkpoint"] and trial["condition"] != "sources":
+                trial["wikiHash"] = previous["contentHash"]
+        judgment = artifact["wikiJudgments"][index]
+        judgment["previousSnapshotHash"] = previous["contentHash"]
+        judgment["unnecessaryChanges"] = [{"path": deleted["path"], "reason": "Removed useful background context."}]
+        artifact = E.seal_artifact(artifact)
+        E.validate_artifact(artifact, self.fixture)
+        scored = E.score_maintenance(artifact, self.fixture)["checkpoints"][index]
+        self.assertEqual(scored["unnecessaryChanges"], [{"path": deleted["path"], "reason": "Removed useful background context."}])
+        self.assertIn(deleted["path"], scored["changedOrRemovedPaths"])
+
+        unknown = copy.deepcopy(artifact)
+        unknown["wikiJudgments"][index]["unnecessaryChanges"] = [{"path": "wiki/never-existed.md", "reason": "Unknown path."}]
+        unknown = E.seal_artifact(unknown)
+        with self.assertRaisesRegex(ValueError, "invalid unnecessary-change judgment"):
+            E.validate_artifact(unknown, self.fixture)
+
     def test_transition_assessment_unknown_is_not_scored_as_zero_churn(self):
         artifact = self.artifact()
         first = artifact["wikiJudgments"][0]

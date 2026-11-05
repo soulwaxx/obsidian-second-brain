@@ -135,7 +135,7 @@ function persistFile(directory, name, value) {
 export function validateRunMetadata(metadata) {
   const exact = (value, keys, label) => { if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key))) throw new Error(`${label}-schema-invalid`); };
   exact(metadata, ["schemaVersion", "identities", "limits", "runtime", "backendRevision", "backendRevisionStatus", "stopCode", "attempts", "sessions", "stages", "timing", "pricing"], "metadata");
-  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
+  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "cancelled", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
   exact(metadata.limits, ["calls", "minutes", "outputTokens", "maxOutputTokens"], "limits");
   if (!Object.values(metadata.limits).every((value) => Number.isSafeInteger(value) && value > 0)) throw new Error("metadata-limits-invalid");
   exact(metadata.identities, ["sourceHash", "goldHash", "fixtureHash", "rubricHash", "settingsHash", "promptHash", "code"], "identities");
@@ -328,6 +328,13 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   let timer;
   const began = performance.now();
   const budget = createBudget({ limits: config.limits, onStop: () => controller.abort() });
+  const externalSignal = deps.signal;
+  const cancelRun = () => {
+    if (!budget.state.stopped) { budget.state.stopped = true; budget.state.stopCode = "cancelled"; }
+    controller.abort();
+  };
+  if (externalSignal?.aborted) cancelRun();
+  else externalSignal?.addEventListener("abort", cancelRun, { once: true });
   const persistMetadata = () => {
     sidecar.attempts = budget.state.records.map(({ id, ...record }) => ({ id, ...record }));
     sidecar.stopCode = budget.state.stopCode ?? sidecar.stopCode;
@@ -410,6 +417,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
     unauthorizedWriteAttempts: normalizeWriteAttempts(writeAttempts.length ? writeAttempts : runner.sessionLog.at(-1)?.unauthorizedWriteAttempts) });
   try {
     persist(artifact);
+    if (controller.signal.aborted) throw new Error(budget.state.stopCode ?? "cancelled");
     for (const cp of fixture.checkpoints) {
       const stageStart = performance.now();
       currentPhase = `maintenance:${cp.id}`;
@@ -532,7 +540,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
       }
     }
   } catch (error) {
-    const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped"]);
+    const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "cancelled"]);
     sidecar.stopCode ??= budget.state.stopCode ?? (safeCodes.has(error?.message) ? error.message : "run-stopped");
     sidecar.stages.push({ phase: "coordinator", status: "stopped", code: sidecar.stopCode });
     for (const trial of artifact.trials) if (trial.status === "missing") trial.status = "missing";
@@ -549,6 +557,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
     }
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", cancelRun);
     try {
       sidecar.stopCode ??= budget.state.stopCode;
       try { persistMetadata(); } catch { sidecar.stopCode ??= "artifact-validation-failed"; }

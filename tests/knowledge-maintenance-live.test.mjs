@@ -228,6 +228,64 @@ try {
   assert.equal(childMessages.length, 0, "native subagent command interception handles its exact Task wrapper without an ordinary model turn");
   child.session.dispose();
   childModelRuntime.dispose?.();
+
+  const cancelHost = path.join(outside, "native-cancel-host");
+  const cancelAgentDir = path.join(cancelHost, "agent");
+  const cancelExtensions = path.join(cancelHost, ".pi", "extensions");
+  fs.mkdirSync(cancelAgentDir, { recursive: true });
+  fs.mkdirSync(cancelExtensions, { recursive: true });
+  fs.writeFileSync(path.join(cancelExtensions, "km-native.mjs"), `import register from ${JSON.stringify(pathToFileURL(path.resolve("experiments/knowledge-maintenance/native-bridge.mjs")).href)};\nexport default register;\n`);
+  const cancelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-cancel-sentinel" } }), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+  const cancelResources = new sdk.DefaultResourceLoader({ cwd: cancelHost, agentDir: cancelAgentDir, settingsManager: childSettings, additionalExtensionPaths: [path.join(cancelExtensions, "km-native.mjs")], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+  await cancelResources.reload();
+  const cancelSession = await sdk.createAgentSession({ cwd: cancelHost, agentDir: cancelAgentDir, modelRuntime: cancelRuntime, resourceLoader: cancelResources,
+    settingsManager: childSettings, sessionManager: sdk.SessionManager.inMemory(cancelHost), tools: [] });
+  await cancelSession.session.bindExtensions({});
+  const cancelVault = path.join(outside, "native-cancel-vault");
+  fs.mkdirSync(path.join(cancelVault, "wiki"), { recursive: true });
+  fs.writeFileSync(path.join(cancelVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
+  const cancelWorkdir = path.join(outside, "native-cancel-run");
+  const cancelConfigPath = path.join(outside, "native-cancel-config.json");
+  fs.writeFileSync(cancelConfigPath, JSON.stringify({ workdir: cancelWorkdir, vaultRoot: cancelVault, limits: { calls: 4, minutes: 1 } }));
+  let cancelFetchCount = 0;
+  let cancelFetchSignal;
+  let markFetchStarted;
+  const fetchStarted = new Promise((resolve) => { markFetchStarted = resolve; });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_url, init) => {
+    cancelFetchCount++;
+    cancelFetchSignal = init.signal;
+    markFetchStarted();
+    return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+  };
+  try {
+    const pendingNativeInput = cancelSession.session.prompt(`Task: /km-native --live --config ${cancelConfigPath}`, { expandPromptTemplates: true });
+    const nativeInputSettlement = pendingNativeInput.then(() => null, (error) => error);
+    let dispatchTimeout;
+    try {
+      await Promise.race([fetchStarted, new Promise((_resolve, reject) => { dispatchTimeout = setTimeout(() => reject(new Error("native cancellation test dispatch timed out")), 10_000); })]);
+    } finally { clearTimeout(dispatchTimeout); }
+    assert.equal(cancelSession.session.isIdle, true, "native input hook runs while the controller session is idle");
+    await cancelSession.session.abort();
+    assert.equal(cancelFetchSignal.aborted, false, "idle session.abort alone does not cancel the pending native experiment fetch");
+    await cancelSession.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    const inputResult = await nativeInputSettlement;
+    assert.equal(inputResult, null, inputResult instanceof Error ? inputResult.message : "native input hook should settle normally after shutdown cancellation");
+    assert.equal(cancelFetchSignal.aborted, true, "native session_shutdown cancels the experiment-owned request signal");
+    assert.equal(cancelFetchCount, 1, "cancellation prevents any later provider dispatch");
+    const cancelMetadata = JSON.parse(fs.readFileSync(path.join(cancelWorkdir, "run-metadata.json"), "utf8"));
+    validateRunMetadata(cancelMetadata);
+    assert.equal(cancelMetadata.stopCode, "cancelled");
+    assert.equal(cancelMetadata.attempts.length, 1);
+    assert.equal(cancelMetadata.attempts[0].errorCode, "transport-error", "attempt transport failure is retained separately from the cancellation stop code");
+    assert.ok(fs.existsSync(path.join(cancelWorkdir, "score.json")), "cancelled experiment persists a valid partial score");
+    assert.deepEqual(fs.readdirSync(outside).filter((name) => name.startsWith(".osb-km-workspace-")), [], "native shutdown waits through experiment workspace cleanup");
+  } finally {
+    globalThis.fetch = originalFetch;
+    cancelSession.session.dispose();
+    cancelRuntime.dispose?.();
+  }
+
   const syntheticAuthFile = path.join(outside, "synthetic-auth.json");
   const syntheticAuthBytes = JSON.stringify({ openai: { type: "api_key", key: "sk-offline-synthetic-key" } });
   fs.writeFileSync(syntheticAuthFile, syntheticAuthBytes, { mode: 0o600 });
@@ -443,6 +501,7 @@ try {
     const { ModelRegistry } = await import(pathToFileURL(path.join(packageRoot, "dist/core/model-registry.js")).href);
     const nativeHost = await sdk.ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-host-sentinel" } }), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
     const hostRegistryFacade = new ModelRegistry(nativeHost);
+    const nativeBaseline = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
     const hostRegistry = {
       find: (...args) => hostRegistryFacade.find(...args),
       getAll: () => hostRegistryFacade.getAll(),
@@ -465,12 +524,42 @@ try {
       ...hostRegistry,
       getRegisteredNativeProvider: () => ({ id: "openai", streamSimple() { rejectedNativeStreamCalls++; throw new Error("must-not-stream-custom-provider"); } }),
     };
-    assert.throws(() => preflightNativeProvider({ hostRegistry: hostileRegistry, models: nativeModels }), /unsupported-native-provider-route/);
+    assert.throws(() => preflightNativeProvider({ hostRegistry: hostileRegistry, baselineRegistry: nativeBaseline, models: nativeModels }), /unsupported-native-provider-route/);
     assert.equal(rejectedNativeStreamCalls, 0, "unsupported native overrides are rejected before any provider delegate can run");
     const overlayRegistry = { ...hostRegistry, getRegisteredProviderConfig: () => ({ baseUrl: "https://opaque-extension.invalid/v1" }) };
-    assert.throws(() => preflightNativeProvider({ hostRegistry: overlayRegistry, models: nativeModels }), /unsupported-native-provider-route/);
+    assert.throws(() => preflightNativeProvider({ hostRegistry: overlayRegistry, baselineRegistry: nativeBaseline, models: nativeModels }), /unsupported-native-provider-route/);
     assert.ok(nativeModels.every(Boolean), "offline host registry exposes both selected models");
-    nativeModels[0] = { ...nativeModels[0], baseUrl: "https://managed-provider.invalid/v1" };
+
+    let overlayStreamCalls = 0;
+    let overlayFetchCalls = 0;
+    const originalOverlayFetch = globalThis.fetch;
+    globalThis.fetch = async () => { overlayFetchCalls++; throw new Error("command-valued models.json route must not fetch"); };
+    try {
+      for (const [name, providerConfig] of [
+        ["api-key", { apiKey: `!touch ${path.join(outside, "native-api-key-command-ran")}` }],
+        ["header", { headers: { "X-Native-Sentinel": `!touch ${path.join(outside, "native-header-command-ran")}` } }],
+      ]) {
+        const overlayConfigPath = path.join(outside, `native-${name}-models.json`);
+        fs.writeFileSync(overlayConfigPath, JSON.stringify({ providers: { openai: providerConfig } }));
+        const overlayRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-overlay-sentinel" } }),
+          modelsPath: overlayConfigPath, refreshOnCreate: false, allowModelNetwork: false });
+        const overlayFacade = new ModelRegistry(overlayRuntime);
+        const composedRegistry = {
+          getProvider: (...args) => overlayFacade.getProvider(...args),
+          getRegisteredNativeProvider: (...args) => overlayFacade.getRegisteredNativeProvider(...args),
+          getRegisteredProviderConfig: (...args) => overlayFacade.getRegisteredProviderConfig(...args),
+          streamSimple: (...args) => { overlayStreamCalls++; return overlayFacade.streamSimple(...args); },
+        };
+        const composedModels = nativeModels.map((model) => overlayFacade.find(model.provider, model.id));
+        assert.throws(() => preflightNativeProvider({ hostRegistry: composedRegistry, baselineRegistry: nativeBaseline, models: composedModels }), /unsupported-native-provider-route/,
+          `models.json ${name} command-valued config fails closed before dispatch`);
+        overlayRuntime.dispose?.();
+      }
+    } finally { globalThis.fetch = originalOverlayFetch; }
+    assert.equal(overlayStreamCalls, 0, "command-config rejection precedes host provider stream resolution");
+    assert.equal(overlayFetchCalls, 0, "command-config rejection precedes fake fetch dispatch");
+    assert.equal(fs.existsSync(path.join(outside, "native-api-key-command-ran")), false, "synthetic API-key command never runs");
+    assert.equal(fs.existsSync(path.join(outside, "native-header-command-ran")), false, "synthetic header command never runs");
     const delegatedRuntime = await createNativeProviderRuntime({ sdk, AuthStorage, hostRegistry, models: nativeModels });
     const nativeRunConfig = { ...liveConfig, authFile: null, workdir: path.join(outside, "native-delegated-run"), limits: { ...liveConfig.limits, calls: 1 } };
     const nativeManifest = dryRun({ ...nativeRunConfig, live: false }, fixture);
@@ -493,7 +582,7 @@ try {
     let nativeRequestFields;
     const nativeFetch = async (url, init) => {
       nativeFetchCount++;
-      assert.equal(new URL(url).origin, "https://managed-provider.invalid");
+      assert.equal(new URL(url).origin, "https://api.openai.com");
       assert.equal(new URL(url).pathname, "/v1/responses");
       const request = JSON.parse(init.body);
       nativeRequestFields = { model: request.model, max_output_tokens: request.max_output_tokens ?? null, reasoning_effort: request.reasoning?.effort ?? null, store: request.store ?? null, stream: request.stream ?? null };
@@ -517,9 +606,10 @@ try {
     assert.equal(nativeFetchCount, 1, "host registry delegation reaches only the injected fake fetch before the shared call ceiling");
     assert.deepEqual(nativeRequestFields, { model: "gpt-6.1-sol", max_output_tokens: 4096, reasoning_effort: "medium", store: false, stream: true });
     assert.deepEqual({ calls: nativeMetadata.attempts.length, outputTokens: nativeMetadata.attempts[0].usage.outputTokens, inputTokens: nativeMetadata.attempts[0].usage.inputTokens, totalTokens: nativeMetadata.attempts[0].usage.totalTokens }, { calls: 1, outputTokens: 4, inputTokens: 5, totalTokens: 9 });
-    assert.equal(nativeMetadata.runtime.solver.origin, "https://managed-provider.invalid");
+    assert.equal(nativeMetadata.runtime.solver.origin, "https://api.openai.com");
     assert.equal(nativeMetadata.attempts[0].phase, "maintenance:2025-01-10");
     assert.ok(fs.existsSync(path.join(nativeRunConfig.workdir, "artifact-v2.json")));
+    nativeBaseline.dispose?.();
     nativeHost.dispose?.();
 
     const exerciseJudgeEffort = async (label, judgeModel) => {

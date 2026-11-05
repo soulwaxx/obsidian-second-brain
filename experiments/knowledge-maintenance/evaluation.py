@@ -397,10 +397,12 @@ def _validate_wiki(artifact, fixture):
             listed.add(path)
         _require(listed == set(snapshot_map[cp_id]["pages"]), "page-topic inventory must include every candidate page")
         _require(judgment.get("unnecessaryChanges") is None or isinstance(judgment.get("unnecessaryChanges"), list), "unnecessaryChanges must be explicit when assessed")
+        previous_paths = snapshot_map[previous_id]["pages"] if previous_record and previous_record["status"] == "complete" else {}
+        transition_paths = set(snapshot_map[cp_id]["pages"]) | set(previous_paths)
         for item in judgment["unnecessaryChanges"] or []:
             _obj(item, "change judgment")
             _require(set(item) == {"path", "reason"}, "change judgment has unknown/missing fields")
-            _require(item.get("path") in snapshot_map[cp_id]["pages"] and isinstance(item.get("reason"), str), "invalid unnecessary-change judgment")
+            _require(item.get("path") in transition_paths and isinstance(item.get("reason"), str), "invalid unnecessary-change judgment")
         judgment_map[cp_id] = judgment
     _require(set(judgment_map) == set(cps), "maintenance judgments incomplete")
     return snapshot_map, judgment_map
