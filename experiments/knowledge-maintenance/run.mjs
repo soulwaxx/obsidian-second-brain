@@ -30,6 +30,14 @@ const safeError = () => "stage-failed";
 const WRITE_CODES = new Set(["write", "delete", "shell-write", "out-of-scope", "host-path"]);
 const normalizeWriteAttempts = (values) => (Array.isArray(values) ? values : []).map((value) => WRITE_CODES.has(value) ? value : "out-of-scope");
 
+function expectedResponsesUrl(baseUrl) {
+  let base;
+  try { base = new URL(baseUrl); } catch { throw new Error("unsupported-openai-route"); }
+  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash || !base.hostname) throw new Error("unsupported-openai-route");
+  const path = `${base.pathname.replace(/\/+$/u, "")}/responses`;
+  return new URL(path, base.origin).href;
+}
+
 function withPrivateInput(value, callback) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "osb-km-input-"));
   const file = path.join(directory, "input.json");
@@ -127,7 +135,7 @@ function persistFile(directory, name, value) {
 export function validateRunMetadata(metadata) {
   const exact = (value, keys, label) => { if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key))) throw new Error(`${label}-schema-invalid`); };
   exact(metadata, ["schemaVersion", "identities", "limits", "runtime", "backendRevision", "backendRevisionStatus", "stopCode", "attempts", "sessions", "stages", "timing", "pricing"], "metadata");
-  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
+  if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
   exact(metadata.limits, ["calls", "minutes", "outputTokens", "maxOutputTokens"], "limits");
   if (!Object.values(metadata.limits).every((value) => Number.isSafeInteger(value) && value > 0)) throw new Error("metadata-limits-invalid");
   exact(metadata.identities, ["sourceHash", "goldHash", "fixtureHash", "rubricHash", "settingsHash", "promptHash", "code"], "identities");
@@ -136,7 +144,13 @@ export function validateRunMetadata(metadata) {
   if (metadata.identities.code.revision !== null || metadata.identities.code.revisionStatus !== "not-recorded" || !/^[0-9a-f]{64}$/u.test(metadata.identities.code.hash) || !Array.isArray(metadata.identities.code.files)) throw new Error("metadata-code-identity-invalid");
   exact(metadata.runtime, ["node", "python", "piCodingAgent", "solver", "judge"], "runtime");
   if (![metadata.runtime.node, metadata.runtime.python, metadata.runtime.piCodingAgent].every((value) => typeof value === "string" && value.length > 0)) throw new Error("metadata-runtime-invalid");
-  for (const role of ["solver", "judge"]) { exact(metadata.runtime[role], ["id", "api", "origin", "effort"], `${role}-runtime`); if (metadata.runtime[role].api !== "openai-responses" || metadata.runtime[role].origin !== "https://api.openai.com") throw new Error("metadata-runtime-invalid"); }
+  for (const role of ["solver", "judge"]) {
+    exact(metadata.runtime[role], ["id", "api", "origin", "effort"], `${role}-runtime`);
+    const origin = metadata.runtime[role].origin;
+    if (metadata.runtime[role].api !== "openai-responses" || !(origin === null || (typeof origin === "string" && (() => {
+      try { const parsed = new URL(origin); return parsed.protocol === "https:" && parsed.origin === origin; } catch { return false; }
+    })()))) throw new Error("metadata-runtime-invalid");
+  }
   for (const attempt of metadata.attempts) {
     exact(attempt, ["id", "provider", "api", "model", "responseModel", "phase", "status", "usage", ...(Object.hasOwn(attempt, "errorCode") ? ["errorCode"] : [])], "attempt");
     if (!Number.isSafeInteger(attempt.id) || attempt.id < 1 || attempt.provider !== "openai" || attempt.api !== "openai-responses" || typeof attempt.model !== "string" || typeof attempt.phase !== "string") throw new Error("metadata-attempt-invalid");
@@ -282,7 +296,8 @@ async function makeJudge({ sdk, runtime, model, effort, vaultRoot, agentDir, bud
 export async function runLive(config, initialManifest, fixture, ownerToken, deps = {}) {
   const packageResolver = deps.installedPackage ?? installedPackage;
   const runnerFactory = deps.createPiRunner ?? createPiRunner;
-  if (!config.authFile) throw new Error("explicit-auth-file-required");
+  const nativeMode = deps.nativeMode === true;
+  if (nativeMode ? config.authFile !== null : !config.authFile) throw new Error(nativeMode ? "native-mode-rejects-auth-file" : "explicit-auth-file-required");
   if (!config.vaultRoot) throw new Error("explicit-synthetic-vault-required");
   if (config.solver.provider !== "openai" || config.judge.provider !== "openai") throw new Error("unsupported-provider-route");
   const vaultRoot = safeDirectory(config.vaultRoot);
@@ -306,8 +321,8 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   const piPackage = JSON.parse(fs.readFileSync(path.join(packageResolver(), "package.json"), "utf8"));
   const sidecar = { schemaVersion: 1, identities: initialManifest.identities, limits: config.limits,
     runtime: { node: process.version, python: pyVersion, piCodingAgent: piPackage.version,
-      solver: { id: `${config.solver.provider}/${config.solver.model}`, api: "openai-responses", origin: "https://api.openai.com", effort: config.solver.effort },
-      judge: { id: `${config.judge.provider}/${config.judge.model}`, api: "openai-responses", origin: "https://api.openai.com", effort: config.judge.effort } },
+      solver: { id: `${config.solver.provider}/${config.solver.model}`, api: "openai-responses", origin: nativeMode ? null : "https://api.openai.com", effort: config.solver.effort },
+      judge: { id: `${config.judge.provider}/${config.judge.model}`, api: "openai-responses", origin: nativeMode ? null : "https://api.openai.com", effort: config.judge.effort } },
     backendRevision: null, backendRevisionStatus: "unknown", stopCode: "preflight-incomplete", attempts: [], sessions: [], stages: [], timing: { startedAt: new Date().toISOString(), elapsedMs: null }, pricing: null };
   const controller = new AbortController();
   let timer;
@@ -338,6 +353,17 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   const solverModel = runtime.getModel(config.solver.provider, config.solver.model);
   const judgeModel = runtime.getModel(config.judge.provider, config.judge.model);
   if (!solverModel || !judgeModel) { runtime.dispose?.(); throw new Error("configured-openai-model-unavailable"); }
+  const expectedRoutes = new Map();
+  for (const [role, model] of [["solver", solverModel], ["judge", judgeModel]]) {
+    if (model.provider !== "openai" || model.api !== "openai-responses") { runtime.dispose?.(); throw new Error("unsupported-openai-route"); }
+    const modelKey = `${model.provider}/${model.id}`;
+    const pinnedBaseUrl = nativeMode ? deps.nativeBaseUrls?.get(modelKey) : undefined;
+    if (nativeMode && (typeof pinnedBaseUrl !== "string" || pinnedBaseUrl !== model.baseUrl)) { runtime.dispose?.(); throw new Error("native-model-route-drift"); }
+    const requestUrl = nativeMode ? expectedResponsesUrl(pinnedBaseUrl) : "https://api.openai.com/v1/responses";
+    expectedRoutes.set(`${model.provider}/${model.id}`, requestUrl);
+    sidecar.runtime[role].origin = new URL(requestUrl).origin;
+  }
+  persistMetadata();
   sidecar.stopCode = null;
   const persist = (artifact) => {
     validateArtifact(artifact);
@@ -358,6 +384,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
     if (!provider) throw new Error("openai-provider-unavailable");
     runtime.registerNativeProvider(wrapOpenAIProvider(provider, budget, { maxOutputTokens: config.limits.maxOutputTokens, fetchImpl: deps.fetchImpl,
       effort: () => currentPhase.startsWith("judge-") ? config.judge.effort : config.solver.effort,
+      expectedRequestUrl: nativeMode ? (model) => expectedRoutes.get(`${model.provider}/${model.id}`) : undefined,
       beforeDispatch: identityCheck,
       onAttempt: (attempt) => { attempt.phase = currentPhase; persistMetadata(); }, onAttemptComplete: persistMetadata }));
     runner = await runnerFactory({ vaultRoot, workspaceRoot: externalWorkspace, modelRuntime: runtime,
@@ -505,7 +532,7 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
       }
     }
   } catch (error) {
-    const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "response-model-drift", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped"]);
+    const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped"]);
     sidecar.stopCode ??= budget.state.stopCode ?? (safeCodes.has(error?.message) ? error.message : "run-stopped");
     sidecar.stages.push({ phase: "coordinator", status: "stopped", code: sidecar.stopCode });
     for (const trial of artifact.trials) if (trial.status === "missing") trial.status = "missing";
@@ -549,7 +576,7 @@ export function dryRun(config, fixture) {
   return manifest(config, fixture);
 }
 
-function recordPreflightFailure(workdir, ownerToken) {
+export function recordPreflightFailure(workdir, ownerToken) {
   try {
     const ownerPath = path.join(workdir, ".run-owner");
     const owner = fs.lstatSync(ownerPath);

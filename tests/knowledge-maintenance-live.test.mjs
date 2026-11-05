@@ -5,9 +5,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "../experiments/knowledge-maintenance/live-support.mjs";
-import { buildAnswerJudgePrompt, buildMaintenanceJudgePrompt, dryRun, runLive, validateRunMetadata } from "../experiments/knowledge-maintenance/run.mjs";
+import { buildAnswerJudgePrompt, buildMaintenanceJudgePrompt, dryRun, recordPreflightFailure, runLive, validateRunMetadata } from "../experiments/knowledge-maintenance/run.mjs";
 import { installedPackage, resolveRuntimeDependencies } from "./pi-runtime-paths.mjs";
 import { createPiRunner } from "../experiments/knowledge-maintenance/pi-runner.mjs";
+import { createNativeProviderRuntime, preflightNativeProvider } from "../experiments/knowledge-maintenance/native-bridge.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -207,6 +208,26 @@ try {
   const piAi = await import(aiUrl);
   const { ModelRuntime } = sdk;
   const { AuthStorage } = authModule;
+  const childHost = path.join(outside, "native-subagent-host");
+  const childAgentDir = path.join(childHost, "agent");
+  const childExtensions = path.join(childHost, ".pi", "extensions");
+  fs.mkdirSync(childAgentDir, { recursive: true });
+  fs.mkdirSync(childExtensions, { recursive: true });
+  fs.writeFileSync(path.join(childExtensions, "km-native.mjs"), `import register from ${JSON.stringify(pathToFileURL(path.resolve("experiments/knowledge-maintenance/native-bridge.mjs")).href)};\nexport default register;\n`);
+  const childSettings = sdk.SettingsManager.inMemory({ defaultTools: [], retry: { enabled: false, maxRetries: 0 }, compaction: { enabled: false } });
+  const childResources = new sdk.DefaultResourceLoader({ cwd: childHost, agentDir: childAgentDir, settingsManager: childSettings, additionalExtensionPaths: [path.join(childExtensions, "km-native.mjs")], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+  await childResources.reload();
+  assert.ok(childResources.getExtensions().extensions.some((entry) => entry.path.endsWith("km-native.mjs")), "disposable child cwd loads only the explicit native bridge extension");
+  const childModelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+  const child = await sdk.createAgentSession({ cwd: childHost, agentDir: childAgentDir, modelRuntime: childModelRuntime, resourceLoader: childResources,
+    settingsManager: childSettings, sessionManager: sdk.SessionManager.inMemory(childHost), tools: [] });
+  await child.session.bindExtensions({});
+  const childMessages = [];
+  child.session.subscribe((event) => { if (event.type === "message_end") childMessages.push(event.message); });
+  await child.session.prompt("Task: /km-native", { expandPromptTemplates: true });
+  assert.equal(childMessages.length, 0, "native subagent command interception handles its exact Task wrapper without an ordinary model turn");
+  child.session.dispose();
+  childModelRuntime.dispose?.();
   const syntheticAuthFile = path.join(outside, "synthetic-auth.json");
   const syntheticAuthBytes = JSON.stringify({ openai: { type: "api_key", key: "sk-offline-synthetic-key" } });
   fs.writeFileSync(syntheticAuthFile, syntheticAuthBytes, { mode: 0o600 });
@@ -339,6 +360,11 @@ try {
     assert.equal(unknownModelBudget.state.records[0].responseModel, null, "missing backend identity is explicitly unknown");
     assert.equal(unknownModelBudget.state.records[0].usage.responseModel, null);
 
+    const unobservedBudget = createBudget({ limits: { calls: 2, minutes: 1, outputTokens: 100 } });
+    const unobservedProvider = wrapOpenAIProvider({ streamSimple: () => ({ async *[Symbol.asyncIterator]() { yield { type: "done", reason: "stop", message: {} }; } }) }, unobservedBudget);
+    await assert.rejects(async () => { for await (const _event of unobservedProvider.streamSimple(model, { messages: [] }, {})) { /* consume */ } }, /unsupported-openai-route/);
+    assert.equal(unobservedBudget.state.calls, 0, "a provider that does not call the injected fetch fails without fabricated attempt evidence");
+
     for (const status of [401, 429]) {
       let statusAttempts = 0;
       const statusBudget = createBudget({ limits: { calls: 2, minutes: 1, outputTokens: 100 } });
@@ -413,6 +439,88 @@ try {
     assert.equal(actualRunMetadata.attempts.length, 1);
     assert.equal(actualRunMetadata.sessions[0].phase, "maintenance:2025-01-10");
     assert.ok(fs.existsSync(path.join(actualRunConfig.workdir, "artifact-v2.json")));
+
+    const { ModelRegistry } = await import(pathToFileURL(path.join(packageRoot, "dist/core/model-registry.js")).href);
+    const nativeHost = await sdk.ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-host-sentinel" } }), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+    const hostRegistryFacade = new ModelRegistry(nativeHost);
+    const hostRegistry = {
+      find: (...args) => hostRegistryFacade.find(...args),
+      getAll: () => hostRegistryFacade.getAll(),
+      getRegisteredNativeProvider: (...args) => hostRegistryFacade.getRegisteredNativeProvider(...args),
+      getRegisteredProviderConfig: (...args) => hostRegistryFacade.getRegisteredProviderConfig(...args),
+      getProvider: (...args) => hostRegistryFacade.getProvider(...args),
+      stream: (...args) => hostRegistryFacade.stream(...args),
+      streamSimple: (model, context, options = {}) => {
+        assert.equal(Object.hasOwn(options, "apiKey"), false, "isolated-runtime auth sentinel is not forwarded to host auth");
+        assert.equal(Object.hasOwn(options, "headers"), false, "isolated-runtime headers are not forwarded to host auth");
+        assert.equal(Object.hasOwn(options, "env"), false, "isolated-runtime environment overrides are not forwarded to host auth");
+        assert.equal(Object.hasOwn(options, "transformHeaders"), false, "isolated-runtime hooks cannot inspect or modify host auth headers");
+        assert.equal(typeof options.fetch, "function", "dispatch accounting fetch reaches the public host registry stream");
+        return hostRegistryFacade.streamSimple(model, context, options);
+      },
+    };
+    const nativeModels = [liveConfig.solver, liveConfig.judge].map(({ provider, model }) => hostRegistry.find(provider, model));
+    let rejectedNativeStreamCalls = 0;
+    const hostileRegistry = {
+      ...hostRegistry,
+      getRegisteredNativeProvider: () => ({ id: "openai", streamSimple() { rejectedNativeStreamCalls++; throw new Error("must-not-stream-custom-provider"); } }),
+    };
+    assert.throws(() => preflightNativeProvider({ hostRegistry: hostileRegistry, models: nativeModels }), /unsupported-native-provider-route/);
+    assert.equal(rejectedNativeStreamCalls, 0, "unsupported native overrides are rejected before any provider delegate can run");
+    const overlayRegistry = { ...hostRegistry, getRegisteredProviderConfig: () => ({ baseUrl: "https://opaque-extension.invalid/v1" }) };
+    assert.throws(() => preflightNativeProvider({ hostRegistry: overlayRegistry, models: nativeModels }), /unsupported-native-provider-route/);
+    assert.ok(nativeModels.every(Boolean), "offline host registry exposes both selected models");
+    nativeModels[0] = { ...nativeModels[0], baseUrl: "https://managed-provider.invalid/v1" };
+    const delegatedRuntime = await createNativeProviderRuntime({ sdk, AuthStorage, hostRegistry, models: nativeModels });
+    const nativeRunConfig = { ...liveConfig, authFile: null, workdir: path.join(outside, "native-delegated-run"), limits: { ...liveConfig.limits, calls: 1 } };
+    const nativeManifest = dryRun({ ...nativeRunConfig, live: false }, fixture);
+    await assert.rejects(runLive({ ...nativeRunConfig, authFile: path.join(outside, "must-not-be-read.json") }, nativeManifest, fixture, "owner-native-auth-file", { nativeMode: true }), /native-mode-rejects-auth-file/);
+    assert.equal(fs.existsSync(path.join(outside, "must-not-be-read.json")), false, "native mode rejects an auth-file path without probing it");
+    const partialRunDir = path.join(outside, "native-preflight-partial");
+    const partialToken = "owner-native-preflight-partial";
+    const partialConfig = { ...nativeRunConfig, workdir: partialRunDir };
+    const partialManifest = dryRun({ ...partialConfig, live: false }, fixture);
+    await assert.rejects(runLive(partialConfig, { ...partialManifest, liveEnabled: true, mode: "live", externalWorkdir: partialRunDir }, fixture, partialToken, {
+      nativeMode: true, runtime: { getModel: () => undefined, dispose() {} },
+    }), /configured-openai-model-unavailable/);
+    recordPreflightFailure(partialRunDir, partialToken);
+    const partialMetadata = JSON.parse(fs.readFileSync(path.join(partialRunDir, "run-metadata.json"), "utf8"));
+    validateRunMetadata(partialMetadata);
+    assert.equal(partialMetadata.stopCode, "preflight-failed");
+    assert.ok(fs.existsSync(path.join(partialRunDir, "artifact-v2.json")));
+    assert.ok(fs.existsSync(path.join(partialRunDir, "score.json")), "native preflight failures retain a scored sealed partial artifact");
+    let nativeFetchCount = 0;
+    let nativeRequestFields;
+    const nativeFetch = async (url, init) => {
+      nativeFetchCount++;
+      assert.equal(new URL(url).origin, "https://managed-provider.invalid");
+      assert.equal(new URL(url).pathname, "/v1/responses");
+      const request = JSON.parse(init.body);
+      nativeRequestFields = { model: request.model, max_output_tokens: request.max_output_tokens ?? null, reasoning_effort: request.reasoning?.effort ?? null, store: request.store ?? null, stream: request.stream ?? null };
+      const responseId = "native-delegated-offline-response";
+      const messageId = "native-delegated-offline-message";
+      const events = [
+        { type: "response.created", response: { id: responseId, model: request.model } },
+        { type: "response.output_item.added", output_index: 0, item: { id: messageId, type: "message", role: "assistant", content: [] } },
+        { type: "response.output_text.delta", output_index: 0, item_id: messageId, content_index: 0, delta: "Offline scoped maintenance result." },
+        { type: "response.output_item.done", output_index: 0, item: { id: messageId, type: "message", role: "assistant", status: "completed", phase: "final_answer", content: [{ type: "output_text", text: "Offline scoped maintenance result.", annotations: [] }] } },
+        { type: "response.completed", response: { id: responseId, model: request.model, status: "completed", output: [], usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 } } },
+      ];
+      return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const nativeRun = await runLive(nativeRunConfig, { ...nativeManifest, liveEnabled: true, mode: "live", externalWorkdir: nativeRunConfig.workdir }, fixture, "owner-native-offline", {
+      sdk, authModule, runtime: delegatedRuntime, nativeMode: true,
+      nativeBaseUrls: new Map(nativeModels.map((model) => [`${model.provider}/${model.id}`, model.baseUrl])), fetchImpl: nativeFetch,
+    });
+    const nativeMetadata = JSON.parse(fs.readFileSync(path.join(nativeRunConfig.workdir, "run-metadata.json"), "utf8"));
+    assert.equal(nativeRun.stopCode, "call-limit");
+    assert.equal(nativeFetchCount, 1, "host registry delegation reaches only the injected fake fetch before the shared call ceiling");
+    assert.deepEqual(nativeRequestFields, { model: "gpt-6.1-sol", max_output_tokens: 4096, reasoning_effort: "medium", store: false, stream: true });
+    assert.deepEqual({ calls: nativeMetadata.attempts.length, outputTokens: nativeMetadata.attempts[0].usage.outputTokens, inputTokens: nativeMetadata.attempts[0].usage.inputTokens, totalTokens: nativeMetadata.attempts[0].usage.totalTokens }, { calls: 1, outputTokens: 4, inputTokens: 5, totalTokens: 9 });
+    assert.equal(nativeMetadata.runtime.solver.origin, "https://managed-provider.invalid");
+    assert.equal(nativeMetadata.attempts[0].phase, "maintenance:2025-01-10");
+    assert.ok(fs.existsSync(path.join(nativeRunConfig.workdir, "artifact-v2.json")));
+    nativeHost.dispose?.();
 
     const exerciseJudgeEffort = async (label, judgeModel) => {
       const roleVault = path.join(outside, `${label}-vault`);

@@ -17,6 +17,7 @@ const CODE_PATHS = [
   "experiments/knowledge-maintenance/fixtures.json",
   "experiments/knowledge-maintenance/pi-runner.mjs",
   "experiments/knowledge-maintenance/live-support.mjs",
+  "experiments/knowledge-maintenance/native-bridge.mjs",
   "experiments/knowledge-maintenance/run.mjs",
   "experiments/knowledge-maintenance/rubric.json",
   "experiments/knowledge-maintenance/annotation-schema.json",
@@ -254,16 +255,17 @@ function inspectResponsesBody(raw) {
   try { return JSON.parse(trimmed); } catch { return null; }
 }
 
-export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, effort = "medium", fetchImpl = globalThis.fetch, beforeDispatch = () => {}, onAttempt = () => {}, onAttemptComplete = () => {} } = {}) {
+export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, effort = "medium", fetchImpl = globalThis.fetch, expectedRequestUrl, beforeDispatch = () => {}, onAttempt = () => {}, onAttemptComplete = () => {} } = {}) {
   if (!provider || typeof provider.streamSimple !== "function" || typeof fetchImpl !== "function") fail("openai-provider-unavailable");
   const original = provider.streamSimple;
   let inFlight = false;
-  const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "response-model-drift", "usage-unavailable", "output-token-limit", "time-limit", "call-limit", "code-identity-drift", "transport-error", "provider-error"]);
+  const safeCodes = new Set(["request-body-unavailable", "request-contract-mismatch", "response-model-drift", "usage-unavailable", "output-token-limit", "time-limit", "call-limit", "code-identity-drift", "unsupported-openai-route", "transport-error", "provider-error"]);
   return {
     ...provider,
     streamSimple(model, context, options = {}) {
       if (inFlight) fail("provider-attempt-in-flight");
-      if (model.provider !== "openai" || model.api !== "openai-responses" || model.baseUrl !== "https://api.openai.com/v1") fail("unsupported-openai-route");
+      const expectedUrl = typeof expectedRequestUrl === "function" ? expectedRequestUrl(model) : expectedRequestUrl ?? "https://api.openai.com/v1/responses";
+      if (model.provider !== "openai" || model.api !== "openai-responses" || typeof expectedUrl !== "string") fail("unsupported-openai-route");
       if (model.compat?.supportsMaxOutputTokens === false) fail("output-cap-unsupported");
       const responseLimit = typeof maxOutputTokens === "function" ? maxOutputTokens(model) : maxOutputTokens;
       const requestEffort = typeof effort === "function" ? effort(model) : effort;
@@ -285,7 +287,7 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
         const request = input instanceof Request ? input : null;
         const requestUrl = new URL(request ? request.url : String(input));
         const method = init.method ?? request?.method;
-        if (requestUrl.origin !== "https://api.openai.com" || requestUrl.pathname !== "/v1/responses" || requestUrl.search || requestUrl.hash || method?.toUpperCase() !== "POST") { requestViolation = "unsupported-openai-route"; fail(requestViolation); }
+        if (requestUrl.href !== expectedUrl || requestUrl.search || requestUrl.hash || method?.toUpperCase() !== "POST") { requestViolation = "unsupported-openai-route"; fail(requestViolation); }
         if (["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].some((key) => process.env[key])) { requestViolation = "ambient-proxy-disabled"; fail(requestViolation); }
         beforeDispatch();
         attempt = budget.beginAttempt({ provider: "openai", api: model.api, model: model.id, responseModel: null });
@@ -345,7 +347,7 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
             else yield event;
           }
           if (captureJob) await captureJob;
-          if (!attempt) fail(requestViolation ?? "dispatch-not-observed");
+          if (!attempt) fail(requestViolation ?? "unsupported-openai-route");
           if (attempt.status === "failed") fail(attempt.errorCode ?? budget.state.stopCode ?? "provider-call-failed");
           if (terminalEvents.some((event) => event.type === "error")) {
             if (attempt.status === "attempted") {
