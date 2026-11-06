@@ -1,0 +1,4110 @@
+{
+  "schemaVersion": 3,
+  "identities": {
+    "fixtureHash": "b6d281c4bb36ce28c0df52589ada6d0c05f5eedb7103719eef97c8dd1606075e",
+    "goldHash": "544dfc9edd76e0990f85d4ae60be326ff3be871055e6345d8f4a79c5a28ec74b",
+    "evaluatorHash": "fde168f6f72fd8449cccc0e5af363675157e98f2515004326026b93990cb7e52",
+    "protocolHash": "9f95dcfb485c98237f2d116176754abe07c5ac13a096d8c2c848a392b383fbe2",
+    "candidateSystemHash": "9b7e6ec2a8e6188a0debbde6a8fb3bbedc6467d8ab4b13bf4447dc59e6884774",
+    "settingsHash": "7a3228ec80965572fe488e78100ac8cb03e7e150e14314a3f25429292fc4785c",
+    "judgeSettingsHash": "a47239180937b84148eab7d2df0326a14f2254f7b0b9e884f12dd1cecdcfd2a3"
+  },
+  "settings": {
+    "model": "openai/gpt-6.1-sol",
+    "effort": "medium",
+    "attemptCount": 1,
+    "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+    "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+    "readOnly": true,
+    "limits": {
+      "maxOutputTokens": 4096
+    }
+  },
+  "judgeSettings": {
+    "model": "openai/gpt-6.1-terra",
+    "effort": "medium",
+    "rubric": {
+      "schemaVersion": 3,
+      "identity": "knowledge-maintenance-judge-rubric-v3",
+      "principles": [
+        "Evaluate only the active checkpoint and evidence through that checkpoint; never use future evidence.",
+        "Inspect every factual claim and qualification in the complete candidate unit; do not hide additional claims behind a correct first claim.",
+        "Mechanically cite exact candidate and source quotes with Unicode code-point offsets and the supplied hashes.",
+        "Keep current support, contradiction, established prior support, historical narration, abstention, and unknown separate.",
+        "Treat extraction completeness as model-reported and use unknown rather than repairing malformed or incomplete output.",
+        "Judge maintenance quality separately from answer quality, including topic coverage, canonical reuse, history, transition churn with the preceding frozen wiki, duplication, and qualifiers."
+      ],
+      "answerJudgmentSchema": "v3 answerJudgment JSON Schema in annotation-schema.json; mechanically enforced by evaluation.py",
+      "maintenanceJudgmentSchema": "v3 wikiJudgment JSON Schema in annotation-schema.json; mechanically enforced by evaluation.py"
+    },
+    "rubricHash": "65ada58ca4bf1bd60863a2bd991bef34eaf165dc48a323b6f764fa6920255191",
+    "maxOutputTokens": 4096
+  },
+  "wikiSnapshots": [
+    {
+      "checkpoint": "2025-01-10",
+      "status": "complete",
+      "pages": [],
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "checkpoint": "2025-02-10",
+      "status": "missing",
+      "pages": [],
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "checkpoint": "2025-03-10",
+      "status": "missing",
+      "pages": [],
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "checkpoint": "2025-04-10",
+      "status": "missing",
+      "pages": [],
+      "contentHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  ],
+  "wikiJudgments": [
+    {
+      "schemaVersion": 3,
+      "checkpoint": "2025-01-10",
+      "snapshotHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "previousSnapshotHash": null,
+      "changeAssessment": "initialization",
+      "complete": false,
+      "topics": [
+        {
+          "topic": "retention",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "response-target",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-history",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "maintenance-day",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "rehearsal-date",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-conflict",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        }
+      ],
+      "pageTopics": [],
+      "unnecessaryChanges": null,
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "schemaVersion": 3,
+      "checkpoint": "2025-02-10",
+      "snapshotHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "previousSnapshotHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "changeAssessment": "unknown",
+      "complete": false,
+      "topics": [
+        {
+          "topic": "retention",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "response-target",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-history",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "maintenance-day",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "rehearsal-date",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-conflict",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        }
+      ],
+      "pageTopics": [],
+      "unnecessaryChanges": null,
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "schemaVersion": 3,
+      "checkpoint": "2025-03-10",
+      "snapshotHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "previousSnapshotHash": null,
+      "changeAssessment": "unknown",
+      "complete": false,
+      "topics": [
+        {
+          "topic": "retention",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "response-target",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-history",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "maintenance-day",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "rehearsal-date",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-conflict",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        }
+      ],
+      "pageTopics": [],
+      "unnecessaryChanges": null,
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "schemaVersion": 3,
+      "checkpoint": "2025-04-10",
+      "snapshotHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "previousSnapshotHash": null,
+      "changeAssessment": "unknown",
+      "complete": false,
+      "topics": [
+        {
+          "topic": "retention",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "response-target",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-history",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "maintenance-day",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "rehearsal-date",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        },
+        {
+          "topic": "retention-conflict",
+          "status": "unknown",
+          "path": null,
+          "pageHash": null,
+          "quote": null,
+          "start": null,
+          "end": null,
+          "temporal": "unknown",
+          "relation": "unknown",
+          "priorSupport": "unknown",
+          "currentEvidence": [],
+          "historicalEvidence": [],
+          "history": "unknown",
+          "qualifiers": "unknown"
+        }
+      ],
+      "pageTopics": [],
+      "unnecessaryChanges": null,
+      "unauthorizedWriteAttempts": []
+    }
+  ],
+  "trials": [
+    {
+      "id": "2025-01-10/retention-current/en/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-current/en/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-current/en/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-current/it/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-current/it/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-current/it/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/response-qualified/en/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/response-qualified/en/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/response-qualified/en/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/response-qualified/it/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/response-qualified/it/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/response-qualified/it/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-history/en/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-history/en/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-history/en/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-history/it/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-history/it/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-history/it/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/maintenance-day/en/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/maintenance-day/en/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/maintenance-day/en/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/maintenance-day/it/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/maintenance-day/it/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/maintenance-day/it/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/rehearsal-date/en/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/rehearsal-date/en/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/rehearsal-date/en/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/rehearsal-date/it/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/rehearsal-date/it/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/rehearsal-date/it/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-conflict/en/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-conflict/en/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-conflict/en/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-conflict/it/sources",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-conflict/it/sources+wiki",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "f5b2c66c0a449fc5db4e3094f716b9af0107c9df4f505fd37e3e99f6823f373a",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-01-10/retention-conflict/it/wiki-only",
+      "checkpoint": "2025-01-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-current/en/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-current/en/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-current/en/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-current/it/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-current/it/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-current/it/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/response-qualified/en/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/response-qualified/en/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/response-qualified/en/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/response-qualified/it/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/response-qualified/it/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/response-qualified/it/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-history/en/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-history/en/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-history/en/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-history/it/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-history/it/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-history/it/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/maintenance-day/en/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/maintenance-day/en/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/maintenance-day/en/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/maintenance-day/it/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/maintenance-day/it/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/maintenance-day/it/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/rehearsal-date/en/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/rehearsal-date/en/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/rehearsal-date/en/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/rehearsal-date/it/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/rehearsal-date/it/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/rehearsal-date/it/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-conflict/en/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-conflict/en/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-conflict/en/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-conflict/it/sources",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-conflict/it/sources+wiki",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "a1136dba02f868ab29dafc2c9633bd37d9138dbfc97924a8a92a466ad8a9f4c2",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-02-10/retention-conflict/it/wiki-only",
+      "checkpoint": "2025-02-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-current/en/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-current/en/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-current/en/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-current/it/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-current/it/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-current/it/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/response-qualified/en/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/response-qualified/en/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/response-qualified/en/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/response-qualified/it/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/response-qualified/it/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/response-qualified/it/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-history/en/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-history/en/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-history/en/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-history/it/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-history/it/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-history/it/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/maintenance-day/en/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/maintenance-day/en/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/maintenance-day/en/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/maintenance-day/it/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/maintenance-day/it/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/maintenance-day/it/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/rehearsal-date/en/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/rehearsal-date/en/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/rehearsal-date/en/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/rehearsal-date/it/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/rehearsal-date/it/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/rehearsal-date/it/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-conflict/en/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-conflict/en/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-conflict/en/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-conflict/it/sources",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-conflict/it/sources+wiki",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "c4684577fc1e5d60d54c46118cf8786608deca1717a747fefa81a3a68a09cf11",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-03-10/retention-conflict/it/wiki-only",
+      "checkpoint": "2025-03-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-current/en/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-current/en/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-current/en/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-current",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-current/it/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-current/it/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-current/it/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-current",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/response-qualified/en/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/response-qualified/en/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/response-qualified/en/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "response-qualified",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/response-qualified/it/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/response-qualified/it/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/response-qualified/it/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "response-qualified",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-history/en/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-history/en/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-history/en/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-history",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-history/it/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-history/it/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-history/it/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-history",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/maintenance-day/en/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/maintenance-day/en/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/maintenance-day/en/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "maintenance-day",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/maintenance-day/it/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/maintenance-day/it/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/maintenance-day/it/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "maintenance-day",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/rehearsal-date/en/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/rehearsal-date/en/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/rehearsal-date/en/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "rehearsal-date",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/rehearsal-date/it/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/rehearsal-date/it/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/rehearsal-date/it/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "rehearsal-date",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-conflict/en/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-conflict/en/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-conflict/en/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-conflict",
+      "language": "en",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-conflict/it/sources",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": null,
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-conflict/it/sources+wiki",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "sources+wiki",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": "7f7f8d53219f430b47691d05b1fc7e5f80577961da32c56428b7f66802a654f8",
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    },
+    {
+      "id": "2025-04-10/retention-conflict/it/wiki-only",
+      "checkpoint": "2025-04-10",
+      "taskId": "retention-conflict",
+      "language": "it",
+      "condition": "wiki-only",
+      "status": "missing",
+      "answer": null,
+      "answerHash": null,
+      "answerJudgment": null,
+      "sourceHistoryHash": null,
+      "wikiHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "settings": {
+        "model": "openai/gpt-6.1-sol",
+        "effort": "medium",
+        "attemptCount": 1,
+        "taskContract": "Answer only the assigned question from the explicitly provided knowledge; preserve temporal and stated qualifications; state uncertainty or abstain rather than inventing; cite only evidence you received. Do not write files.",
+        "taskContractHash": "e14ac26c2bbf38ffd64fc933beb5ded313730ccc1b2d74f0cb0e4b366a140328",
+        "readOnly": true,
+        "limits": {
+          "maxOutputTokens": 4096
+        }
+      },
+      "unauthorizedWriteAttempts": []
+    }
+  ],
+  "artifactHash": "9c5604e53b8b7b00fbe9dc66e67091b7e012e8110230dcea2fe39100f7587cf9"
+}
