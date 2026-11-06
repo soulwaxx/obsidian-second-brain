@@ -1,0 +1,133 @@
+{
+  "status": "blocked-pilot-draft",
+  "runDate": "2026-11-06",
+  "sourceRevision": "794b8a547bab61ee2d27a6dc3b9e1e77523ee0c9",
+  "sourceRevisionEvidence": "Recorded by the parent before execution; runner code revision was not recorded.",
+  "runtime": {
+    "node": "v24.22.2",
+    "python": "Python 3.14.8",
+    "piCodingAgent": "1.5.0",
+    "solver": {
+      "id": "openai/gpt-6.1-sol",
+      "api": "openai-responses",
+      "origin": "https://api.openai.com",
+      "effort": "medium"
+    },
+    "judge": {
+      "id": "openai/gpt-6.1-terra",
+      "api": "openai-responses",
+      "origin": "https://api.openai.com",
+      "effort": "medium"
+    }
+  },
+  "backendRevision": null,
+  "artifact": {
+    "file": "artifact-v2.json",
+    "schemaVersion": 3,
+    "sha256": "eb0ec426e98dafab366b5542af8522c01b79b6e2525740168fcdc225f2249017",
+    "artifactHash": "9c5604e53b8b7b00fbe9dc66e67091b7e012e8110230dcea2fe39100f7587cf9"
+  },
+  "score": {
+    "file": "score.json",
+    "sha256": "af67cf4bea5d2e08bf04aaa2e3a765177408a21017a135f6c284862057fec9b6",
+    "independentRescore": "matches except efficiency, which is coordinator-derived"
+  },
+  "identities": {
+    "frozenCodeFiles": 67,
+    "candidateSystemHash": "9b7e6ec2a8e6188a0debbde6a8fb3bbedc6467d8ab4b13bf4447dc59e6884774",
+    "freezeAndLaunchBindings": "matched identities and all 144 task IDs",
+    "artifactFixtureHash": "b6d281c4bb36ce28c0df52589ada6d0c05f5eedb7103719eef97c8dd1606075e",
+    "artifactGoldHash": "544dfc9edd76e0990f85d4ae60be326ff3be871055e6345d8f4a79c5a28ec74b",
+    "artifactEvaluatorHash": "fde168f6f72fd8449cccc0e5af363675157e98f2515004326026b93990cb7e52",
+    "artifactProtocolHash": "9f95dcfb485c98237f2d116176754abe07c5ac13a096d8c2c848a392b383fbe2"
+  },
+  "run": {
+    "stopCode": "request-contract-mismatch",
+    "modelHttpAttempts": 0,
+    "elapsedMs": 567.0076249986887,
+    "orchestrationSessions": [
+      {
+        "phase": "maintenance:2025-01-10",
+        "result": "completed",
+        "durationMs": 253.8513749986887
+      },
+      {
+        "phase": "judge-maintenance:2025-01-10",
+        "result": "empty",
+        "durationMs": 3.66287499666214
+      }
+    ],
+    "maintenanceStage": {
+      "status": "incomplete",
+      "durationMs": 346.66520899534225,
+      "retrievalBuildMs": 39.98762499541044
+    },
+    "modelCompletions": 0,
+    "note": "Session completion denotes orchestration-session lifecycle only; these two sessions are not model completions."
+  },
+  "answers": {
+    "expected": 144,
+    "scored": 0,
+    "missingOrUnknown": 144,
+    "accuracy": null,
+    "pairedDifferences": "unavailable"
+  },
+  "maintenance": {
+    "snapshotCount": 4,
+    "snapshots": [
+      {
+        "checkpoint": "2025-01-10",
+        "status": "complete",
+        "pages": 0
+      },
+      {
+        "checkpoint": "2025-02-10",
+        "status": "missing",
+        "pages": 0
+      },
+      {
+        "checkpoint": "2025-03-10",
+        "status": "missing",
+        "pages": 0
+      },
+      {
+        "checkpoint": "2025-04-10",
+        "status": "missing",
+        "pages": 0
+      }
+    ],
+    "judgmentCount": 4,
+    "topicJudgments": 24,
+    "unknownTopicJudgments": 24,
+    "allJudgmentsIncomplete": true
+  },
+  "usage": {
+    "pricingUSD": null,
+    "ledgerCategoryTokens": {
+      "input": 0,
+      "cachedInput": 0,
+      "output": 0,
+      "total": 0
+    },
+    "interpretation": "Empty experiment ledger only: no provider-reported usage was returned; not evidence of free inference or zero cost outside this run."
+  },
+  "publicEvidence": {
+    "artifactCopiedByteForByte": true,
+    "scoreCopiedByteForByte": true,
+    "rawMetadataPublished": false,
+    "privatePathAndCredentialScan": "no matches in published artifact and score"
+  },
+  "limitations": [
+    "The guard stopped with request-contract-mismatch before instrumented model HTTP fetch. The stop code does not identify which guarded request field differed.",
+    "Do not infer provider rejection, OAuth, model, cap, endpoint, or an exact route mismatch.",
+    "No eligible answers or judgments were produced. This is not a completed or comparative benchmark; empirical #41 evidence remains outstanding.",
+    "Results remain open for #40/#41; the merge rule has not been satisfied."
+  ],
+  "externalEvidenceSha256": {
+    "rawRunMetadata": "0f26ad5fb0f0d675277697c4b6d381e5f7efb7d1b8c3d8626850e151a8f5819f",
+    "prepilotManifest": "92c42ded6426522342fe3b2b93f4270d472737097d53eeed6748801d3d166f2a",
+    "nativeLaunchManifest": "d9e68cd80e352a5d628eec54fc060bcfdf2ba78c3b702c6e14ecba4700035fb2",
+    "standaloneRescore": "26c3715451d9adbd49504688ac758b375115bc24cb841d835e19650711d1dd2c"
+  },
+  "metadataValidation": "validateRunMetadata passed; raw metadata not published"
+}

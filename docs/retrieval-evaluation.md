@@ -17,7 +17,7 @@ change.
 
 ## Longitudinal knowledge-maintenance experiment
 
-The repository-only [knowledge-maintenance experiment](../experiments/knowledge-maintenance/README.md) evaluates sequential synthetic wiki maintenance with paired source/wiki answer conditions. Its optional Pi runner is a development experiment, not an installed command, package feature, or normal test/release action.
+The repository-only [knowledge-maintenance experiment](../experiments/knowledge-maintenance/README.md) evaluates sequential synthetic wiki maintenance with paired source/wiki answer conditions. Its optional Pi runner is a development experiment, not an installed command, package feature, or normal test/release action. The [2026-11-06 native pilot draft](../experiments/knowledge-maintenance/results/native-blocked-2026-11-06/README.md) is blocked before model HTTP dispatch and is not empirical benchmark evidence; #41 evidence remains outstanding.
 
 ## Run against a prepared disposable snapshot
 

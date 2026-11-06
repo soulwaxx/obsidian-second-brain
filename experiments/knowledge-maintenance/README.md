@@ -2,6 +2,10 @@
 
 This directory provides the approved synthetic fixture and frozen-artifact adapter/scorer for combined #40/#41, plus an optional, explicitly enabled Pi live runner. All gold is explicitly **agent-authored and not human-reviewed**. Offline tests and the default dry-run do not execute models, access vaults, load credentials, or make network calls. A separate `--live` invocation can execute model calls only after the documented synthetic-vault, selected-auth, and external-output safeguards are satisfied.
 
+## Blocked native pilot draft
+
+The [2026-11-06 native pilot draft](results/native-blocked-2026-11-06/README.md) records a bounded attempt that stopped before model HTTP dispatch. It is explicitly **not a completed or comparative benchmark**: all 144 answer cells are missing, maintenance annotations are unknown/incomplete, and empirical #41 evidence remains outstanding. No raw traces or raw run metadata are published.
+
 ## Fixture and visibility boundaries
 
 `fixtures.json` contains four dated source snapshots, six paired EN/IT intent families at every checkpoint, and evaluator-only gold in a distinct top-level `gold` object. It pins source SHA-256 hashes and exact Python Unicode-code-point offsets against original decoded text, including CRLF and Unicode. Solver-visible source records contain only checkpoint, path, text, and hash; they do not expose evaluator spans or human-review labels. The source text contains no evaluator disclaimer. Gold supplies per-task/per-checkpoint expected answer outcome/value/temporal scope/qualification, canonical pages, historical as-of dates, and coordinate pins. It corrects the 2025-03/04 retention truth to an explicit withdrawal/no current numeric period. The 2025-02-10 history question is unanswerable at the earlier checkpoint; its answer and evidence are not surfaced early. The retention question does not presuppose a later withdrawal.
