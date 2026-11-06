@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import { execFileSync, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -236,6 +238,7 @@ try {
   fs.mkdirSync(cancelExtensions, { recursive: true });
   fs.writeFileSync(path.join(cancelExtensions, "km-native.mjs"), `import register from ${JSON.stringify(pathToFileURL(path.resolve("experiments/knowledge-maintenance/native-bridge.mjs")).href)};\nexport default register;\n`);
   const cancelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-cancel-sentinel" } }), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+  await cancelRuntime.refresh({ allowNetwork: false });
   const cancelResources = new sdk.DefaultResourceLoader({ cwd: cancelHost, agentDir: cancelAgentDir, settingsManager: childSettings, additionalExtensionPaths: [path.join(cancelExtensions, "km-native.mjs")], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
   await cancelResources.reload();
   const cancelSession = await sdk.createAgentSession({ cwd: cancelHost, agentDir: cancelAgentDir, modelRuntime: cancelRuntime, resourceLoader: cancelResources,
@@ -500,11 +503,17 @@ try {
 
     const { ModelRegistry } = await import(pathToFileURL(path.join(packageRoot, "dist/core/model-registry.js")).href);
     const nativeHost = await sdk.ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-host-sentinel" } }), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+    await nativeHost.refresh({ allowNetwork: false });
     const hostRegistryFacade = new ModelRegistry(nativeHost);
     const nativeBaseline = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
     const hostRegistry = {
       find: (...args) => hostRegistryFacade.find(...args),
       getAll: () => hostRegistryFacade.getAll(),
+      getAvailable: (...args) => hostRegistryFacade.getAvailable(...args),
+      getError: (...args) => hostRegistryFacade.getError(...args),
+      getProviderAuthStatus: (...args) => hostRegistryFacade.getProviderAuthStatus(...args),
+      hasConfiguredAuth: (...args) => hostRegistryFacade.hasConfiguredAuth(...args),
+      isUsingOAuth: (...args) => hostRegistryFacade.isUsingOAuth(...args),
       getRegisteredNativeProvider: (...args) => hostRegistryFacade.getRegisteredNativeProvider(...args),
       getRegisteredProviderConfig: (...args) => hostRegistryFacade.getRegisteredProviderConfig(...args),
       getProvider: (...args) => hostRegistryFacade.getProvider(...args),
@@ -546,6 +555,12 @@ try {
         const overlayFacade = new ModelRegistry(overlayRuntime);
         const composedRegistry = {
           getProvider: (...args) => overlayFacade.getProvider(...args),
+          find: (...args) => overlayFacade.find(...args),
+          getAvailable: (...args) => overlayFacade.getAvailable(...args),
+          getError: (...args) => overlayFacade.getError(...args),
+          getProviderAuthStatus: (...args) => overlayFacade.getProviderAuthStatus(...args),
+          hasConfiguredAuth: (...args) => overlayFacade.hasConfiguredAuth(...args),
+          isUsingOAuth: (...args) => overlayFacade.isUsingOAuth(...args),
           getRegisteredNativeProvider: (...args) => overlayFacade.getRegisteredNativeProvider(...args),
           getRegisteredProviderConfig: (...args) => overlayFacade.getRegisteredProviderConfig(...args),
           streamSimple: (...args) => { overlayStreamCalls++; return overlayFacade.streamSimple(...args); },
@@ -560,6 +575,113 @@ try {
     assert.equal(overlayFetchCalls, 0, "command-config rejection precedes fake fetch dispatch");
     assert.equal(fs.existsSync(path.join(outside, "native-api-key-command-ran")), false, "synthetic API-key command never runs");
     assert.equal(fs.existsSync(path.join(outside, "native-header-command-ran")), false, "synthetic header command never runs");
+
+    const fallbackSentinel = "!km-review-sentinel-must-not-execute";
+    const fallbackModelsPath = path.join(outside, "native-semantic-composition-error.json");
+    fs.writeFileSync(fallbackModelsPath, JSON.stringify({
+      providers: { openai: { oauth: "radius", modelOverrides: { "gpt-6.1-sol": { headers: { "X-KM-Sentinel": fallbackSentinel } } } } },
+    }));
+    const fallbackRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-offline-fallback-sentinel" } }),
+      modelsPath: fallbackModelsPath, refreshOnCreate: false, allowModelNetwork: false });
+    const fallbackFacade = new ModelRegistry(fallbackRuntime);
+    assert.match(fallbackFacade.getError(), /baseUrl.*required/u, "schema-valid semantic composition failure remains publicly diagnosable");
+    const fallbackModels = nativeModels.map((model) => fallbackFacade.find(model.provider, model.id));
+    let fallbackCommandResolutions = 0;
+    let fallbackStreamCalls = 0;
+    let fallbackFetchCalls = 0;
+    const originalExecSync = childProcess.execSync;
+    const originalSpawnSync = childProcess.spawnSync;
+    const originalFallbackFetch = globalThis.fetch;
+    childProcess.execSync = () => { fallbackCommandResolutions++; return "intercepted"; };
+    childProcess.spawnSync = () => { fallbackCommandResolutions++; return { status: 0, stdout: "intercepted" }; };
+    syncBuiltinESMExports();
+    globalThis.fetch = async () => { fallbackFetchCalls++; throw new Error("fallback route must not fetch"); };
+    try {
+      const fallbackRegistry = {
+        ...hostRegistry,
+        find: (...args) => fallbackFacade.find(...args),
+        getAvailable: (...args) => fallbackFacade.getAvailable(...args),
+        getError: (...args) => fallbackFacade.getError(...args),
+        getProvider: (...args) => fallbackFacade.getProvider(...args),
+        getProviderAuthStatus: (...args) => fallbackFacade.getProviderAuthStatus(...args),
+        hasConfiguredAuth: (...args) => fallbackFacade.hasConfiguredAuth(...args),
+        isUsingOAuth: (...args) => fallbackFacade.isUsingOAuth(...args),
+        getRegisteredNativeProvider: (...args) => fallbackFacade.getRegisteredNativeProvider(...args),
+        getRegisteredProviderConfig: (...args) => fallbackFacade.getRegisteredProviderConfig(...args),
+        streamSimple: (...args) => { fallbackStreamCalls++; return fallbackFacade.streamSimple(...args); },
+      };
+      assert.throws(() => preflightNativeProvider({ hostRegistry: fallbackRegistry, baselineRegistry: nativeBaseline, models: fallbackModels }), /unsupported-native-provider-route/);
+    } finally {
+      globalThis.fetch = originalFallbackFetch;
+      childProcess.execSync = originalExecSync;
+      childProcess.spawnSync = originalSpawnSync;
+      syncBuiltinESMExports();
+      fallbackRuntime.dispose?.();
+    }
+    assert.equal(fallbackCommandResolutions, 0, "semantic composition rejection occurs before command-valued header resolution");
+    assert.equal(fallbackStreamCalls, 0, "semantic composition rejection precedes host provider streaming");
+    assert.equal(fallbackFetchCalls, 0, "semantic composition rejection precedes model fetch");
+
+    const unknownAuthRegistry = { ...hostRegistry, isUsingOAuth: () => false, hasConfiguredAuth: () => false,
+      getProviderAuthStatus: () => ({ configured: false }), getAvailable: () => [] };
+    assert.throws(() => preflightNativeProvider({ hostRegistry: unknownAuthRegistry, baselineRegistry: nativeBaseline, models: nativeModels }), /unsupported-native-provider-route/,
+      "an uninitialized/unknown false OAuth snapshot is not accepted as proof of API-key auth");
+    assert.throws(() => preflightNativeProvider({ hostRegistry: { ...hostRegistry, isUsingOAuth: undefined }, baselineRegistry: nativeBaseline, models: nativeModels }), /native-provider-bridge-unavailable/,
+      "missing public auth-mode evidence fails closed");
+    assert.throws(() => preflightNativeProvider({ hostRegistry: { ...hostRegistry, isUsingOAuth: () => 0 }, baselineRegistry: nativeBaseline, models: nativeModels }), /unsupported-native-provider-route/,
+      "OAuth mode evidence must be the strict boolean false");
+    assert.throws(() => preflightNativeProvider({ hostRegistry: { ...hostRegistry, hasConfiguredAuth: () => 1 }, baselineRegistry: nativeBaseline, models: nativeModels }), /unsupported-native-provider-route/,
+      "configured-auth evidence must be the strict boolean true");
+    assert.throws(() => preflightNativeProvider({ hostRegistry: { ...hostRegistry, getError: () => null }, baselineRegistry: nativeBaseline, models: nativeModels }), /unsupported-native-provider-route/,
+      "only a clear undefined registry diagnostic is accepted");
+
+    const oauthBaseStore = AuthStorage.inMemory({ openai: { type: "oauth", access: "synthetic-access", refresh: "synthetic-refresh", expires: Date.now() + 10 * 60_000 } });
+    const oauthStoreCounts = { read: 0, list: 0, modify: 0 };
+    const oauthStore = {
+      read: (...args) => { oauthStoreCounts.read++; return oauthBaseStore.read(...args); },
+      list: (...args) => { oauthStoreCounts.list++; return oauthBaseStore.list(...args); },
+      modify: (...args) => { oauthStoreCounts.modify++; return oauthBaseStore.modify(...args); },
+      delete: (...args) => oauthBaseStore.delete(...args),
+    };
+    const oauthRuntime = await ModelRuntime.create({ credentials: oauthStore, modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+    await oauthRuntime.refresh({ allowNetwork: false });
+    const oauthFacade = new ModelRegistry(oauthRuntime);
+    const oauthModel = oauthFacade.find("openai", "gpt-6.1-sol");
+    assert.ok(oauthModel);
+    assert.equal(oauthFacade.isUsingOAuth(oauthModel), true, "synthetic OAuth mode is initialized in the public registry snapshot");
+    assert.equal(oauthFacade.hasConfiguredAuth(oauthModel), true);
+    assert.deepEqual(oauthFacade.getProviderAuthStatus("openai"), { configured: true, source: "stored" });
+    await oauthBaseStore.modify("openai", async (credential) => ({ ...credential, expires: Date.now() + 30_000 }));
+    oauthStoreCounts.read = 0;
+    oauthStoreCounts.list = 0;
+    oauthStoreCounts.modify = 0;
+    let oauthRefreshCalls = 0;
+    let oauthStreamCalls = 0;
+    let oauthFetchCalls = 0;
+    const originalOAuthFetch = globalThis.fetch;
+    globalThis.fetch = async () => { oauthFetchCalls++; throw new Error("OAuth must be rejected before refresh/model fetch"); };
+    try {
+      const oauthRegistry = {
+        ...hostRegistry,
+        find: (...args) => oauthFacade.find(...args),
+        getAvailable: (...args) => oauthFacade.getAvailable(...args),
+        getError: (...args) => oauthFacade.getError(...args),
+        getProviderAuthStatus: (...args) => oauthFacade.getProviderAuthStatus(...args),
+        hasConfiguredAuth: (...args) => oauthFacade.hasConfiguredAuth(...args),
+        isUsingOAuth: (...args) => oauthFacade.isUsingOAuth(...args),
+        getProvider: (...args) => oauthFacade.getProvider(...args),
+        streamSimple: (...args) => { oauthStreamCalls++; return oauthFacade.streamSimple(...args); },
+        refresh: () => { oauthRefreshCalls++; throw new Error("OAuth admission must not refresh the host registry"); },
+      };
+      assert.throws(() => preflightNativeProvider({ hostRegistry: oauthRegistry, baselineRegistry: nativeBaseline, models: [oauthModel] }), /unsupported-native-provider-route/,
+        "known configured OAuth auth is not eligible for native host delegation");
+    } finally { globalThis.fetch = originalOAuthFetch; }
+    assert.deepEqual(oauthStoreCounts, { read: 0, list: 0, modify: 0 }, "OAuth admission reads no credential values and performs no refresh/store update");
+    assert.equal(oauthRefreshCalls, 0, "OAuth admission does not refresh the host registry");
+    assert.equal(oauthStreamCalls, 0, "OAuth rejection precedes host provider stream");
+    assert.equal(oauthFetchCalls, 0, "OAuth rejection precedes refresh and model fetch");
+    oauthRuntime.dispose?.();
+
     const delegatedRuntime = await createNativeProviderRuntime({ sdk, AuthStorage, hostRegistry, models: nativeModels });
     const nativeRunConfig = { ...liveConfig, authFile: null, workdir: path.join(outside, "native-delegated-run"), limits: { ...liveConfig.limits, calls: 1 } };
     const nativeManifest = dryRun({ ...nativeRunConfig, live: false }, fixture);
@@ -609,6 +731,26 @@ try {
     assert.equal(nativeMetadata.runtime.solver.origin, "https://api.openai.com");
     assert.equal(nativeMetadata.attempts[0].phase, "maintenance:2025-01-10");
     assert.ok(fs.existsSync(path.join(nativeRunConfig.workdir, "artifact-v2.json")));
+
+    let changingOAuthMode = false;
+    let changingHostStreams = 0;
+    let changingHostFetches = 0;
+    const changingRegistry = { ...hostRegistry,
+      isUsingOAuth: () => changingOAuthMode,
+      streamSimple: () => { changingHostStreams++; throw new Error("delegation admission must reject before the host stream"); },
+      stream: () => { changingHostStreams++; throw new Error("delegation admission must reject before the host stream"); },
+    };
+    const originalChangingFetch = globalThis.fetch;
+    globalThis.fetch = async () => { changingHostFetches++; throw new Error("delegation admission must reject before fetch"); };
+    try {
+      const changingRuntime = await createNativeProviderRuntime({ sdk, AuthStorage, hostRegistry: changingRegistry, models: [nativeModels[0]] });
+      changingOAuthMode = true;
+      const changingEvents = [];
+      for await (const event of changingRuntime.streamSimple(nativeModels[0], { messages: [] }, { maxTokens: 32, reasoning: "medium" })) changingEvents.push(event);
+      assert.ok(changingEvents.some((event) => event.type === "error"), "delegation-time auth-mode change returns a stable provider error");
+    } finally { globalThis.fetch = originalChangingFetch; }
+    assert.equal(changingHostStreams, 0, "auth-mode admission is rechecked immediately before public host delegation");
+    assert.equal(changingHostFetches, 0, "a changed OAuth mode cannot reach provider fetch");
     nativeBaseline.dispose?.();
     nativeHost.dispose?.();
 

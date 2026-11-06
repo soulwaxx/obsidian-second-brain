@@ -5,33 +5,85 @@ import { installedPackage } from "../../tests/pi-runtime-paths.mjs";
 
 const INTERNAL_AUTH_SENTINEL = "sk-osb-native-dispatch-sentinel-not-a-credential";
 
-/** Build an isolated SDK runtime whose public streaming calls delegate to Pi's active registry. */
-export function preflightNativeProvider({ hostRegistry, baselineRegistry, models }) {
-  if (!hostRegistry?.getProvider || !hostRegistry?.getRegisteredNativeProvider || !hostRegistry?.getRegisteredProviderConfig || !baselineRegistry?.getProvider || !baselineRegistry?.getModel || !Array.isArray(models) || models.length === 0) {
+function nativeModelMatchesBaseline(model, baselineJson) {
+  if (typeof baselineJson !== "string") return false;
+  let baselineModel;
+  try { baselineModel = JSON.parse(baselineJson); } catch { return false; }
+  const requestedModel = { ...model };
+  const routeModel = { ...baselineModel };
+  delete requestedModel.maxTokens;
+  delete routeModel.maxTokens;
+  return JSON.stringify(requestedModel) === JSON.stringify(routeModel) &&
+    (model.maxTokens === baselineModel.maxTokens || (Number.isSafeInteger(model.maxTokens) && model.maxTokens >= 16 && model.maxTokens <= 4096));
+}
+
+function checkNativeProviderAdmission({ hostRegistry, baseline, models }) {
+  if (!hostRegistry?.getError || !hostRegistry?.getProvider || !hostRegistry?.find ||
+    !hostRegistry?.getRegisteredNativeProvider || !hostRegistry?.getRegisteredProviderConfig ||
+    !hostRegistry?.isUsingOAuth || !hostRegistry?.hasConfiguredAuth || !hostRegistry?.getProviderAuthStatus || !hostRegistry?.getAvailable ||
+    !Array.isArray(models) || models.length === 0 || !baseline?.provider || !(baseline.models instanceof Map)) {
     throw new Error("native-provider-bridge-unavailable");
   }
   const providerIds = new Set(models.map((model) => model?.provider));
   if (providerIds.size !== 1 || providerIds.has(undefined)) throw new Error("native-provider-bridge-requires-one-provider");
   const providerId = [...providerIds][0];
   const hostProvider = hostRegistry.getProvider(providerId);
-  const baselineProvider = baselineRegistry.getProvider(providerId);
-  if (hostRegistry.getRegisteredNativeProvider(providerId) || hostRegistry.getRegisteredProviderConfig(providerId) ||
-    !hostProvider?.streamSimple || !baselineProvider?.streamSimple ||
-    hostProvider.auth?.apiKey?.check !== baselineProvider.auth?.apiKey?.check ||
-    models.some((model) => model.provider !== providerId || model.api !== "openai-responses" ||
-      JSON.stringify(model) !== JSON.stringify(baselineRegistry.getModel(model.provider, model.id)))) {
+  if (providerId !== "openai" || hostProvider?.id !== providerId || baseline.provider.id !== providerId ||
+    hostRegistry.getError() !== undefined || hostRegistry.getRegisteredNativeProvider(providerId) || hostRegistry.getRegisteredProviderConfig(providerId) ||
+    !hostProvider?.streamSimple || hostProvider.auth?.apiKey?.check !== baseline.provider.auth?.apiKey?.check) {
     throw new Error("unsupported-native-provider-route");
   }
-  return { providerId, hostProvider };
+  const available = hostRegistry.getAvailable();
+  if (!Array.isArray(available)) throw new Error("unsupported-native-provider-auth");
+  for (const model of models) {
+    const modelKey = `${model.provider}/${model.id}`;
+    const expectedModel = baseline.models.get(modelKey);
+    const currentModel = hostRegistry.find(model.provider, model.id);
+    if (model.provider !== providerId || model.api !== "openai-responses" || !expectedModel ||
+      !nativeModelMatchesBaseline(model, expectedModel) || JSON.stringify(currentModel) !== expectedModel ||
+      hostRegistry.hasConfiguredAuth(model) !== true || hostRegistry.isUsingOAuth(model) !== false ||
+      !available.some((candidate) => candidate?.provider === model.provider && candidate?.id === model.id)) {
+      throw new Error("unsupported-native-provider-route");
+    }
+    const authStatus = hostRegistry.getProviderAuthStatus(providerId);
+    if (!authStatus || typeof authStatus !== "object" || authStatus.configured !== true ||
+      !["runtime", "stored", "environment"].includes(authStatus.source) || hostRegistry.isUsingOAuth(model) !== false) {
+      throw new Error("unsupported-native-provider-auth");
+    }
+  }
+  return hostProvider;
+}
+
+/** Build an isolated SDK runtime whose public streaming calls delegate to Pi's active registry. */
+export function preflightNativeProvider({ hostRegistry, baselineRegistry, baseline: inheritedBaseline, models }) {
+  if (!hostRegistry?.getError || !hostRegistry?.getProvider || !hostRegistry?.find || !hostRegistry?.getRegisteredNativeProvider ||
+    !hostRegistry?.getRegisteredProviderConfig || !hostRegistry?.isUsingOAuth || !hostRegistry?.hasConfiguredAuth ||
+    !hostRegistry?.getProviderAuthStatus || !hostRegistry?.getAvailable || !Array.isArray(models) || models.length === 0) {
+    throw new Error("native-provider-bridge-unavailable");
+  }
+  const providerIds = new Set(models.map((model) => model?.provider));
+  if (providerIds.size !== 1 || providerIds.has(undefined)) throw new Error("native-provider-bridge-requires-one-provider");
+  const providerId = [...providerIds][0];
+  let baseline = inheritedBaseline;
+  if (!baseline) {
+    if (!baselineRegistry?.getError || !baselineRegistry?.getProvider || !baselineRegistry?.getModel || baselineRegistry.getError() !== undefined) {
+      throw new Error("native-provider-bridge-unavailable");
+    }
+    const provider = baselineRegistry.getProvider(providerId);
+    const baselineModels = new Map(models.map((model) => [`${model.provider}/${model.id}`, JSON.stringify(baselineRegistry.getModel(model.provider, model.id))]));
+    baseline = { provider, models: baselineModels };
+  }
+  const hostProvider = checkNativeProviderAdmission({ hostRegistry, baseline, models });
+  return { providerId, hostProvider, baseline };
 }
 
 export async function createNativeProviderRuntime({ sdk, AuthStorage, hostRegistry, models }) {
   if (!sdk?.ModelRuntime || !AuthStorage?.inMemory) throw new Error("native-provider-bridge-unavailable");
   const baselineRuntime = await sdk.ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
-  let providerId;
-  let hostProvider;
-  try { ({ providerId, hostProvider } = preflightNativeProvider({ hostRegistry, baselineRegistry: baselineRuntime, models })); }
+  let admission;
+  try { admission = preflightNativeProvider({ hostRegistry, baselineRegistry: baselineRuntime, models }); }
   finally { baselineRuntime.dispose?.(); }
+  const { providerId, hostProvider } = admission;
   const runtime = await sdk.ModelRuntime.create({
     credentials: AuthStorage.inMemory({ [providerId]: { type: "api_key", key: INTERNAL_AUTH_SENTINEL } }),
     modelsPath: null,
@@ -48,9 +100,12 @@ export async function createNativeProviderRuntime({ sdk, AuthStorage, hostRegist
     ...hostProvider,
     getModels: () => selected,
     streamSimple(model, context, options) {
+      checkNativeProviderAdmission({ hostRegistry, baseline: admission.baseline, models: [model] });
+      if (typeof hostRegistry.streamSimple !== "function") throw new Error("native-provider-stream-unavailable");
       return hostRegistry.streamSimple(model, context, delegateOptions(options));
     },
     stream(model, context, options) {
+      checkNativeProviderAdmission({ hostRegistry, baseline: admission.baseline, models: [model] });
       if (typeof hostRegistry.stream !== "function") throw new Error("native-provider-stream-unavailable");
       return hostRegistry.stream(model, context, delegateOptions(options));
     },
