@@ -249,7 +249,10 @@ try {
   fs.writeFileSync(path.join(cancelVault, ".knowledge-maintenance-synthetic"), "obsidian-second-brain synthetic knowledge-maintenance vault v1\n");
   const cancelWorkdir = path.join(outside, "native-cancel-run");
   const cancelConfigPath = path.join(outside, "native-cancel-config.json");
-  fs.writeFileSync(cancelConfigPath, JSON.stringify({ workdir: cancelWorkdir, vaultRoot: cancelVault, limits: { calls: 4, minutes: 1 } }));
+  // The cancellation assertion targets dispatch/shutdown, so pin this synthetic config to a model present in both CI Pi 1.4 and local Pi 1.5 catalogs.
+  const cancelConfig = { workdir: cancelWorkdir, vaultRoot: cancelVault, solver: { provider: "openai", model: "gpt-6.1-sol", effort: "medium" }, judge: { provider: "openai", model: "gpt-6.1-sol", effort: "medium" }, limits: { calls: 4, minutes: 1 } };
+  assert.ok(cancelRuntime.getModel("openai", "gpt-6.1-sol"), "cancellation fixture uses a model available in the minimum Pi catalog");
+  fs.writeFileSync(cancelConfigPath, JSON.stringify(cancelConfig));
   let cancelFetchCount = 0;
   let cancelFetchSignal;
   let markFetchStarted;
@@ -459,8 +462,9 @@ try {
     const pageHash = hash(pageContent);
     const pages = [{ path: pagePath, content: pageContent, sha256: pageHash }];
     const workdirPath = path.join(outside, "coordinator-run");
+    // Keep this synthetic SDK-runner fixture on built-in models shared by CI Pi 1.4 and local Pi 1.5.
     const liveConfig = { live: true, authFile: syntheticAuthFile, vaultRoot: vault, workdir: workdirPath,
-      solver: { provider: "openai", model: "gpt-6.1-sol", effort: "medium" }, judge: { provider: "openai", model: "gpt-6.1-terra", effort: "medium" },
+      solver: { provider: "openai", model: "gpt-6.1-sol", effort: "medium" }, judge: { provider: "openai", model: "gpt-6.1-sol", effort: "medium" },
       limits: { calls: 147, minutes: 4, outputTokens: 10000, maxOutputTokens: 4096 } };
     const offlineManifest = { ...manifest, liveEnabled: true, mode: "live" };
     const cpOne = fixture.checkpoints[0];
@@ -804,7 +808,7 @@ try {
     assert.ok(sameModelEffort.requests.slice(1).every((request) => request.reasoning?.effort === "high"), "same-model judge requests use the judge effort or are rejected before fetch");
     assert.ok(sameModelEffort.metadata.attempts.every((attempt) => attempt.model === "gpt-6.1-sol"));
     assert.ok(sameModelEffort.metadata.attempts[0].phase.startsWith("maintenance:"));
-    const distinctModelEffort = await exerciseJudgeEffort("distinct-model-effort", "gpt-6.1-terra");
+    const distinctModelEffort = await exerciseJudgeEffort("distinct-model-effort", "gpt-6-sol");
     assert.equal(distinctModelEffort.result.stopCode, "request-contract-mismatch", "the installed SDK's native medium payload cannot satisfy configured high judge effort");
     assert.equal(distinctModelEffort.requests.length, 1, "distinct-model judge mismatch is rejected before fake fetch after the solver dispatch");
     assert.equal(distinctModelEffort.requests[0].model, "gpt-6.1-sol");

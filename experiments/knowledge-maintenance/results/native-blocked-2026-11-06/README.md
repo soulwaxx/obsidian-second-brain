@@ -18,6 +18,8 @@ The experiment ledger contains **0 model HTTP attempts and 0 model completions**
 - Recorded runtime: Node.js 24.22.2, Python 3.14.8, Pi 1.5.0; configured solver `openai/gpt-6.1-sol` and judge `openai/gpt-6.1-terra`, both medium. The runtime reported the OpenAI Responses API and `https://api.openai.com` origin, but no model HTTP request was dispatched. Immutable backend revision is unknown.
 - The fixture and gold are synthetic, agent-authored, and not human-reviewed. Offline mechanical checks do not establish semantic judge accuracy or real-model quality.
 
+Later CI fixture corrections use models shared by Pi 1.4 and 1.5 in offline tests only. They postdate this attempt: the historical candidate hash above is not a claim that the current checkout has the same identity. No result artifact was regenerated and no live attempt was repeated.
+
 ## Published files
 
 - [`artifact-v2.json`](artifact-v2.json) — exact sealed artifact bytes from the run; schema version 3.
