@@ -238,6 +238,7 @@ head_before=$(git -C "$vault" rev-parse HEAD)
 head_before=$(git -C "$vault" rev-parse HEAD)
 output=$(cd "$caller" && OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" start 2>"$work/start-warning")
 printf '%s' "$output" | grep -F "$vault/wiki" >/dev/null
+printf '%s' "$output" | grep -F 'Selected Obsidian integration config:' >/dev/null
 [ "$(git -C "$vault" rev-parse HEAD)" = "$head_before" ]
 
 # Unrelated read-only startup/shutdown in a no-Git vault must not create runtime state.
@@ -248,6 +249,44 @@ printf '# Plain Wiki\n' >"$plain/wiki/page.md"
 (cd "$caller" && OBSIDIAN_VAULT_PATH=$plain WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
 [ ! -e "$plain/.vault-meta" ]
 [ ! -e "$plain/.git" ]
+# Read-only Stop/SubagentStop with tasks or crons must not invent pending work.
+for event in Stop SubagentStop; do
+  for activity in background_tasks session_crons; do
+    result=$(cd "$caller" && jq -nc --arg event "$event" --arg activity "$activity" '{session_id:"readonly-background",agent_id:"reader",hook_event_name:$event,($activity):[{id:"running"}]}' | OBSIDIAN_VAULT_PATH=$plain WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+    [ -z "$result" ]
+    [ ! -e "$plain/.vault-meta" ]
+    # Also exercise an existing, empty state without creating a lock or retry.
+    state_before=$(cat "$vault/.vault-meta/lifecycle/state.json")
+    result=$(cd "$caller" && jq -nc --arg event "$event" --arg activity "$activity" '{session_id:"readonly-background",agent_id:"reader",hook_event_name:$event,($activity):[{id:"running"}]}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+    [ -z "$result" ]
+    [ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$state_before" ]
+  done
+done
+# Pending content/retrieval and unreadable state still defer through both hooks.
+deferred=$work/deferred-vault
+mkdir -p "$deferred/wiki" "$deferred/.vault-meta/lifecycle"
+deferred=$(cd "$deferred" && pwd -P)
+for event in Stop SubagentStop; do
+  for obligation in content retrieval malformed; do
+    case "$obligation" in
+      content) jq -nc --arg vault "$deferred" '{version:1,vault:$vault,pending:{"wiki/writer.md":{captures:{"claude:writer":{tool:"active"}}}}}' ;;
+      retrieval) jq -nc --arg vault "$deferred" '{version:1,vault:$vault,pending:{},retrieval:{owner:"claude:writer",token:"retry"}}' ;;
+      malformed) printf '[]\n' ;;
+    esac >"$deferred/.vault-meta/lifecycle/state.json"
+    state_before=$(cat "$deferred/.vault-meta/lifecycle/state.json")
+    result=$(cd "$caller" && jq -nc --arg event "$event" '{session_id:"writer",hook_event_name:$event,background_tasks:[{id:"running"}]}' | OBSIDIAN_VAULT_PATH=$deferred WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+    printf '%s' "$result" | jq -e '.decision == "block"' >/dev/null
+    if [ "$obligation" = malformed ]; then
+      printf '%s' "$result" | jq -e '.reason | contains("incompatible")' >/dev/null
+    else
+      printf '%s' "$result" | jq -e '.reason | contains("deferred until they settle")' >/dev/null
+    fi
+    [ "$(cat "$deferred/.vault-meta/lifecycle/state.json")" = "$state_before" ]
+    [ ! -e "$deferred/.vault-meta/lifecycle/finalize.lock" ]
+    [ ! -e "$deferred/wiki/index.md" ]
+    [ ! -e "$deferred/wiki/log.md" ]
+  done
+done
 plain_without_wiki=$work/selected-vault-without-wiki
 mkdir -p "$plain_without_wiki"
 result=$(cd "$caller" && printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"code.py"}}' | OBSIDIAN_VAULT_PATH=$plain_without_wiki WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)

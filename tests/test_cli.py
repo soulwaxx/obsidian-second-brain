@@ -49,6 +49,92 @@ class CliTests(unittest.TestCase):
         self.assertEqual(before, sorted(str(path.relative_to(self.vault)) for path in self.vault.rglob("*")))
         self.assertFalse((self.vault / ".vault-meta").exists())
 
+    def test_doctor_flags_unsupported_python_in_json_text_and_exit_status(self):
+        # Exercise diagnostics/exit behavior with simulated versions, not support
+        # for running the package under those interpreters.
+        launcher = (
+            "import runpy, sys; from pathlib import Path; "
+            "sys.path.insert(0, str(Path(sys.argv[1]).parent)); "
+            "namespace = runpy.run_path(sys.argv.pop(1)); "
+            "sys.version_info = tuple(map(int, sys.argv.pop(1).split('.'))); "
+            "sys.version = '.'.join(map(str, sys.version_info)); "
+            "raise SystemExit(namespace['main']())"
+        )
+        for version, supported in (("3.9.6", False), ("3.13.7", False),
+                                   ("3.14.0", True), ("3.15.0", True)):
+            with self.subTest(version=version):
+                result = subprocess.run(
+                    [sys.executable, "-c", launcher, str(CLI), version, "doctor", "--json"],
+                    cwd=self.root, env=self.env, text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0 if supported else 1, result.stderr)
+                dependencies = json.loads(result.stdout)["dependencies"]
+                self.assertEqual(dependencies["python"], version)
+                self.assertEqual(dependencies["pythonMinimum"], "3.14")
+                self.assertIs(dependencies["pythonSupported"], supported)
+                if supported:
+                    self.assertIsNone(dependencies["pythonError"])
+                else:
+                    self.assertIn("Python 3.14 or newer", dependencies["pythonError"])
+        text = subprocess.run(
+            [sys.executable, "-c", launcher, str(CLI), "3.13.7", "doctor"],
+            cwd=self.root, env=self.env, text=True, capture_output=True,
+        )
+        self.assertEqual(text.returncode, 1, text.stderr)
+        self.assertIn("Python 3.14 or newer", text.stderr)
+        self.assertFalse((self.vault / ".vault-meta").exists())
+
+    def test_vault_override_selection_matches_hook_despite_conflicting_default(self):
+        default = Path(self.env["HOME"]) / ".config/obsidian-second-brain/properties.json"
+        default.parent.mkdir(parents=True)
+        wrong_vault = self.root / "wrong-vault"
+        (wrong_vault / "wiki").mkdir(parents=True)
+        default.write_text(json.dumps({"vaultPath": str(wrong_vault)}))
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        report = self.run_cli("doctor", "--json")
+        self.assertEqual(report.returncode, 0, report.stderr)
+        selected = json.loads(report.stdout)
+        self.assertEqual(selected["vault"], str(self.vault.resolve()))
+        self.assertEqual(selected["config"]["path"], str(self.config))
+        hook = subprocess.run(
+            ["bash", str(ROOT / "hooks/obsidian-session.sh"), "start"],
+            cwd=self.root, env=self.env, text=True, capture_output=True,
+        )
+        self.assertEqual(hook.returncode, 0, hook.stderr)
+        self.assertIn(f"Configured Obsidian wiki: {selected['vault']}/wiki", hook.stdout)
+        self.assertIn(f"Selected Obsidian integration config: {self.config}", hook.stdout)
+        self.assertNotIn(str(wrong_vault), hook.stdout)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+        self.assertFalse((wrong_vault / ".vault-meta").exists())
+        self.assertFalse((self.vault / ".vault-meta").exists())
+
+    def test_locator_and_doctor_agree_on_relative_tilde_and_symlink_config_paths(self):
+        home = Path(self.env["HOME"])
+        home.mkdir(parents=True)
+        (home / "properties.json").write_bytes(self.config.read_bytes())
+        (self.root / "linked-properties.json").symlink_to(self.config)
+        for raw, expected in (("properties.json", self.config),
+                              ("./properties.json", self.config),
+                              ("~/properties.json", home / "properties.json"),
+                              ("linked-properties.json", self.root / "linked-properties.json")):
+            with self.subTest(config=raw):
+                self.env["OBSIDIAN_AGENT_CONFIG"] = raw
+                result = self.run_cli("doctor", "--json")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                selected = json.loads(result.stdout)["config"]["path"]
+                # Relative paths anchor to the process's physical cwd, while
+                # an absolute HOME spelling and the config symlink stay lexical.
+                if not raw.startswith("~/"):
+                    expected = expected.parent.resolve() / expected.name
+                self.assertEqual(selected, str(expected))
+                hook = subprocess.run(
+                    ["bash", str(ROOT / "hooks/obsidian-session.sh"), "start"],
+                    cwd=self.root, env=self.env, text=True, capture_output=True,
+                )
+                self.assertEqual(hook.returncode, 0, hook.stderr)
+                self.assertIn(f"Selected Obsidian integration config: {selected} (", hook.stdout)
+        self.assertFalse((self.vault / ".vault-meta").exists())
+
     def test_search_from_arbitrary_cwd_requires_existing_index_no_build(self):
         indexer = ROOT / "scripts/bm25-index.py"
         built = subprocess.run([sys.executable, str(indexer), "build", "--vault", str(self.vault)], text=True, capture_output=True)

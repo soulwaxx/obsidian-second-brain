@@ -34,10 +34,17 @@ assert frontmatter(delegation_path)['disable-model-invocation'] is True
 assert './skills/wiki-agent' not in manifest['pi']['skills']
 assert 'skills/wiki-agent/SKILL.md' in manifest['files']
 delegation = delegation_path.read_text()
+# Keep the fallback explanation out of interpolation: a saved "low" must not
+# turn its text into an instruction that the literal "low" means inherit.
+assert delegation.count('${user_config.vault_agent_effort}') == 1
 for boundary in ('${user_config.vault_agent_effort}', 'subagent_type: "obsidian-second-brain:wiki-vault"',
                  'omit the `effort` parameter', '2.1.292', 'never silently',
                  'Do not fork', 'CLAUDE_CODE_EFFORT_LEVEL', 'effective', 'unknown',
-                 'start a fresh invocation', 'Task: $ARGUMENTS'):
+                 'start a fresh invocation', 'Task: $ARGUMENTS',
+                 'run_in_background: false', 'exact literal placeholder',
+                 'also means `inherit`', 'Any other unresolved substitution or invalid value',
+                 'doctor --json', 'OBSIDIAN_AGENT_CONFIG', 'config.path',
+                 'not another copy on', 'Stop if selection is missing'):
     assert boundary in delegation, boundary
 setup = (root / 'docs/setup.md').read_text()
 examples = re.findall(r'```json\n(.*?)\n```', setup, re.S)
@@ -64,7 +71,14 @@ readme = (root / 'README.md').read_text()
 for name in skill_names:
     assert f'/obsidian-second-brain:{name}' in readme, name
 assert (root / 'agents/pi' / pi['subagentOnlyExtensions']).resolve() == (root / 'extensions/obsidian.ts').resolve()
-assert '${CLAUDE_PLUGIN_ROOT}/skills/wiki/SKILL.md' in (root / 'agents/claude/wiki-vault.md').read_text()
+claude_body = (root / 'agents/claude/wiki-vault.md').read_text()
+assert '${CLAUDE_PLUGIN_ROOT}/skills/wiki/SKILL.md' in claude_body
+for boundary in ('Before any vault read or write', 'doctor --json',
+                 'OBSIDIAN_AGENT_CONFIG', 'OBSIDIAN_VAULT_PATH', 'config.path',
+                 'never substitute the default config path by hand',
+                 'Prefer Edit/Write file tools', 'do not duplicate',
+                 'report logging or finalization as unverified'):
+    assert boundary in claude_body, boundary
 for path in (root / 'agents/claude/wiki-vault.md', root / 'agents/pi/wiki-vault.md'):
     body = path.read_text()
     assert 'Resolve the configured vault independently' in body

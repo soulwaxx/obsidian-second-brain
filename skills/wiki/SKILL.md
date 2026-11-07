@@ -40,8 +40,13 @@ absolute paths are appropriate for runtime filesystem access.
 `OBSIDIAN_VAULT_PATH` before the `vaultPath` in the selected integration config.
 `OBSIDIAN_AGENT_CONFIG` selects that config; its default is
 `~/.config/obsidian-second-brain/properties.json`. Verify the selected vault
-before wiki work. Read `wiki/WIKI.md` when present, or the vault's root convention
-file, and preserve its layout and entry point. A flat wiki is valid.
+before wiki work. If the locator is absent or needs verification, use the loaded
+package's read-only `doctor --json` via the package-relative launcher procedure
+below, without `--vault` or `--config` overrides. Its `vault` and `config.path`
+identify the effective selection; never read the default config instead of an
+`OBSIDIAN_AGENT_CONFIG` override. Stop on a conflict with the lifecycle locator.
+Read `wiki/WIKI.md` when present, or the vault's root convention file, and preserve
+its layout and entry point. A flat wiki is valid.
 
 The agent may remain in a repository or any other working directory. Use
 resolved absolute vault paths for file tools when outside the vault; ordinary

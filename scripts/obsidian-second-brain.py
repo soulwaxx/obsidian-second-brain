@@ -78,7 +78,10 @@ def exclusion_status(vault: Path) -> dict[str, Any]:
 def doctor(config_file: Path, config: dict[str, Any] | None, config_error: str | None, vault: Path | None) -> dict[str, Any]:
     checks: dict[str, Any] = {
         "config": {"path": str(config_file), "valid": config_error is None, "exists": config_file.exists(), "error": config_error},
-        "dependencies": {"python": sys.version.split()[0], "retrieval": True,
+        "dependencies": {"python": sys.version.split()[0], "pythonMinimum": "3.14",
+                         "pythonSupported": sys.version_info >= (3, 14),
+                         "pythonError": None if sys.version_info >= (3, 14) else "Python 3.14 or newer is required; select a supported Python environment for both clients.",
+                         "retrieval": True,
                          "pyyaml": importlib.util.find_spec("yaml") is not None,
                          "git": bool(shutil.which("git")), "jq": bool(shutil.which("jq"))},
         "vault": str(vault) if vault else None,
@@ -611,7 +614,7 @@ def main() -> int:
         parser.error("--hybrid requires search")
     if args.command == "doctor":
         output = doctor(config_file, config, error, vault)
-        status = 0 if output["config"]["valid"] else 1
+        status = 0 if output["config"]["valid"] and output["dependencies"]["pythonSupported"] else 1
     elif args.command == "search":
         output = search(vault, args.query, args.limit, args.hybrid, args.ollama_url, args.ollama_model, args.timeout)
         status = 0
@@ -650,6 +653,8 @@ def main() -> int:
             print(f"Cache exclusions: {output['cacheExclusions']['detail']}")
             if output['config']['error']:
                 print(output['config']['error'], file=sys.stderr)
+            if output['dependencies']['pythonError']:
+                print(output['dependencies']['pythonError'], file=sys.stderr)
         elif args.command == "search":
             for rank, item in enumerate(output["results"], 1):
                 print(f"{rank}. {item['path']}:{item['lineStart']}-{item['lineEnd']}\t{item['score']:.6f}\t{item['excerpt']}")
