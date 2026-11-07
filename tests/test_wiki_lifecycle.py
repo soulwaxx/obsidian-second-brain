@@ -844,4 +844,33 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-ignore-proof-") as tmp:
             diagnostics = wiki_lifecycle.exclusion_diagnostic(vault)
             assert any("lifecycle derived-state scope" in item for item in diagnostics) != expected
 
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-pending-observation-") as tmp:
+    vault = Path(tmp).resolve()
+    assert run(HELPER, "pending", "--vault", vault).stdout.strip() == "clean"
+    assert not (vault / ".vault-meta").exists()
+    life = vault / ".vault-meta/lifecycle"
+    life.mkdir(parents=True)
+    state_path = life / "state.json"
+    for pending, retrieval, expected in (
+        ({}, None, "clean"),
+        ({"wiki/page.md": {"captures": {"claude:writer": {"tool": "active"}}}}, None, "pending"),
+        ({}, {"owner": "claude:writer", "token": "refresh-fixture"}, "pending"),
+    ):
+        state = {"version": 1, "vault": str(vault), "pending": pending}
+        if retrieval:
+            state["retrieval"] = retrieval
+        state_path.write_text(json.dumps(state))
+        before = (state_path.read_bytes(), state_path.stat().st_mtime_ns)
+        assert run(HELPER, "pending", "--vault", vault).stdout.strip() == expected
+        assert (state_path.read_bytes(), state_path.stat().st_mtime_ns) == before
+        assert sorted(p.name for p in life.iterdir()) == ["state.json"]
+    state_path.write_text("[]")
+    assert "incompatible" in run(HELPER, "pending", "--vault", vault, ok=False).stderr
+    state_path.unlink()
+    outside = vault / "outside.json"
+    outside.write_text("sentinel")
+    state_path.symlink_to(outside)
+    assert "not a regular file" in run(HELPER, "pending", "--vault", vault, ok=False).stderr
+    assert outside.read_text() == "sentinel"
+
 print("wiki lifecycle durable-state regressions PASS")

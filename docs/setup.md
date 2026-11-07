@@ -161,8 +161,10 @@ Both routes resolve the selected vault consistently with the integration.
 Search reports structured results, fallback, and freshness without rebuilding
 an index. Doctor reports
 configuration, dependency, vault, cache-exclusion, lifecycle, and retrieval
-status; it does not repair anything. `obsidian-second-brain evidence-report
---json` is an additional read-only report. For direct, hash-bound page reads
+status; it does not repair anything. Doctor exposes `dependencies.pythonMinimum`,
+`pythonSupported`, and `pythonError`; an unsupported interpreter produces an
+actionable diagnostic and exit status 1, even if the integration config is valid.
+`obsidian-second-brain evidence-report --json` is an additional read-only report. For direct, hash-bound page reads
 without an index, see the [retrieval read/outline commands](retrieval-reads.md). Optional source/claim ledgers are
 canonical wiki data and are never migrated or required; the report describes
 structure and declared metadata, not factual verification. Use the generated index hierarchy if
@@ -299,13 +301,31 @@ scoped delegation requires 2.1.292+ for the native `Agent` effort parameter.
 
 The entry point reads the preference in its Markdown body and asks the parent
 to pass it as the packaged agent invocation's native `effort` parameter.
-`inherit` omits the parameter. This is prompt-directed delegation, not dynamic
-effort frontmatter or a forced package default. It preserves the packaged agent
-identity, instruction updates, and plugin hooks without creating a local copy.
+`inherit` omits the parameter. An unsaved preference also inherits, including
+when the client leaves the exact `${user_config.vault_agent_effort}` placeholder
+unexpanded. Other malformed values require correction in `/config`.
+This is prompt-directed delegation, not dynamic effort frontmatter or a forced
+package default. It preserves the packaged agent identity, instruction updates,
+and plugin hooks without creating a local copy.
+
+The entry point resolves the vault with the loaded package's read-only doctor,
+passes the resolved vault/config to the specialist, and explicitly requests
+`run_in_background: false` for reads and writes. This avoids client defaults
+that launch background agents whose Stop/SubagentStop hooks defer finalization.
+The specialist verifies the selection before reading or writing; config discovery
+must honor `OBSIDIAN_AGENT_CONFIG` rather than opening the default path by hand.
+Pending work still defers while background tasks or session crons run; the hooks
+do not infer abandonment or recover another writer. With no content or retrieval
+obligation, that background-task check is read-only and does not block Stop.
+Direct agent mentions do not receive this entry point's foreground instruction;
+request foreground execution explicitly when using those routes.
 Direct `@agent-obsidian-second-brain:wiki-vault` mentions and other wiki skills
 bypass this entry point and do not apply its preference; ask explicitly for a
 native per-invocation effort when using those routes. A resumed agent retains
 its original effort, so start a fresh invocation after changing the preference.
+Clients may cache plugin options for the session: after editing settings outside
+`/config`, restart the session before expecting a new value. Immediate `/config`
+refresh remains client-dependent and needs live verification.
 
 `CLAUDE_CODE_EFFORT_LEVEL` overrides both agent frontmatter and per-invocation
 effort and also affects the parent. It is not an agent-scoped configuration

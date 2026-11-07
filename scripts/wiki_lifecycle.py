@@ -406,6 +406,18 @@ def safe_log_update(log: Path, entries: list[tuple[str, str]], today: str) -> No
         os.close(parent_fd)
 
 
+def pending_status(vault: Path) -> str:
+    """Observe content/retrieval obligations without creating state or a lock.
+
+    This is only a shutdown deferral check, never authorization to recover an
+    owner. Atomic state replacement makes a read sufficient while tasks run.
+    """
+    vault = vault.resolve(strict=True)
+    _, state_path, _ = layout(vault, False)
+    state = load_state(state_path, vault)
+    return "pending" if state["pending"] or state.get("retrieval") else "clean"
+
+
 def retrieval_status(vault: Path) -> dict:
     """Read-only retry diagnostics; never creates a lock or state directory."""
     try:
@@ -722,13 +734,15 @@ def main() -> int:
     p.add_argument("--retrieval-script")
     p.add_argument("--owner", help="settle only completed work owned by this session")
     p.add_argument("--recover-owner", help="explicitly recover this ended writer session's missing tool results")
-    p = sub.add_parser("diagnose")
-    p.add_argument("--vault", required=True)
+    for name in ("diagnose", "pending"):
+        p = sub.add_parser(name)
+        p.add_argument("--vault", required=True)
     args = parser.parse_args()
     try:
         if args.command == "capture": capture(args)
         elif args.command == "record": record(args)
         elif args.command == "finalize": finalize(args)
+        elif args.command == "pending": print(pending_status(Path(args.vault)))
         else:
             for message in exclusion_diagnostic(Path(args.vault)):
                 print(message, file=sys.stderr)

@@ -28,9 +28,20 @@ const vault = path.join(tmp, "vault");
 fs.mkdirSync(home, { recursive: true });
 fs.mkdirSync(caller, { recursive: true });
 fs.mkdirSync(path.join(vault, "wiki"), { recursive: true });
+const selectedConfig = path.join(tmp, "selected-properties.json");
+const wrongVault = path.join(tmp, "default-vault");
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+const snapshot = (directory) => Object.fromEntries(fs.readdirSync(directory, { recursive: true })
+  .map((relative) => [relative, path.join(directory, relative)])
+  .filter(([, file]) => fs.statSync(file).isFile())
+  .map(([relative, file]) => [relative, [fs.readFileSync(file).toString("base64"), fs.statSync(file).mtimeMs]]));
 const observed = [];
 let observedTools = [];
 let fixtureAgentEffort;
+let fixtureWrites = false;
+let fixtureResolve = false;
+let doctorSent = false;
+let writeSent = false;
 let delegationSent = false;
 let fixtureFailure;
 let activeChild;
@@ -54,10 +65,26 @@ const server = createServer((req, res) => {
     const events = [["message_start", { type: "message_start", message: { id: `msg_${requestNumber}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }]];
     if (agentTool && !delegationSent) {
       delegationSent = true;
-      const agentInput = { subagent_type: "obsidian-second-brain:wiki-vault", description: "Effort contract fixture", prompt: "Read the configured wiki contract and report its title." };
+      const agentInput = { subagent_type: "obsidian-second-brain:wiki-vault", run_in_background: false, description: "Effort contract fixture", prompt: fixtureWrites ? "Create wiki/foreground-write.md with valid note frontmatter." : "Read the configured wiki contract and report its title." };
       if (fixtureAgentEffort === "low") agentInput.effort = "low";
       events.push(["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_effort_fixture", name: agentTool.name, input: {} } }]);
       events.push(["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(agentInput) } }]);
+      events.push(["content_block_stop", { type: "content_block_stop", index: 0 }]);
+      events.push(["message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 10 } }]);
+    } else if (fixtureWrites && !writeSent && JSON.stringify(body.system).includes("cc_is_subagent=true")) {
+      writeSent = true;
+      assert.ok(observedTools.includes("Write"), "foreground specialist has its packaged Write tool");
+      const input = { file_path: path.join(vault, "wiki", "foreground-write.md"), content: "---\ntype: note\ntitle: Foreground Write\n---\n# Foreground Write\n" };
+      events.push(["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_foreground_write", name: "Write", input: {} } }]);
+      events.push(["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }]);
+      events.push(["content_block_stop", { type: "content_block_stop", index: 0 }]);
+      events.push(["message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 10 } }]);
+    } else if (fixtureResolve && !doctorSent && JSON.stringify(body.system).includes("cc_is_subagent=true")) {
+      doctorSent = true;
+      assert.ok(observedTools.includes("Bash"), "specialist has its packaged Bash tool");
+      const input = { command: `node ${shellQuote(path.join(root, "scripts", "obsidian-second-brain.mjs"))} doctor --json`, description: "Verify override-aware vault selection", timeout: 10_000 };
+      events.push(["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_specialist_doctor", name: "Bash", input: {} } }]);
+      events.push(["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }]);
       events.push(["content_block_stop", { type: "content_block_stop", index: 0 }]);
       events.push(["message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 10 } }]);
     } else {
@@ -86,14 +113,30 @@ const cleanEnv = () => ({
   OBSIDIAN_VAULT_PATH: vault,
 });
 
-async function runScenario({ label, agentEffort, envConflict = false, expectedChildEffort }) {
+async function runScenario({ label, agentEffort, envConflict = false, expectedChildEffort, writePage = false, resolveSelection = false }) {
   observed.length = 0;
   observedTools = [];
   fixtureAgentEffort = agentEffort;
+  fixtureWrites = writePage;
+  fixtureResolve = resolveSelection;
+  doctorSent = false;
+  writeSent = false;
   delegationSent = false;
   fixtureFailure = undefined;
   requestNumber = 0;
   const env = cleanEnv();
+  let beforeSelection;
+  if (resolveSelection) {
+    fs.mkdirSync(path.join(wrongVault, "wiki"), { recursive: true });
+    fs.writeFileSync(path.join(wrongVault, "wiki", "sentinel.md"), "Default vault must remain untouched.\n");
+    const defaultConfig = path.join(home, ".config", "obsidian-second-brain", "properties.json");
+    fs.mkdirSync(path.dirname(defaultConfig), { recursive: true });
+    fs.writeFileSync(defaultConfig, JSON.stringify({ vaultPath: wrongVault }));
+    fs.writeFileSync(selectedConfig, JSON.stringify({ vaultPath: vault }));
+    delete env.OBSIDIAN_VAULT_PATH;
+    env.OBSIDIAN_AGENT_CONFIG = selectedConfig;
+    beforeSelection = [snapshot(vault), snapshot(wrongVault)];
+  }
   if (envConflict) env.CLAUDE_CODE_EFFORT_LEVEL = "high";
   const args = ["-p", "--output-format", "json", "--model", "claude-sonnet-4-6", "--permission-mode", "bypassPermissions", "--no-session-persistence", "--plugin-dir", root, "--effort", "high", "/obsidian-second-brain:wiki-agent delegate the request to the packaged wiki-vault agent and report its result."];
   const child = spawn(cli, args, { cwd: caller, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -118,7 +161,32 @@ async function runScenario({ label, agentEffort, envConflict = false, expectedCh
   assert.ok(childRequests.every((request) => request.output_config?.effort === expectedChildEffort), `${label}: child requests use expected native effort`);
   assert.match(JSON.stringify(childRequests[0].system), /vault specialist/i, `${label}: packaged wiki-vault agent identity reached child request`);
   assert.match(JSON.stringify(childRequests[0].system), /Resolve the configured vault independently/i, `${label}: packaged wiki-vault agent body reached child request`);
+  assert.match(JSON.stringify(childRequests[0].system), /OBSIDIAN_AGENT_CONFIG/, `${label}: child receives the override-aware selection contract`);
+  assert.match(JSON.stringify(childRequests[0].system), /doctor --json/, `${label}: child receives resolver verification instructions`);
   assert.match(stdout, /Fixture complete/);
+  if (writePage) {
+    assert.ok(writeSent, "scripted foreground specialist dispatched Write");
+    assert.ok(fs.existsSync(path.join(vault, "wiki", "foreground-write.md")), "specialist wrote the page");
+    assert.match(fs.readFileSync(path.join(vault, "wiki", "index.md"), "utf8"), /foreground-write\.md/);
+    assert.match(fs.readFileSync(path.join(vault, "wiki", "log.md"), "utf8"), /Creation.*foreground-write\.md/);
+    const state = JSON.parse(fs.readFileSync(path.join(vault, ".vault-meta", "lifecycle", "state.json"), "utf8"));
+    assert.deepEqual(state.pending, {}, "native hooks finalize the foreground child without manual recovery");
+  }
+  if (resolveSelection) {
+    assert.ok(doctorSent, "native specialist dispatched the read-only resolver");
+    const output = childRequests.flatMap((request) => request.messages ?? [])
+      .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+      .filter((part) => part.type === "tool_result")
+      .map((part) => typeof part.content === "string" ? part.content : JSON.stringify(part.content))
+      .join("\n");
+    const reportLine = output.split(/\r?\n/).find((line) => line.trimStart().startsWith("{"));
+    assert.ok(reportLine, `specialist must receive the actual doctor report: ${output}`);
+    const report = JSON.parse(reportLine);
+    assert.equal(report.vault, fs.realpathSync(vault));
+    assert.equal(report.config.path, selectedConfig);
+    assert.equal(report.config.valid, true);
+    assert.deepEqual([snapshot(vault), snapshot(wrongVault)], beforeSelection, "selection leaves both vaults byte/mtime-identical");
+  }
   console.log(`PASS ${label}: parent high; child effort ${expectedChildEffort}; actual packaged agent via isolated local provider.`);
 }
 
@@ -127,6 +195,8 @@ try {
   await runScenario({ label: "explicit low", agentEffort: "low", expectedChildEffort: "low" });
   await runScenario({ label: "inherited effort", expectedChildEffort: "high" });
   await runScenario({ label: "environment override", agentEffort: "low", envConflict: true, expectedChildEffort: "high" });
+  await runScenario({ label: "foreground specialist write and hook finalization", agentEffort: "low", expectedChildEffort: "low", writePage: true });
+  await runScenario({ label: "specialist resolves config override instead of conflicting default", expectedChildEffort: "high", resolveSelection: true });
   console.log("Claude native effort contract PASS: scripted fake-provider requests verify runtime effort dispatch only; they do not test model compliance or live-provider acceptance.");
 } finally {
   await new Promise((resolve) => server.close(resolve));

@@ -10,10 +10,8 @@ canonical_dir() {
 }
 
 properties=${OBSIDIAN_AGENT_CONFIG:-$HOME/.config/obsidian-second-brain/properties.json}
-case "$properties" in
-  '~') properties=$HOME ;;
-  '~/'*) properties="$HOME/${properties#\~/}" ;;
-esac
+# Match the CLI's lexical absolute config path (without resolving symlinks).
+properties=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().absolute())' "$properties") || exit 2
 script_root=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 config_data='{}'
 config_error=
@@ -163,6 +161,7 @@ start)
     printf 'Stop wiki writes. Propose the exact minimal change to the selected integration config, preserve unrelated fields, and obtain explicit approval for those changes. Edit only that config; revalidate it in this session before resuming. Do not reset settings or enable autoCommit.\n'
   fi
   printf 'Configured Obsidian wiki: %s/wiki (OKF v0.2; writes are guarded and validated; sync is Obsidian Git-owned).\n' "$vault"
+  printf 'Selected Obsidian integration config: %s (OBSIDIAN_AGENT_CONFIG selects this file; OBSIDIAN_VAULT_PATH overrides vaultPath).\n' "$properties"
   python3 "$script_root/scripts/wiki_lifecycle.py" diagnose --vault "$vault"
   ;;
 
@@ -347,17 +346,17 @@ stop)
       *) echo "obsidian lifecycle: unknown stop argument: $1" >&2; exit 2 ;;
     esac
   done
-  if [ -z "$owner" ] && [ "$hook_invocation" = 1 ]; then
-    if [ "$(printf '%s' "$input" | jq -r '((.background_tasks // []) | length) > 0 or ((.session_crons // []) | length) > 0')" = true ]; then
-      stop_hook_response "Claude Stop has background tasks or session crons; owner recovery is deferred until they settle"
-      exit 0
-    fi
-    owner=$(printf '%s' "$input" | claude_owner)
-  fi
   if [ -z "$owner" ] && [ -n "$input" ] && command -v jq >/dev/null 2>&1; then
     if [ "$(printf '%s' "$input" | jq -r '((.background_tasks // []) | length) > 0 or ((.session_crons // []) | length) > 0')" = true ]; then
-      if [ "$hook_invocation" = 1 ]; then stop_hook_response "Claude Stop has background tasks or session crons; owner recovery is deferred until they settle"; exit 0; fi
-      echo "obsidian lifecycle: Claude Stop has background tasks or session crons; owner recovery deferred until they settle" >&2
+      # Observe only: do not recover a writer or retry retrieval while tasks run.
+      reason="Claude Stop has background tasks or session crons; owner recovery is deferred until they settle"
+      if pending_status=$(python3 "$script_root/scripts/wiki_lifecycle.py" pending --vault "$vault" 2>&1); then
+        [ "$pending_status" != clean ] || exit 0
+      else
+        reason=$pending_status
+      fi
+      if [ "$hook_invocation" = 1 ]; then stop_hook_response "$reason"; exit 0; fi
+      echo "obsidian lifecycle: $reason" >&2
       exit 1
     fi
     owner=$(printf '%s' "$input" | claude_owner)
