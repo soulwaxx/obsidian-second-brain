@@ -182,6 +182,61 @@ class SemanticChunkTests(unittest.TestCase):
         self.assertTrue(any("```py" in c["text"] and "```" in c["text"] for c in semantic))
         self.assertEqual(semantic, chunks.semantic_chunks("wiki/notes.md", source, vectors, max_chars=90, target_chars=55))
 
+    def assert_partition(self, source, semantic):
+        self.assertEqual(semantic[0]["start"], chunks.text_units(source)[0]["start"])
+        for left, right in zip(semantic, semantic[1:]):
+            self.assertLessEqual(left["end"], right["start"])
+            self.assertFalse(source[left["end"]:right["start"]].strip())
+        for chunk in semantic:
+            self.assertEqual(chunk["sourceHash"], chunks.sha256(source[chunk["start"]:chunk["end"]]))
+
+    @staticmethod
+    def heading_only(source, chunk):
+        lines = [line for line in source[chunk["start"]:chunk["end"]].splitlines() if line.strip()]
+        return all(chunks.HEADING.match(line) for line in lines)
+
+    def test_boundary_never_strands_heading_from_its_body(self):
+        # Heading vectors are orthogonal to bodies, so the cosine picker prefers
+        # cutting right after each heading; v1 emitted heading-only chunks here.
+        body = "Body sentence about the topic. " * 12 + "\n"
+        source = "# Page\n\n" + "".join(f"## Section {n}\n\n{body}\n" for n in range(4))
+        units = chunks.text_units(source)
+        vectors = [[0.0, 1.0] if chunks.HEADING.match(u["text"].strip()) else [1.0, 0.05] for u in units]
+        semantic = chunks.semantic_chunks("wiki/page.md", source, vectors, max_chars=900, target_chars=500)
+        self.assert_partition(source, semantic)
+        self.assertGreater(len(semantic), 1)
+        for index, chunk in enumerate(semantic):
+            self.assertFalse(self.heading_only(source, chunk), chunk)
+            last_line = source[chunk["start"]:chunk["end"]].rstrip().splitlines()[-1]
+            self.assertFalse(chunks.HEADING.match(last_line) and index < len(semantic) - 1, chunk)
+
+    def test_heading_stays_with_final_unit_that_crosses_target(self):
+        source = "## Only section\n\n" + "Final paragraph text. " * 30 + "\n"
+        units = chunks.text_units(source)
+        vectors = [[0.0, 1.0], [1.0, 0.0]]
+        semantic = chunks.semantic_chunks("wiki/page.md", source, vectors, max_chars=900, target_chars=300)
+        self.assertEqual([(c["start"], c["end"]) for c in semantic], [(0, units[-1]["end"])])
+
+    def test_size_forced_cut_moves_trailing_heading_forward(self):
+        filler = "Filler words for size. " * 8 + "\n"
+        source = filler + "\n## Next\n\n" + "Next body words here. " * 8 + "\n"
+        units = chunks.text_units(source)
+        vectors = [[1.0, 0.0]] * len(units)
+        # The first unit plus the heading fit; adding the body overflows.
+        semantic = chunks.semantic_chunks("wiki/page.md", source, vectors, max_chars=200, target_chars=200)
+        self.assert_partition(source, semantic)
+        self.assertTrue(source[semantic[1]["start"]:].startswith("## Next"))
+        self.assertFalse(any(self.heading_only(source, chunk) for chunk in semantic))
+
+    def test_heading_alone_only_when_its_body_cannot_fit_beside_it(self):
+        source = "## Big\n" + "x" * 120 + "\n"
+        units = chunks.text_units(source, max_chars=125)
+        self.assertEqual(len(units), 2)
+        semantic = chunks.semantic_chunks("wiki/page.md", source, [[1.0, 0.0]] * 2, max_chars=125, target_chars=100)
+        self.assertEqual(len(semantic), 2)
+        self.assertTrue(self.heading_only(source, semantic[0]))
+        self.assertTrue(all(c["end"] - c["start"] <= 125 for c in semantic))
+
     def test_cache_reuses_unchanged_pages_and_defers_changed_pages_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             vault = Path(temporary)

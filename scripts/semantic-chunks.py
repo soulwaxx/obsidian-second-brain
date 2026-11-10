@@ -33,7 +33,8 @@ _INDEX = load_source("bm25_index_for_chunks", str(Path(__file__).with_name("bm25
 CACHE_VERSION = 1
 INPUT_SCHEME = "current-strike-mask-raw-unit-pooled-v1"
 _UNSET = object()
-ALGORITHM = "semantic-adjacent-cosine-v1"
+# v2: a chunk boundary never directly follows a heading unit (see _cut_allowed).
+ALGORITHM = "semantic-adjacent-cosine-v2"
 DEFAULT_CACHE = Path(".vault-meta/retrieval/chunks.json")
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 FENCE = re.compile(r"^\s{0,3}(```+|~~~+)")
@@ -275,6 +276,16 @@ def _render(relpath, source, start, end):
     return prefix + body
 
 
+def _is_heading(unit):
+    line = unit["text"].rstrip("\r\n")
+    return "\n" not in line and bool(HEADING.match(line))
+
+
+def _cut_allowed(units, idx):
+    """A cut before units[idx] must not strand a heading away from its body."""
+    return idx >= len(units) or not _is_heading(units[idx - 1])
+
+
 def _chunks(relpath, source, vectors, max_chars, target_chars, strategy):
     units = text_units(source, max_chars)
     if len(units) != len(vectors):
@@ -293,11 +304,21 @@ def _chunks(relpath, source, vectors, max_chars, target_chars, strategy):
         if last < len(units) and units[last]["end"] - units[first]["start"] <= max_chars:
             # Choose the most semantically distinct adjacent pair near the target.
             lower = max(first + 1, last - max(3, (target_chars // max(1, max_chars // 4))))
-            candidates = range(lower, last + 1)
+            # Fallbacks keep a heading with its body: include units[last] (it fits
+            # by the branch condition), then try earlier cuts.
+            candidates = ([idx for idx in range(lower, last + 1) if _cut_allowed(units, idx)]
+                          or [idx for idx in [last + 1] if _cut_allowed(units, idx)]
+                          or [idx for idx in range(first + 1, lower) if _cut_allowed(units, idx)]
+                          or range(lower, last + 1))
             boundary = min(candidates, key=lambda idx: (
-                _cosine(vectors[idx - 1], vectors[idx]),
+                _cosine(vectors[idx - 1], vectors[idx]) if idx < len(units) else 1.0,
                 abs(units[idx - 1]["end"] - units[first]["start"] - target_chars), idx))
             last = boundary
+        else:
+            # Size-forced cut: move a trailing heading to the next chunk. A heading
+            # alone remains only when its following unit cannot fit beside it.
+            while last - 1 > first and not _cut_allowed(units, last):
+                last -= 1
         group = units[first:last]
         start, end = group[0]["start"], group[-1]["end"]
         body = source[start:end]

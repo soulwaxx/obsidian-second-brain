@@ -253,8 +253,11 @@ projection/input scheme before assuming current coverage.
 
 Document embedding builds are **manual and input-incremental**: compatible exact
 raw-unit inputs reuse verified vectors across edits/moves/duplicates; only missing
-inputs are sent to the installed model. Chunk pooling/boundaries and RRF remain
-unchanged. Legacy pooled caches cannot recover individual unit vectors; their
+inputs are sent to the installed model. Chunk algorithm
+`semantic-adjacent-cosine-v2` never ends a chunk on a heading whose body can
+fit beside it; older-algorithm entries are not used until an explicit
+`build --semantic-chunks`, which regroups cached unit vectors without new
+document inference. Pooling and RRF are unchanged. Legacy pooled caches cannot recover individual unit vectors; their
 first explicit compatible build populates the input cache. Builds report real
 input/character counts, duration and cache size. Cached semantic searches embed
 only the query, never missing documents or the legacy page-head shortlist.

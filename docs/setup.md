@@ -239,7 +239,10 @@ form a cache namespace. Unchanged inputs can move/repeat without document
 inference; grouping/pooling and source mappings are recomputed as needed. Input
 vectors and pooled chunks are distinct. The first explicit build of a legacy
 pooled cache or changed projection/scheme must populate compatible unit vectors;
-old vectors are not relabeled or used for the new current policy. Unreachable
+old vectors are not relabeled or used for the new current policy. A
+chunk-algorithm change (such as `semantic-adjacent-cosine-v2`, which keeps a
+heading with its body) leaves older entries unused until the next explicit
+build, which only regroups already-cached unit vectors. Unreachable
 input vectors are pruned only during explicit builds. Counts/characters, build
 duration and cache bytes are reported, including local-edit builds.
 
