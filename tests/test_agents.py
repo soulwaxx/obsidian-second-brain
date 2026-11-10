@@ -11,7 +11,11 @@ root = Path(__file__).resolve().parent.parent
 manifest = json.loads((root / 'package.json').read_text())
 assert manifest['pi']['subagents']['agents'] == ['./agents/pi']
 plugin = json.loads((root / '.claude-plugin/plugin.json').read_text())
-assert plugin['agents'] == ['./agents/claude/wiki-vault.md']
+# A manifest `agents` entry disables Claude's default non-recursive agents/
+# scan, which `claude plugin details` counts; Pi reads only agents/pi.
+assert 'agents' not in plugin
+assert (root / 'agents/wiki-vault.md').is_file()
+assert sorted(path.name for path in (root / 'agents').glob('*.md')) == ['wiki-vault.md']
 
 
 def frontmatter(path):
@@ -20,7 +24,7 @@ def frontmatter(path):
     return yaml.safe_load(content.split('---\n', 2)[1])
 
 
-claude = frontmatter(root / 'agents/claude/wiki-vault.md')
+claude = frontmatter(root / 'agents/wiki-vault.md')
 pi = frontmatter(root / 'agents/pi/wiki-vault.md')
 assert claude['name'] == pi['name'] == 'wiki-vault'
 assert 'model' not in claude and 'effort' not in claude
@@ -66,12 +70,11 @@ for name in skill_names:
     assert skill_frontmatter['name'] == name
 # Claude discovers each skills/<name>/SKILL.md as a namespaced command.
 assert plugin['name'] == 'obsidian-second-brain'
-assert plugin['agents'] == ['./agents/claude/wiki-vault.md']
 readme = (root / 'README.md').read_text()
 for name in skill_names:
     assert f'/obsidian-second-brain:{name}' in readme, name
 assert (root / 'agents/pi' / pi['subagentOnlyExtensions']).resolve() == (root / 'extensions/obsidian.ts').resolve()
-claude_body = (root / 'agents/claude/wiki-vault.md').read_text()
+claude_body = (root / 'agents/wiki-vault.md').read_text()
 assert '${CLAUDE_PLUGIN_ROOT}/skills/wiki/SKILL.md' in claude_body
 for boundary in ('Before any vault read or write', 'doctor --json',
                  'OBSIDIAN_AGENT_CONFIG', 'OBSIDIAN_VAULT_PATH', 'config.path',
@@ -79,7 +82,7 @@ for boundary in ('Before any vault read or write', 'doctor --json',
                  'Prefer Edit/Write file tools', 'do not duplicate',
                  'report logging or finalization as unverified'):
     assert boundary in claude_body, boundary
-for path in (root / 'agents/claude/wiki-vault.md', root / 'agents/pi/wiki-vault.md'):
+for path in (root / 'agents/wiki-vault.md', root / 'agents/pi/wiki-vault.md'):
     body = path.read_text()
     assert 'Resolve the configured vault independently' in body
     assert 'ask the caller to start there' not in body

@@ -91,10 +91,24 @@ def finalize(vault: Path, ok: bool = True, retrieve: bool = False) -> subprocess
     return run(*args, ok=ok)
 
 
-def finalize_owner(vault: Path, owner: str, *, recover: bool = False, ok: bool = True) -> subprocess.CompletedProcess:
+def finalize_owner(vault: Path, owner: str, *, recover: bool = False, children: bool = False,
+                   ok: bool = True) -> subprocess.CompletedProcess:
     args = [HELPER, "finalize", "--vault", vault, "--middleware", MIDDLEWARE]
     args += ["--recover-owner", owner] if recover else ["--owner", owner]
+    if children:
+        args.append("--recover-children")
     return run(*args, ok=ok)
+
+
+def add_owned_pending(vault: Path, target: Path, owner: str, tool: str) -> None:
+    """Add a settled changed entry beside existing ones, as concurrent sessions could leave."""
+    state_path = vault / ".vault-meta/lifecycle/state.json"
+    state = json.loads(state_path.read_text())
+    key = str(target.resolve())
+    state["pending"][key] = {"existed": False, "before": None, "changed": True,
+                             "after": wiki_lifecycle.digest(target.resolve()), "path": key,
+                             "captures": {owner: {tool: "settled"}}}
+    state_path.write_text(json.dumps(state))
 
 
 def fail_after_first_sync(vault: Path) -> None:
@@ -560,7 +574,8 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-owned-capture-") as tmp:
     finalize_owner(vault, "reader-B", ok=False)
     assert json.loads((vault / ".vault-meta/lifecycle/state.json").read_text()) == active_state
     target.write_text("---\\ntype: note\\ntitle: Partial\\n")
-    finalize_owner(vault, "reader-B", recover=True, ok=False)
+    # An unrelated session's end owns nothing, so it is clean without settling the writer.
+    assert finalize_owner(vault, "reader-B", recover=True).stdout.strip() == "clean"
     assert json.loads((vault / ".vault-meta/lifecycle/state.json").read_text()) == active_state
     assert (vault / "wiki/index.md").read_bytes() == original_index
     assert (vault / "wiki/log.md").read_bytes() == original_log
@@ -589,6 +604,76 @@ with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-owned-crash-recovery-") 
     finalize_owner(vault, "crashed-writer", recover=True)
     assert "**Update**" in (vault / "wiki/log.md").read_text()
     assert not json.loads((vault / ".vault-meta/lifecycle/state.json").read_text())["pending"]
+
+with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-owner-groups-") as tmp:
+    root = Path(tmp)
+    # Session-end recovery with only foreign work is clean and leaves it unchanged;
+    # the ownerless manual CLI keeps refusing foreign work.
+    vault, caller = setup(root / "foreign-only")
+    state_path = vault / ".vault-meta/lifecycle/state.json"
+    target = vault / "wiki/base.md"
+    capture_owned(vault, caller, target, "Y", "tool-Y")
+    target.write_text(page("Base", "foreign writer"))
+    foreign_state = state_path.read_bytes()
+    assert finalize_owner(vault, "X", recover=True).stdout.strip() == "clean"
+    assert finalize_owner(vault, "X", recover=True, children=True).stdout.strip() == "clean"
+    assert state_path.read_bytes() == foreign_state
+    assert "another writer session" in finalize(vault, ok=False).stderr
+    assert state_path.read_bytes() == foreign_state
+    # Owned work mixed with foreign work is still refused without changes.
+    other = vault / "wiki/x-owned.md"
+    other.write_text(page("X Owned"))
+    add_owned_pending(vault, other, "X", "tool-X")
+    mixed_state = state_path.read_bytes()
+    for children in (False, True):
+        refused = finalize_owner(vault, "X", recover=True, children=children, ok=False)
+        assert "another writer session" in refused.stderr and "Y" in refused.stderr
+        assert state_path.read_bytes() == mixed_state
+    assert "x-owned.md" not in (vault / "wiki/index.md").read_text()
+
+    # A child capture (OWNER:child) is recovered only with --recover-children.
+    vault, caller = setup(root / "child")
+    state_path = vault / ".vault-meta/lifecycle/state.json"
+    target = vault / "wiki/base.md"
+    capture_owned(vault, caller, target, "X:child", "missing-result")
+    target.write_text(page("Base", "child specialist edit"))
+    child_state = state_path.read_bytes()
+    assert finalize_owner(vault, "X", recover=True).stdout.strip() == "clean"
+    assert state_path.read_bytes() == child_state
+    assert finalize_owner(vault, "X", recover=True, children=True).stdout.strip() == "synced"
+    assert "**Update**" in (vault / "wiki/log.md").read_text()
+    assert not json.loads(state_path.read_text())["pending"]
+
+    # The child prefix includes the separator: Xother is not a child of X.
+    vault, caller = setup(root / "prefix")
+    state_path = vault / ".vault-meta/lifecycle/state.json"
+    target = vault / "wiki/base.md"
+    capture_owned(vault, caller, target, "Xother", "tool-other")
+    target.write_text(page("Base", "unrelated owner"))
+    prefix_state = state_path.read_bytes()
+    assert finalize_owner(vault, "X", recover=True, children=True).stdout.strip() == "clean"
+    assert state_path.read_bytes() == prefix_state
+    other = vault / "wiki/x-owned.md"
+    other.write_text(page("X Owned"))
+    add_owned_pending(vault, other, "X", "tool-X")
+    refused = finalize_owner(vault, "X", recover=True, children=True, ok=False)
+    assert "Xother" in refused.stderr
+
+    # --recover-children only extends an explicit recovery owner.
+    assert "requires --recover-owner" in run(HELPER, "finalize", "--vault", vault, "--middleware", MIDDLEWARE,
+                                             "--owner", "X", "--recover-children", ok=False).stderr
+
+    # A retrieval obligation left by a child is retried by its parent group only.
+    vault, caller = setup(root / "child-retrieval")
+    state_path = vault / ".vault-meta/lifecycle/state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"version": 1, "vault": str(vault.resolve()), "pending": {},
+                                      "retrieval": {"owner": "X:child", "token": "child-refresh"}}))
+    retry = [HELPER, "finalize", "--vault", vault, "--middleware", MIDDLEWARE, "--retrieval-script", BM25, "--recover-owner", "X"]
+    assert run(*retry).stdout.strip() == "clean"
+    assert json.loads(state_path.read_text())["retrieval"]["owner"] == "X:child"
+    assert run(*retry, "--recover-children").stdout.strip() == "synced"
+    assert "retrieval" not in json.loads(state_path.read_text())
 
 with tempfile.TemporaryDirectory(prefix="wiki-lifecycle-ignore-") as tmp:
     root = Path(tmp)

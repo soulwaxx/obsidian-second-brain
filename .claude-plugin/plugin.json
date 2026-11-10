@@ -3,7 +3,6 @@
   "description": "Obsidian wiki lifecycle and OKF skill for Claude Code",
   "version": "0.1.0",
   "author": { "name": "soulwaxx" },
-  "agents": ["./agents/claude/wiki-vault.md"],
   "userConfig": {
     "vault_agent_effort": {
       "type": "string",

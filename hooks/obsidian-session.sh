@@ -93,13 +93,13 @@ postwrite_hook_failure() {
 
 stop_hook_failure() {
   jq -n --arg reason "$1" \
-    '{decision:"block",reason:("Obsidian wiki finalization failed; pending changes are retained: " + $reason + ". Repair the reported issue and retry.")}'
+    '{decision:"block",reason:("Obsidian wiki finalization failed: " + $reason + ". Any pending wiki changes are retained; repair the reported issue and retry.")}'
 }
 
 stop_hook_response() {
   if [ "${stop_hook_active:-false}" = true ]; then
     jq -n --arg reason "$1" \
-      '{systemMessage:("Obsidian wiki finalization remains unresolved; pending changes are retained and were not finalized: " + $reason)}'
+      '{systemMessage:("Obsidian wiki finalization remains unresolved: " + $reason + ". Any pending wiki changes are retained and were not finalized.")}'
   else
     stop_hook_failure "$1"
   fi
@@ -340,6 +340,7 @@ stop)
     exit 1
   fi
   owner=
+  recover_children=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --owner|--recover-owner) owner=${2:-}; shift 2 ;;
@@ -360,6 +361,9 @@ stop)
       exit 1
     fi
     owner=$(printf '%s' "$input" | claude_owner)
+    # Background tasks have settled, so this session also recovers its
+    # subagents' captures (claude:<session>:<agent>).
+    recover_children=1
   fi
   mw=$(middleware_dir)
   retrieval=
@@ -368,6 +372,7 @@ stop)
   [ -n "$retrieval" ] && finalize_args+=(--retrieval-script "$retrieval")
   if [ -n "$owner" ]; then
     finalize_args+=(--recover-owner "$owner")
+    [ "$recover_children" = 1 ] && finalize_args+=(--recover-children)
   fi
   if hook_output=$(python3 "$script_root/scripts/wiki_lifecycle.py" finalize "${finalize_args[@]}" 2>&1); then
     if [ "$hook_invocation" = 1 ] && [ "$hook_output" = synced-retrieval-pending ]; then

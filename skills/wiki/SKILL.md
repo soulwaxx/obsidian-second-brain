@@ -130,9 +130,9 @@ registers native read-only `wiki_search`, `wiki_outline`, `wiki_read`, and
 `wiki_doctor` tools, documented in [the Pi tool reference](../../docs/pi-tools.md).
 Both CLI operations
 use the selected vault, or accept an explicit `--vault <vault-root>`; search
-does not build an index. A client plugin installation does not necessarily add
-the npm bin to shell `PATH`: use the bin only when
-`command -v obsidian-second-brain` succeeds. Otherwise invoke the currently loaded
+does not build an index. An `obsidian-second-brain` bin on shell `PATH` may
+belong to a different installed copy or version, so do not use it for agent
+work. Always invoke the currently loaded
 package's `scripts/obsidian-second-brain.mjs` by following [the package-relative
 launcher procedure](references/focused-workflows.md#run-the-package-cli). That
 procedure derives an absolute package root from Claude's active skill base
@@ -384,7 +384,9 @@ confirming a different writer is no longer active, explicit trusted recovery is:
 python3 <package-root>/scripts/wiki_lifecycle.py finalize --vault <vault-root> --middleware <skill-dir>/scripts/okf_mw --recover-owner <captured-owner>
 ```
 
-Never infer abandonment from elapsed time or matching bytes. The ownerless
+Recovery prints `clean` when that owner holds no pending work, including when
+the owner string is wrong; confirm with `wiki_lifecycle.py pending --vault
+<vault-root>` before reporting the batch recovered. Never infer abandonment from elapsed time or matching bytes. The ownerless
 capture/record/finalize commands above are the explicit manual workflow, not a
 way to claim frontend-owned captures.
 
@@ -462,9 +464,8 @@ procedure: [references/auto-mode.md](references/auto-mode.md).
 Answer from the wiki first. The wiki has already done the synthesis work. Read
 strategically, not exhaustively:
 
-1. Use `obsidian-second-brain search "query terms" --json` when its bin is on
-   `PATH`; otherwise use the package-relative launcher procedure described
-   above. Rank candidate pages, then read the top-ranked candidates. Search is
+1. Run `search "query terms" --json` through the package-relative launcher
+   procedure described above. Rank candidate pages, then read the top-ranked candidates. Search is
    read-only and does not build the index. Retrieval failures, unavailable CLI,
    empty results, or a missing/corrupt cache direct you to the `index.md`
    hierarchy; use the vault contract's entry point and generated indexes when

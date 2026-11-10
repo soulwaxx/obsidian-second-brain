@@ -13,11 +13,12 @@ permissions. Diagnostic recommendations are findings, not approval to repair.
 
 ## Run the package CLI
 
-The npm `obsidian-second-brain` bin may not be on `PATH` after installing this
-package as a Claude or Pi extension. Use the bin only when
-`command -v obsidian-second-brain` finds it. Otherwise invoke the currently installed
-package's shipped Node launcher; do not install another copy or guess an npm
-cache path.
+An npm `obsidian-second-brain` bin on `PATH` may belong to a different installed
+copy or version than the package the client loaded, so do not use it for agent
+work. Always invoke the currently loaded package's shipped Node launcher; do not
+install another copy or guess an npm cache path. Command examples written as
+`obsidian-second-brain <command>` show the CLI arguments; run them through this
+launcher.
 
 In Claude Code, the loaded skill context supplies its absolute base directory.
 Use that exact active skill directory (not a variable in the Bash environment):
@@ -55,9 +56,8 @@ process contract is documented in [Pi wiki tools](../../../docs/pi-tools.md).
 They do not replace the CLI procedure below, write tools, or evidence-report.
 
 For a question answered by existing wiki knowledge, search first, then read the
-most relevant pages and answer with honest page citations. When the bin is on
-`PATH`, run `obsidian-second-brain search "query terms" --json`; otherwise use
-the package-relative launcher procedure above, replacing `doctor --json` with
+most relevant pages and answer with honest page citations. Use the
+package-relative launcher procedure above, replacing `doctor --json` with
 `search "query terms" --json`.
 
 The CLI resolves the same selected vault as the integration. Use `--vault
@@ -114,8 +114,8 @@ finalization may have published navigation/log changes, recover the batch to
 completion; a reversal requires a separately reviewed inverse change.
 Publication is ordered and recoverable, not simultaneous filesystem-wide
 atomic visibility. Keep concurrent Obsidian edits; recovery refuses drift
-instead of overwriting it. If the CLI bin is not on `PATH`, invoke it through
-the active package launcher described above. Do not stage or commit vault data;
+instead of overwriting it. Invoke the CLI through the active package launcher
+described above. Do not stage or commit vault data;
 Obsidian Git owns sync.
 
 An explicitly selected local source can also be preserved separately as an
@@ -158,8 +158,8 @@ reference that was valid when captured.
 Limits are 20 files, 1 MiB per source, 4 MiB total, and 50 linked pages (each
 up to 16 MiB). Only local UTF-8 text is supported: no web fetch, crawl, PDF,
 audio, video, OCR, or media extraction. Source capture does not promote a
-source into wiki claims or replace ordinary write authorization. If the CLI is
-not on `PATH`, use the active package-relative launcher above.
+source into wiki claims or replace ordinary write authorization. Invoke the CLI
+through the active package-relative launcher above.
 
 ## Optional selected source baselines
 
@@ -250,9 +250,8 @@ linked claims verified. Follow [research discipline](research-discipline.md) and
 
 ## Health
 
-Health checks are read-only. Run `obsidian-second-brain doctor --json` when
-the bin is on `PATH`; otherwise use the package-relative launcher procedure
-above.
+Health checks are read-only. Run `doctor --json` through the package-relative
+launcher procedure above.
 
 It reports config, dependency, selected-vault, cache-exclusion, lifecycle, and
 retrieval diagnostics; it does not repair them. Review any reported paths and

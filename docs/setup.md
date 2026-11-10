@@ -157,6 +157,9 @@ package's Node launcher using the package-relative procedure in the
 [shared workflow reference](../skills/wiki/references/focused-workflows.md#run-the-package-cli).
 That derives an absolute package root from Claude's loaded skill base directory
 or Pi's loaded skill path, without relying on caller cwd or guessing an npm cache path.
+The bin on `PATH` is a manual convenience and may be a different installed
+version than the loaded plugin or extension; agents always use the
+package-relative launcher.
 Both routes resolve the selected vault consistently with the integration.
 Search reports structured results, fallback, and freshness without rebuilding
 an index. Doctor reports
@@ -310,13 +313,18 @@ and plugin hooks without creating a local copy.
 
 The entry point resolves the vault with the loaded package's read-only doctor,
 passes the resolved vault/config to the specialist, and explicitly requests
-`run_in_background: false` for reads and writes. This avoids client defaults
-that launch background agents whose Stop/SubagentStop hooks defer finalization.
+`run_in_background: false` for reads and writes. Interactive Claude Code
+2.1.321 still launched the specialist in the background during live validation;
+the entry point then waits for its completion notification, and a write's
+finalization completes at the parent session's Stop.
 The specialist verifies the selection before reading or writing; config discovery
 must honor `OBSIDIAN_AGENT_CONFIG` rather than opening the default path by hand.
 Pending work still defers while background tasks or session crons run; the hooks
 do not infer abandonment or recover another writer. With no content or retrieval
 obligation, that background-task check is read-only and does not block Stop.
+After background tasks settle, a session's Stop also recovers captures made by
+its own subagents (owner `claude:<session>:<agent>`). A Stop whose session owns
+no pending work reports clean and leaves another writer's pending work unchanged.
 Direct agent mentions do not receive this entry point's foreground instruction;
 request foreground execution explicitly when using those routes.
 Direct `@agent-obsidian-second-brain:wiki-vault` mentions and other wiki skills
@@ -324,12 +332,15 @@ bypass this entry point and do not apply its preference; ask explicitly for a
 native per-invocation effort when using those routes. A resumed agent retains
 its original effort, so start a fresh invocation after changing the preference.
 Clients may cache plugin options for the session: after editing settings outside
-`/config`, restart the session before expecting a new value. Immediate `/config`
-refresh remains client-dependent and needs live verification.
+`/config`, restart the session before expecting a new value. In live validation
+with Claude Code 2.1.321, a `/config` change applied to the next entry-point
+invocation in the same session.
 
 `CLAUDE_CODE_EFFORT_LEVEL` overrides both agent frontmatter and per-invocation
 effort and also affects the parent. It is not an agent-scoped configuration
-method. Policy caps and model limitations can change the applied level; do not
+method. While it is set, Claude Code 2.1.321+ removes the `Agent` tool's `effort`
+parameter; the entry point then launches without `effort` and reports that the
+environment variable controls effort instead of the saved preference. Policy caps and model limitations can change the applied level; do not
 change global settings or copy an agent to work around them. Older clients or
 an unavailable effort parameter must produce an explicit limitation instead of
 silently substituting session-wide settings.

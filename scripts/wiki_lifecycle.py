@@ -490,6 +490,14 @@ def finalize(args: argparse.Namespace) -> None:
     sync = middleware / "sync.py"
     owner = args.recover_owner or args.owner or "manual"
     recover_active = args.recover_owner is not None or (args.owner is None and args.recover_owner is None)
+    recover_children = getattr(args, "recover_children", False)
+    if recover_children and args.recover_owner is None:
+        raise LifecycleError("--recover-children requires --recover-owner")
+
+    def in_group(candidate: str) -> bool:
+        # A recovering session also owns its subagents' captures (OWNER:<agent>).
+        return candidate == owner or (recover_children and candidate.startswith(owner + ":"))
+
     with locked(lock_path):
         state = load_state(state_path, vault)
         all_pending = state["pending"]
@@ -497,7 +505,7 @@ def finalize(args: argparse.Namespace) -> None:
             obligation = state.get("retrieval")
             # An unrelated read-only session must not turn shutdown into repair.
             retry_token = (obligation.get("token") if obligation and args.retrieval_script
-                           and (owner == "manual" or owner == obligation.get("owner")) else None)
+                           and (owner == "manual" or in_group(obligation.get("owner", ""))) else None)
             if not retry_token:
                 print("clean")
                 return
@@ -517,29 +525,35 @@ def finalize(args: argparse.Namespace) -> None:
             return captures if isinstance(captures, dict) and captures else {"manual": {"legacy": "active"}}
 
         foreign = sorted({capture_owner for entry in all_pending.values()
-                          for capture_owner in captures_for(entry) if capture_owner != owner})
-        if foreign:
+                          for capture_owner in captures_for(entry) if not in_group(capture_owner)})
+        owned = {key: entry for key, entry in all_pending.items()
+                 if any(in_group(capture_owner) for capture_owner in captures_for(entry))}
+        # A session-end recovery that owns nothing leaves foreign work untouched
+        # without blocking. Readers (--owner) and the manual CLI still refuse.
+        if foreign and (owned or args.recover_owner is None):
             raise LifecycleError(
                 "pending wiki work belongs to another writer session; it was not changed; "
                 f"owner(s): {', '.join(foreign)}"
             )
-        owned = {key: entry for key, entry in all_pending.items() if owner in captures_for(entry)}
         if not owned:
             print("clean")
             return
 
         recovered = False
         for entry in owned.values():
-            owner_tools = captures_for(entry).get(owner, {})
-            active = [tool for tool, status in owner_tools.items() if status == "active"]
-            if active and not recover_active:
-                raise LifecycleError(
-                    "writer has an active prewrite capture; dependent navigation is blocked until its tool result or explicit owner recovery"
-                )
-            for tool in active:
-                owner_tools[tool] = "settled"
-                recovered = True
-            entry["captures"] = captures_for(entry)
+            captures = captures_for(entry)
+            for capture_owner, owner_tools in captures.items():
+                if not in_group(capture_owner):
+                    continue
+                active = [tool for tool, status in owner_tools.items() if status == "active"]
+                if active and not recover_active:
+                    raise LifecycleError(
+                        "writer has an active prewrite capture; dependent navigation is blocked until its tool result or explicit owner recovery"
+                    )
+                for tool in active:
+                    owner_tools[tool] = "settled"
+                    recovered = True
+            entry["captures"] = captures
         if recovered:
             atomic_json(state_path, state)
 
@@ -734,6 +748,8 @@ def main() -> int:
     p.add_argument("--retrieval-script")
     p.add_argument("--owner", help="settle only completed work owned by this session")
     p.add_argument("--recover-owner", help="explicitly recover this ended writer session's missing tool results")
+    p.add_argument("--recover-children", action="store_true",
+                   help="with --recover-owner, also recover captures owned by OWNER:<child> subagents")
     for name in ("diagnose", "pending"):
         p = sub.add_parser(name)
         p.add_argument("--vault", required=True)
