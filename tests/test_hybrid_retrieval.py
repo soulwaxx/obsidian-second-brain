@@ -130,13 +130,13 @@ class HybridRetrievalTests(unittest.TestCase):
         text = page.read_text(encoding="utf-8")
         chunk = {"text": "Title: Semantic Target\\n" + text, "start": 0, "end": len(text),
                  "sourceHash": hashlib.sha256(text.encode()).hexdigest(), "vector": [0.0, 1.0],
-                 "strategy": "semantic-adjacent-cosine-v1"}
+                 "strategy": CHUNKS.ALGORITHM}
         lexical_path = self.vault / "wiki/lexical.md"
         lexical_text = lexical_path.read_text(encoding="utf-8")
         lexical_chunk = {"text": "Title: Lexical\\n" + lexical_text, "start": 0, "end": len(lexical_text),
                          "sourceHash": hashlib.sha256(lexical_text.encode()).hexdigest(), "vector": [1.0, 0.0],
-                         "strategy": "semantic-adjacent-cosine-v1"}
-        settings = {"algorithm": "semantic-adjacent-cosine-v1", "maxChars": 1800, "targetChars": 1000}
+                         "strategy": CHUNKS.ALGORITHM}
+        settings = {"algorithm": CHUNKS.ALGORITHM, "maxChars": 1800, "targetChars": 1000}
         cache = {"version": 1, "pages": {
             "wiki/semantic-target.md": {"contentHash": hashlib.sha256(text.encode()).hexdigest(), "model": "fixture",
                 "modelDigest": "digest", "settings": settings, "chunks": [chunk], "inputScheme": CHUNKS.INPUT_SCHEME},
