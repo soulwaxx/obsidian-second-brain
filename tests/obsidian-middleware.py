@@ -753,4 +753,23 @@ with tempfile.TemporaryDirectory() as temp:
     assert not (topic / "index.md").exists()
     assert "topic/index.md" not in root_index.read_text()
 
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp) / "vault"
+    topics = root / "wiki" / "topics"
+    topics.mkdir(parents=True)
+    (topics / "C++ Build (Notes).md").write_text("---\ntype: note\n---\n# Build\n")
+    (topics / "plain.md").write_text("---\ntype: note\n---\n# Plain\n")
+    (topics / "caller.md").write_text(
+        "---\ntype: note\n---\n# Caller\n\n"
+        "[C++ Build (Notes)](<C++ Build (Notes).md>)\n"
+        "[Titled](<C++ Build (Notes).md> \"t\")\n"
+        "[Missing](<Missing (x).md>)\n"
+        "[Plain](plain.md)\n"
+    )
+    run(middleware / "sync.py", root)
+    report = json.loads(run(middleware / "lint.py", root).stdout)
+    assert [(entry["target"], entry["reason"]) for entry in report["dead_links"]] == [
+        ("Missing (x).md", "target-not-found")
+    ], report["dead_links"]
+
 print("wiki middleware boundary regressions PASS")

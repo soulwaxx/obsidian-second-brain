@@ -38,6 +38,7 @@ const snapshot = (directory) => Object.fromEntries(fs.readdirSync(directory, { r
 const observed = [];
 let observedTools = [];
 let fixtureAgentEffort;
+let agentSchemaHasEffort;
 let fixtureWrites = false;
 let fixtureResolve = false;
 let doctorSent = false;
@@ -65,8 +66,11 @@ const server = createServer((req, res) => {
     const events = [["message_start", { type: "message_start", message: { id: `msg_${requestNumber}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }]];
     if (agentTool && !delegationSent) {
       delegationSent = true;
+      // Inject effort only when the client advertises it; Claude Code drops the
+      // property from the Agent schema while CLAUDE_CODE_EFFORT_LEVEL is set.
+      agentSchemaHasEffort = Object.hasOwn(agentTool.input_schema?.properties ?? {}, "effort");
       const agentInput = { subagent_type: "obsidian-second-brain:wiki-vault", run_in_background: false, description: "Effort contract fixture", prompt: fixtureWrites ? "Create wiki/foreground-write.md with valid note frontmatter." : "Read the configured wiki contract and report its title." };
-      if (fixtureAgentEffort === "low") agentInput.effort = "low";
+      if (fixtureAgentEffort === "low" && agentSchemaHasEffort) agentInput.effort = "low";
       events.push(["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_effort_fixture", name: agentTool.name, input: {} } }]);
       events.push(["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(agentInput) } }]);
       events.push(["content_block_stop", { type: "content_block_stop", index: 0 }]);
@@ -117,6 +121,7 @@ async function runScenario({ label, agentEffort, envConflict = false, expectedCh
   observed.length = 0;
   observedTools = [];
   fixtureAgentEffort = agentEffort;
+  agentSchemaHasEffort = undefined;
   fixtureWrites = writePage;
   fixtureResolve = resolveSelection;
   doctorSent = false;
@@ -164,6 +169,15 @@ async function runScenario({ label, agentEffort, envConflict = false, expectedCh
   assert.match(JSON.stringify(childRequests[0].system), /OBSIDIAN_AGENT_CONFIG/, `${label}: child receives the override-aware selection contract`);
   assert.match(JSON.stringify(childRequests[0].system), /doctor --json/, `${label}: child receives resolver verification instructions`);
   assert.match(stdout, /Fixture complete/);
+  assert.equal(agentSchemaHasEffort, !envConflict, `${label}: Agent tool schema ${envConflict ? "omits" : "includes"} effort`);
+  const delegated = parentRequests.flatMap((request) => request.messages ?? [])
+    .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+    .find((part) => part.type === "tool_use" && part.id === "toolu_effort_fixture");
+  assert.ok(delegated, `${label}: parent echoed the Agent tool_use`);
+  assert.equal(delegated.input.effort, agentEffort && !envConflict ? agentEffort : undefined, `${label}: Agent input effort`);
+  if (envConflict) {
+    assert.match(JSON.stringify(parentRequests[0].messages), /printenv CLAUDE_CODE_EFFORT_LEVEL/, `${label}: skill's environment-override branch reached the parent`);
+  }
   if (writePage) {
     assert.ok(writeSent, "scripted foreground specialist dispatched Write");
     assert.ok(fs.existsSync(path.join(vault, "wiki", "foreground-write.md")), "specialist wrote the page");
@@ -187,14 +201,14 @@ async function runScenario({ label, agentEffort, envConflict = false, expectedCh
     assert.equal(report.config.valid, true);
     assert.deepEqual([snapshot(vault), snapshot(wrongVault)], beforeSelection, "selection leaves both vaults byte/mtime-identical");
   }
-  console.log(`PASS ${label}: parent high; child effort ${expectedChildEffort}; actual packaged agent via isolated local provider.`);
+  console.log(`PASS ${label}: parent high; Agent schema effort ${agentSchemaHasEffort ? "present" : "absent"}; Agent input effort ${delegated.input.effort ?? "omitted"}; child effort ${expectedChildEffort}; actual packaged agent via isolated local provider.`);
 }
 
 try {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   await runScenario({ label: "explicit low", agentEffort: "low", expectedChildEffort: "low" });
   await runScenario({ label: "inherited effort", expectedChildEffort: "high" });
-  await runScenario({ label: "environment override", agentEffort: "low", envConflict: true, expectedChildEffort: "high" });
+  await runScenario({ label: "environment override CLAUDE_CODE_EFFORT_LEVEL=high with saved low launches without effort", agentEffort: "low", envConflict: true, expectedChildEffort: "high" });
   await runScenario({ label: "foreground specialist write and hook finalization", agentEffort: "low", expectedChildEffort: "low", writePage: true });
   await runScenario({ label: "specialist resolves config override instead of conflicting default", expectedChildEffort: "high", resolveSelection: true });
   console.log("Claude native effort contract PASS: scripted fake-provider requests verify runtime effort dispatch only; they do not test model compliance or live-provider acceptance.");

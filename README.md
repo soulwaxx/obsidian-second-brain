@@ -203,7 +203,9 @@ second copy: invoke the active package's Node launcher using its package-relativ
 path. The [shared workflow reference](skills/wiki/references/focused-workflows.md#run-the-package-cli)
 shows how to derive an absolute package root from Claude's loaded skill base
 directory or Pi's loaded skill location; this works from any caller cwd and selects the
-version already loaded by that client.
+version already loaded by that client. A bin on `PATH` is a manual convenience
+and may be a different installed version than the loaded plugin or extension;
+agents always use the package-relative launcher.
 
 Search uses the selected vault and does not rebuild the index; doctor reports
 configuration, dependencies, vault, cache-exclusion, lifecycle, and retrieval

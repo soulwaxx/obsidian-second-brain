@@ -69,14 +69,16 @@ grep -Fq '**Creation**' "$vault/wiki/log.md"
 [ "$(git -C "$vault" rev-parse HEAD)" = "$base_head" ]
 
 # A different reader's Stop and navigation read cannot consume the writer's
-# active prewrite snapshot; writer settlement retains Update classification.
+# active prewrite snapshot; the read-only reader's Stop is clean, not blocked.
+# Writer settlement retains Update classification.
 capture_with_prewrite "$vault/wiki/topic/new page.md"
 state_before_reader=$(cat "$vault/.vault-meta/lifecycle/state.json")
 stop_result=$(cd "$caller" && printf '{"session_id":"%s","background_tasks":[{"id":"still-running"}],"session_crons":[]}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
 printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("deferred until they settle"))' >/dev/null
 [ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$state_before_reader" ]
 stop_result=$(cd "$caller" && printf '%s' '{"session_id":"reader-fixture","background_tasks":[],"session_crons":[]}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
-printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("another writer session"))' >/dev/null
+[ "$stop_result" = clean ]
+[ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$state_before_reader" ]
 read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/topic/index.md" '{session_id:"reader-fixture",tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
 printf '%s' "$read_result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
 [ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$state_before_reader" ]
@@ -109,6 +111,37 @@ postwrite_captured "$vault/wiki/fresh/first-page.md"
 [ -f "$vault/wiki/fresh/index.md" ]
 read_result=$(cd "$caller" && jq -nc --arg p "$vault/wiki/fresh/index.md" '{session_id:"fresh-reader",tool_name:"Read",tool_input:{file_path:$p}}' | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" finalize-read)
 [ "$read_result" = clean ]
+
+# A background specialist's captures (claude:<session>:<agent>) are recovered by
+# the parent session's settled Stop, never while background tasks still run.
+specialist_page="$vault/wiki/topic/specialist.md"
+specialist_input=$(jq -nc --arg p "$specialist_page" --arg session "$TEST_SESSION" '{session_id:$session,agent_id:"specialist-agent",tool_use_id:"specialist-tool",tool_name:"Write",tool_input:{file_path:$p}}')
+result=$(cd "$caller" && printf '%s' "$specialist_input" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)
+[ -z "$result" ]
+cat >"$specialist_page" <<'EOF'
+---
+type: note
+title: Specialist Page
+---
+# Specialist Page
+EOF
+result=$(cd "$caller" && printf '%s' "$specialist_input" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" postwrite)
+[ -z "$result" ]
+jq -e --arg owner "claude:$TEST_SESSION:specialist-agent" '[.pending[].captures | has($owner)] | any' "$vault/.vault-meta/lifecycle/state.json" >/dev/null
+specialist_state=$(cat "$vault/.vault-meta/lifecycle/state.json")
+stop_result=$(cd "$caller" && printf '{"session_id":"%s","background_tasks":[{"id":"specialist"}],"session_crons":[]}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+printf '%s' "$stop_result" | jq -e '.decision == "block" and (.reason | contains("deferred until they settle"))' >/dev/null
+[ "$(cat "$vault/.vault-meta/lifecycle/state.json")" = "$specialist_state" ]
+if grep -Fq '(./topic/specialist.md)' "$vault/wiki/log.md"; then
+  echo 'parent Stop finalized a running background specialist batch' >&2; exit 1
+fi
+stop_result=$(cd "$caller" && printf '{"session_id":"%s","background_tasks":[],"session_crons":[]}' "$TEST_SESSION" | OBSIDIAN_VAULT_PATH=$vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" stop)
+if printf '%s' "$stop_result" | grep -Fq '"decision"'; then
+  echo "parent Stop blocked its settled background specialist batch: $stop_result" >&2; exit 1
+fi
+jq -e '.pending == {}' "$vault/.vault-meta/lifecycle/state.json" >/dev/null
+grep -F '**Creation**' "$vault/wiki/log.md" | grep -Fq '(./topic/specialist.md)'
+grep -Fq '(./specialist.md)' "$vault/wiki/topic/index.md"
 
 # Reserved files at any depth/case, traversal, vault settings/source, and unsafe symlinks are denied.
 for target in "$vault/wiki/index.md" "$vault/wiki/topic/INDEX.MD" "$vault/wiki/topic/Log.md" \

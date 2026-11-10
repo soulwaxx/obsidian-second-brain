@@ -106,8 +106,12 @@ _BLOCK_ID_RE = re.compile(
     r"(?:^|[ \t])\^([A-Za-z0-9][A-Za-z0-9_-]*)[ \t]*$", re.MULTILINE
 )
 _WIKILINK_RE = re.compile(r"(?P<embed>!)?\[\[(?P<body>[^\]\r\n]+?)\]\]")
+# CommonMark angle-bracket destinations may contain ")"; try them before the
+# plain form, which stops at the first ")".
 _MARKDOWN_LINK_RE = re.compile(
-    r"(?P<embed>!)?\[(?P<label>(?:\\.|[^\]\r\n])*)\]\((?P<destination>[^\r\n)]*)\)"
+    r"(?P<embed>!)?\[(?P<label>(?:\\.|[^\]\r\n])*)\]\((?P<destination>"
+    r"[ \t]*<[^<>\r\n]*>(?:[ \t]+(?:\"[^\"\r\n]*\"|'[^'\r\n]*'))?[ \t]*"
+    r"|[^\r\n)]*)\)"
 )
 _HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")

@@ -37,8 +37,21 @@ report a write complete while validation or finalization is unresolved.
 For `inherit`, omit the `effort` parameter.
 For any other accepted value, pass that value as the invocation's `effort`.
 Do not fork, replace the agent definition, pin a model, or change session effort.
-If the tool does not support the requested effort parameter, stop and report
-that Claude Code 2.1.292+ is required; never silently run at a different effort.
+
+If the `Agent` tool has no `effort` parameter, check whether
+`CLAUDE_CODE_EFFORT_LEVEL` is set (for example, `printenv CLAUDE_CODE_EFFORT_LEVEL`).
+Claude Code removes the parameter while that variable is set. If it is set,
+launch without `effort` and report that the environment override
+`CLAUDE_CODE_EFFORT_LEVEL=<value>` controls effort instead of the plugin
+preference. Only if it is unset, stop and report that Claude Code 2.1.292+ is
+required. Either way, never silently run at a different effort.
+
+Interactive Claude Code may still run the specialist in the background despite
+`run_in_background: false`. Then wait for its completion notification before
+reporting. A write's lifecycle finalization then completes at this session's
+Stop, after your reply, which recovers this session's subagent captures. Until
+doctor shows no pending work, report the write as made but pending
+finalization at session Stop; do not call it complete.
 
 The native invocation retains the packaged agent's bundled wiki instructions
 and plugin hooks. Keep one wiki writer at a time. Pass only the selected task

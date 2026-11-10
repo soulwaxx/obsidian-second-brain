@@ -62,7 +62,7 @@ save = (ROOT / 'skills/wiki-save/SKILL.md').read_text().lower()
 assert 'conversation is not an independent external source' in save
 
 transport = (ROOT / 'skills/wiki/references/focused-workflows.md').read_text()
-for boundary in ('SKILL_DIR', 'SKILL_FILE', 'scripts/obsidian-second-brain.mjs', 'command -v', 'not a variable in the Bash environment'):
+for boundary in ('SKILL_DIR', 'SKILL_FILE', 'scripts/obsidian-second-brain.mjs', 'different installed', 'not a variable in the Bash environment'):
     assert boundary in transport, boundary
 claude_fallback = transport.split('In Claude Code', 1)[1].split('```', 1)[1].split('```', 1)[0]
 assert 'CLAUDE_PLUGIN_ROOT' not in claude_fallback
@@ -73,6 +73,17 @@ for name in ('wiki-query', 'wiki-health'):
 for document in ('README.md', 'docs/setup.md', 'skills/wiki/SKILL.md'):
     text = (ROOT / document).read_text()
     assert 'package-relative' in text.lower(), document
+# A PATH bin may belong to another installed copy/version; agents must use the
+# loaded package's launcher instead of preferring whatever is on PATH.
+for path in [*ROOT.glob('skills/**/*.md'), *ROOT.glob('agents/**/*.md')]:
+    body = ' '.join(path.read_text().split())
+    assert 'command -v obsidian-second-brain' not in body, path
+    assert not re.search(r'\b(?:is|not) on `PATH`', body), path
+for document in ('skills/wiki/SKILL.md', 'skills/wiki/references/focused-workflows.md',
+                 'skills/wiki-query/SKILL.md', 'skills/wiki-health/SKILL.md'):
+    text = ' '.join((ROOT / document).read_text().lower().split())
+    assert 'package-relative launcher' in text, document
+    assert 'different installed copy' in text, document
 
 entry_path = ROOT / 'skills/wiki/SKILL.md'
 entry = entry_path.read_text().lower()
@@ -304,5 +315,24 @@ with open(os.environ["PYTHON_CALLS"], "a", encoding="utf-8") as out:
         assert invocations[0] == ['PACKAGE_DIR/scripts/obsidian-second-brain.py', 'build', '--vault', 'VAULT_ROOT', '--semantic-chunks', '--ollama-model', 'MODEL'], (document, invocations)
         assert invocations[1] == ['PACKAGE_DIR/scripts/retrieve.py', 'query terms', '--vault', 'VAULT_ROOT', '--hybrid', '--ollama-model', 'MODEL'], (document, invocations)
         assert all('\\\\' not in arg for invocation in invocations for arg in invocation)
+
+# Claude Code removes the Agent tool's `effort` property while
+# CLAUDE_CODE_EFFORT_LEVEL is set, so a missing parameter is not proof of an
+# old client. Only the unset case may stop with the version requirement.
+delegation_text = (ROOT / 'skills/wiki-agent/SKILL.md').read_text()
+delegation = ' '.join(delegation_text.split())
+missing = next(' '.join(paragraph.split()) for paragraph in delegation_text.split('\n\n')
+               if 'If the `Agent` tool has no `effort` parameter' in ' '.join(paragraph.split()))
+for boundary in ('printenv CLAUDE_CODE_EFFORT_LEVEL', 'If it is set, launch without `effort`',
+                 'CLAUDE_CODE_EFFORT_LEVEL=<value>', 'instead of the plugin preference',
+                 'Only if it is unset', 'Claude Code 2.1.292+ is required',
+                 'never silently run at a different effort'):
+    assert boundary in missing, boundary
+assert missing.index('If it is set') < missing.index('Claude Code 2.1.292+ is required')
+for boundary in ('may still run the specialist in the background', 'wait for its completion notification',
+                 "finalization then completes at this session's Stop, after your reply",
+                 'Until doctor shows no pending work', 'pending finalization at session Stop',
+                 'do not call it complete'):
+    assert boundary in delegation, boundary
 
 print('Focused wiki skill contracts PASS')
