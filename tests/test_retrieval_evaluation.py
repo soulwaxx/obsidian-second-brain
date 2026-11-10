@@ -255,6 +255,90 @@ class EvaluationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "corpusManifestHash"):
                 E.compare_reports(baseline, candidate)
 
+    def test_chunk_settings_comparison_fixes_model_and_reports_evidence_changes(self):
+        import copy
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            baseline = E.evaluate(vault, gold)
+            baseline["provenance"]["modelDigest"] = "same-model"
+            baseline["provenance"]["caches"]["chunks.json"] = {"embeddingInputScheme": "fixture",
+                "settings": {"algorithm": "fixture", "maxChars": 1800, "targetChars": 1000}}
+            for row in baseline["queries"]:
+                row["semanticStatus"] = "complete"
+                row["methods"]["rrf"] = copy.deepcopy(row["methods"]["bm25"])
+                row["methods"]["rrf"]["evidence"].update({"answerHit": 0, "fullSpanAnswerHit": 0})
+            candidate = copy.deepcopy(baseline)
+            candidate["provenance"]["caches"]["chunks.json"]["settings"]["targetChars"] = 1600
+            candidate["queries"][0]["methods"]["rrf"]["evidence"]["fullSpanAnswerHit"] = 1
+            with self.assertRaisesRegex(ValueError, "settings"):
+                E.compare_reports(baseline, candidate)
+            compared = E.compare_reports(baseline, candidate, vary="chunk-settings")
+            self.assertEqual(compared["vary"], "chunk-settings")
+            self.assertEqual(compared["evidenceChanges"],
+                             [{"id": "archive", "language": "en", "fullSpanAnswerHit": [0, 1]}])
+            other_model = copy.deepcopy(candidate)
+            other_model["provenance"]["modelDigest"] = "other-model"
+            with self.assertRaisesRegex(ValueError, "model"):
+                E.compare_reports(baseline, other_model, vary="chunk-settings")
+            with self.assertRaisesRegex(ValueError, "differing settings"):
+                E.compare_reports(baseline, copy.deepcopy(baseline), vary="chunk-settings")
+            with self.assertRaisesRegex(ValueError, "vary"):
+                E.compare_reports(baseline, candidate, vary="fusion")
+
+    def test_full_span_answer_is_reported_beside_exposed_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "wiki").mkdir()
+            padding = "Background notes without the answer. " * 15
+            answer = "Current value is 20."
+            source = padding + answer
+            (vault / "wiki/value.md").write_text(source)
+            case = {"intent": "current", "queries": {"en": "current value", "it": "valore attuale"},
+                    "targets": [{"path": "wiki/value.md", "evidence": [
+                        {"start": 0, "end": len(padding), "text": padding, "label": "neither", "supportsAnswer": False},
+                        {"start": len(padding), "end": len(source), "text": answer, "label": "current", "supportsAnswer": True}]}]}
+            excerpt, _ = E.CLI.INDEX_MODULE.projection.render_span(source, 0, len(source))
+            result = {"path": "wiki/value.md", "charStart": 0, "charEnd": len(source), "excerpt": excerpt}
+            score = E.evidence_metrics([result], case, vault)
+            self.assertNotIn(answer, excerpt)
+            self.assertEqual((score["answerHit"], score["ku@1"]), (0, 0))
+            self.assertEqual((score["fullSpanAnswerHit"], score["fullSpanKu@1"]), (1, 1))
+            short = {"path": "wiki/value.md", "charStart": 0, "charEnd": len(padding) + 5,
+                     "excerpt": E.CLI.INDEX_MODULE.projection.render_span(source, 0, len(padding) + 5)[0]}
+            self.assertIsNone(E.evidence_metrics([short], case, vault)["fullSpanAnswerHit"],
+                              "a truncated answer span stays unjudgeable")
+
+    def test_required_pages_need_every_page_within_k(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            _, gold = self.fixture(vault)
+            second = "# Second\n\nRelated value is 30.\n"
+            (vault / "wiki/second.md").write_text(second)
+            case = gold["intents"][0]
+            case["targets"].append({"path": "wiki/second.md", "hash": E.digest(second.encode()), "evidence": [
+                {"start": 0, "end": len(second), "text": second, "label": "current", "supportsAnswer": True}]})
+            for invalid in [["wiki/archive.md"], ["wiki/archive.md", "wiki/missing.md"],
+                            ["wiki/archive.md", "wiki/archive.md"]]:
+                case["requiredPages"] = invalid
+                with self.assertRaisesRegex(ValueError, "required pages"):
+                    E.validate_gold(gold, vault)
+            case["requiredPages"] = ["wiki/archive.md", "wiki/second.md"]
+            E.validate_gold(gold, vault)
+            E.CLI.INDEX_MODULE.build(vault)
+            results = [{"path": p, "score": 1, "lineStart": 1, "lineEnd": 1, "excerpt": ""}
+                       for p in ["wiki/archive.md", "wiki/other.md", "wiki/second.md"]]
+            response = {"results": results, "fallback": None, "freshness": "current-by-hash"}
+            with patch.object(E.CLI, "search", return_value=response):
+                report = E.evaluate(vault, gold)
+            self.assertEqual(report["queries"][0]["methods"]["bm25"]["requiredMetrics"],
+                             {"allRequired@1": 0, "allRequired@3": 1, "allRequired@10": 1})
+            self.assertEqual(report["queries"][0]["methods"]["bm25"]["metrics"]["hit@1"], 1)
+            summary = report["summary"]["en"]["all"]["bm25"]["required"]
+            self.assertEqual(summary, {"queries": 1, "means": {"allRequired@1": 0, "allRequired@3": 1, "allRequired@10": 1}})
+            self.assertIsNone(E.required_metrics(results, None, [1]))
+
     def test_drift_unsafe_paths_and_unpaired_queries_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)

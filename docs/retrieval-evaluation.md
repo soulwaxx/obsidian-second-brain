@@ -75,6 +75,9 @@ Gold is a JSON object with `version: 1`, a nonempty `revision`, and nonempty
   surrounding context, not merely a matching current-fact substring. Preserve
   ambiguity and unmarked contradictions rather than inventing factual currency.
 - Optional `canonicalPages` must be a subset of acceptable target paths.
+- Optional `requiredPages` marks a multi-page intent: two or more distinct
+  acceptable targets that an answer needs together. Without it, targets remain
+  alternatives.
 
 Source hashes, paths and exact span text are validated; drift is rejected rather
 than scored as a ranking regression. Schema validity does not establish judgment
@@ -103,8 +106,15 @@ is reported for each fixed shortlist.
   A bounded positive set is not an exhaustive relevance census.
 - `mrr@cutoff`: reciprocal rank of the first acceptable page within the cutoff,
   or zero. Canonical-page metrics are reported separately.
+- `allRequired@k`: for intents with `requiredPages`, every required page occurs
+  within the first k results. Reported under `requiredMetrics` and summarized
+  separately; intents without required pages are excluded.
 - `ku@1` and `answerHit`: reviewed exposed-answer evidence. Unjudgeable results
   are `null` and excluded from judged means, not counted as invented accuracy.
+- `fullSpanKu@1` and `fullSpanAnswerHit`: the same judgments over each whole
+  returned span in the query's view, independent of the excerpt budget. They
+  measure whether chunk selection found the answer; the exposed metrics measure
+  whether the search output showed it. Compare both when changing chunk sizes.
 - Full-source-span and visible-excerpt labels are separate. A correction beyond
   the excerpt cutoff cannot earn exposed-evidence credit. Stale-before-current
   and mixed-before-current observations are distinct.
@@ -116,9 +126,14 @@ reported. Bootstrap pooling pairs by intent: translated copies are not
 independent samples. Report sample/topic dependence and power limitations.
 
 The internal Python `compare_reports(baseline, candidate, method="rrf",
-split="held-out")` scorer rejects incompatible or incomplete comparisons. It
-requires matched gold/corpus/source/input/projection/settings/candidates/cutoff,
-verified model identity and current-by-hash coverage. It never promotes defaults.
+split="held-out", vary="model")` scorer rejects incompatible or incomplete
+comparisons. It requires matched gold/corpus/source/input/projection/candidates/cutoff,
+verified model identity and current-by-hash coverage. `vary="model"` also
+requires matched chunk settings. `vary="chunk-settings"` instead requires the
+same model name and digest and differing chunk settings, for example a
+`--chunk-target-chars` arm built by `bm25-index.py build --semantic-chunks` on a
+separate copy of the frozen snapshot. Both list per-query `answerHit` and
+`fullSpanAnswerHit` changes. It never promotes defaults.
 Any model comparison must disclose differing quantization/runtime and intrinsic
 model-dependent grouping even when raw input hashes/settings match.
 

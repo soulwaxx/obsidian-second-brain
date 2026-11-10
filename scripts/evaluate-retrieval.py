@@ -96,6 +96,10 @@ def validate_gold(gold, vault):
         canonical = case.get("canonicalPages", [])
         if not isinstance(canonical, list) or any(not isinstance(p, str) for p in canonical) or not set(canonical) <= set(paths):
             raise ValueError("canonical pages must also be acceptable targets")
+        required = case.get("requiredPages", [])
+        if (not isinstance(required, list) or any(not isinstance(p, str) for p in required)
+                or len(set(required)) != len(required) or len(required) == 1 or not set(required) <= set(paths)):
+            raise ValueError("required pages must be two or more distinct acceptable targets")
 
 
 def page_metrics(results, acceptable, ks, cutoff):
@@ -109,6 +113,14 @@ def page_metrics(results, acceptable, ks, cutoff):
     rank = next((i for i, p in enumerate(pages[:cutoff], 1) if p in targets), None)
     metrics[f"mrr@{cutoff}"] = 1 / rank if rank else 0
     return metrics
+
+
+def required_metrics(results, required, ks):
+    """Multi-page intents: every required page must appear within the first k."""
+    if not required:
+        return None
+    pages = [r["path"] for r in results]
+    return {f"allRequired@{k}": int(set(required) <= set(pages[:k])) for k in ks}
 
 
 def combine_labels(labels):
@@ -161,15 +173,33 @@ def judged_context(source, start, end, spans):
     return combine_labels(labels)
 
 
+def supported_answer(case, label, spans):
+    """Human judgments, not substring heuristics, determine usefulness. A
+    current substring in mixed/unjudgeable context does not establish KU."""
+    supporting = any(s["supportsAnswer"] and s["label"] in {"current", "stale", "mixed"} for s in spans)
+    reviewed_history = any(s["supportsAnswer"] and s["label"] == "mixed" for s in spans)
+    return supporting and (label in {"current", "stale", "mixed"} if case["intent"] == "historical"
+                           else label == "current" or (label == "mixed" and reviewed_history))
+
+
+def _hit(answers, labels):
+    return 1 if any(answers) else None if "unjudgeable" in labels else 0
+
+
 def evidence_metrics(results, case, vault):
     targets = {t["path"]: t for t in case["targets"]}
     full, exposed, answers = [], [], []
+    # Whole returned span in the query's view: what a span read would show,
+    # independent of the excerpt budget. Kept apart from exposed evidence.
+    span_labels, span_answers = [], []
     for result in results:
         target = targets.get(result["path"])
         if not target:
             full.append("unjudgeable")
             exposed.append("unjudgeable")
             answers.append(False)
+            span_labels.append("unjudgeable")
+            span_answers.append(False)
             continue
         source = (vault / result["path"]).read_bytes().decode("utf-8")
         if "charStart" in result:
@@ -188,18 +218,19 @@ def evidence_metrics(results, case, vault):
                    and " ".join(view[s["start"]:s["end"]].split()) in result["excerpt"]] if expected == result["excerpt"] else []
         full.append(judged_context(source, start, end, target["evidence"]))
         exposed.append(judged_context(view, start, visible_end, target["evidence"]) if expected == result["excerpt"] else "unjudgeable")
-        # Human judgments, not substring heuristics, determine usefulness. A
-        # current substring in mixed/unjudgeable context does not establish KU.
-        supporting = any(s["supportsAnswer"] and s["label"] in {"current", "stale", "mixed"} for s in visible)
-        reviewed_history = any(s["supportsAnswer"] and s["label"] == "mixed" for s in visible)
-        answers.append(supporting and (exposed[-1] in {"current", "stale", "mixed"} if case["intent"] == "historical"
-                                      else exposed[-1] == "current" or (exposed[-1] == "mixed" and reviewed_history)))
+        answers.append(supported_answer(case, exposed[-1], visible))
+        inside = [s for s in spans if (bounds := span_bounds(view, s)) is not None
+                  and start <= bounds[0] and bounds[1] <= end]
+        span_labels.append(judged_context(view, start, end, spans))
+        span_answers.append(supported_answer(case, span_labels[-1], inside))
     stale = next((i for i, label in enumerate(exposed) if label == "stale"), None)
     mixed = next((i for i, label in enumerate(exposed) if label == "mixed"), None)
     current = next((i for i, label in enumerate(exposed) if label == "current"), None)
     return {"fullSpanLabels": full, "exposedLabels": exposed,
             "ku@1": (None if exposed and exposed[0] == "unjudgeable" else int(bool(answers and answers[0]))) if case["intent"] == "current" else None,
-            "answerHit": 1 if any(answers) else None if "unjudgeable" in exposed else 0,
+            "answerHit": _hit(answers, exposed),
+            "fullSpanKu@1": (None if span_labels and span_labels[0] == "unjudgeable" else int(bool(span_answers and span_answers[0]))) if case["intent"] == "current" else None,
+            "fullSpanAnswerHit": _hit(span_answers, span_labels),
             "staleBeforeCurrent": stale is not None and (current is None or stale < current),
             "mixedBeforeCurrent": mixed is not None and (current is None or mixed < current)}
 
@@ -289,12 +320,16 @@ def summarize(rows):
             for method in sorted({m for r in group for m in r["methods"]}):
                 available = [r["methods"][method]["metrics"] for r in group if method in r["methods"]]
                 evidence = {}
-                for key in ["ku@1", "answerHit", "staleBeforeCurrent", "mixedBeforeCurrent"]:
+                for key in ["ku@1", "answerHit", "fullSpanKu@1", "fullSpanAnswerHit", "staleBeforeCurrent", "mixedBeforeCurrent"]:
                     values = [r["methods"][method]["evidence"][key] for r in group
                               if method in r["methods"] and r["methods"][method]["evidence"][key] is not None]
                     evidence[key] = {"judgedQueries": len(values), "mean": statistics.mean(values) if values else None}
+                required = [r["methods"][method]["requiredMetrics"] for r in group
+                            if method in r["methods"] and r["methods"][method]["requiredMetrics"]]
                 summary[language][category][method] = {"queries": len(available), "expected": len(group),
-                    "means": {key: statistics.mean(m[key] for m in available) for key in available[0]}, "evidence": evidence}
+                    "means": {key: statistics.mean(m[key] for m in available) for key in available[0]}, "evidence": evidence,
+                    "required": {"queries": len(required),
+                                 "means": {key: statistics.mean(m[key] for m in required) for key in required[0]} if required else None}}
     return summary
 
 
@@ -404,6 +439,7 @@ def evaluate(vault, gold, *, live=False, model="qwen3-embedding:4b", endpoint="h
             acceptable = [t["path"] for t in case["targets"]]
             scored = {name: {"results": result, "metrics": page_metrics(result, acceptable, ks, cutoff),
                              "canonicalMetrics": page_metrics(result, case.get("canonicalPages") or acceptable, ks, cutoff),
+                             "requiredMetrics": required_metrics(result, case.get("requiredPages"), ks),
                              "evidence": evidence_metrics(result[:cutoff], case, vault)} for name, result in methods.items()}
             rows.append({"id": case["id"], "language": language, "category": case["category"], "split": case["split"],
                          "intent": case["intent"], "query": query, "methods": scored,
@@ -452,21 +488,31 @@ def evaluate(vault, gold, *, live=False, model="qwen3-embedding:4b", endpoint="h
             "summaryBySplit": {split: summarize([r for r in rows if r["split"] == split]) for split in sorted({r["split"] for r in rows})}}
 
 
-def compare_reports(baseline, candidate, method="rrf", split="held-out"):
-    """Internal scorer for isolated model reports; never promotes a default.
+def compare_reports(baseline, candidate, method="rrf", split="held-out", vary="model"):
+    """Internal scorer for isolated reports; never promotes a default.
 
-    Labels/projection/chunk/input schemes/corpus/candidates must already be
-    frozen. Incomplete live runs cannot enter a held-out model comparison.
+    ``vary`` names the single factor allowed to differ: ``model`` (chunk
+    settings fixed) or ``chunk-settings`` (verified model digest fixed, chunk
+    settings must differ). Labels/projection/input schemes/corpus/candidates
+    must already be frozen. Incomplete live runs cannot enter a comparison.
     """
+    if vary not in {"model", "chunk-settings"}:
+        raise ValueError("vary must be model or chunk-settings")
     left, right = baseline["provenance"], candidate["provenance"]
     if any(not p.get("modelDigest") or not p["caches"].get("chunks.json", {}).get("embeddingInputScheme") for p in [left, right]):
         raise ValueError("unverified identities/inputs are not comparable")
     for key in ["goldHash", "corpusManifestHash", "queryInputScheme", "projectionScheme", "cutoff", "candidateSizes"]:
         if left.get(key) != right.get(key):
             raise ValueError(f"reports are not comparable: {key}")
-    for key in ["embeddingInputScheme", "settings"]:
+    fixed = ["embeddingInputScheme"] + (["settings"] if vary == "model" else [])
+    for key in fixed:
         if left["caches"].get("chunks.json", {}).get(key) != right["caches"].get("chunks.json", {}).get(key):
             raise ValueError(f"reports are not comparable: {key}")
+    if vary == "chunk-settings":
+        if left["modelDigest"] != right["modelDigest"] or left.get("model") != right.get("model"):
+            raise ValueError("reports are not comparable: model")
+        if left["caches"]["chunks.json"].get("settings") == right["caches"]["chunks.json"].get("settings"):
+            raise ValueError("chunk-settings comparison requires differing settings")
     if left["source"].get("scriptHashes") != right["source"].get("scriptHashes"):
         raise ValueError("reports are not comparable: source scripts changed")
     lrows = {(r["id"], r["language"]): r for r in baseline["queries"] if r["split"] == split}
@@ -476,6 +522,7 @@ def compare_reports(baseline, candidate, method="rrf", split="held-out"):
     differences = []
     regressions = []
     unjudgeable = []
+    evidence_changes = []
     metric = f"mrr@{left['cutoff']}"
     for key, old in lrows.items():
         new = rrows[key]
@@ -489,6 +536,11 @@ def compare_reports(baseline, candidate, method="rrf", split="held-out"):
         old_result, new_result = old["methods"][actual_method], new["methods"][actual_method]
         differences.append({"id": key[0], "language": key[1],
                             "difference": new_result["metrics"][metric] - old_result["metrics"][metric]})
+        changed = {name: [old_result["evidence"].get(name), new_result["evidence"].get(name)]
+                   for name in ["answerHit", "fullSpanAnswerHit"]
+                   if old_result["evidence"].get(name) != new_result["evidence"].get(name)}
+        if changed:
+            evidence_changes.append({"id": key[0], "language": key[1], **changed})
         if old["intent"] == "current":
             before, after = old_result["evidence"], new_result["evidence"]
             if before["ku@1"] is None or after["ku@1"] is None:
@@ -500,7 +552,8 @@ def compare_reports(baseline, candidate, method="rrf", split="held-out"):
             if (before["ku@1"] or 0) > (after["ku@1"] or 0) or (stale_after and not stale_before):
                 regressions.append({"id": key[0], "language": key[1], "newStaleTop1": stale_after and not stale_before,
                                     "baseline": before, "candidate": after})
-    return {"split": split, "method": method, "metric": metric, "perQuery": differences,
+    return {"split": split, "method": method, "vary": vary, "metric": metric, "perQuery": differences,
+            "evidenceChanges": evidence_changes,
             "paired": {lang: paired_interval([r for r in differences if lang == "paired-intents" or r["language"] == lang])
                        for lang in ["en", "it", "paired-intents"]},
             "temporalRegressions": regressions, "unjudgeableTemporalCases": unjudgeable, "recommendation": "owner review required; no automatic model/fusion promotion",
