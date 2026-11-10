@@ -283,7 +283,8 @@ model-augmented indexing.
 The packaged specialist resolves the same vault from any caller cwd. Claude
 Code supports `@agent-obsidian-second-brain:wiki-vault`. Pi users can optionally
 install `pi-subagents` and run
-`/run obsidian-second-brain.wiki-vault "your task"`. The runner is not required
+`/run obsidian-second-brain.wiki-vault "your task"`. omp exposes the same
+specialist as the `wiki-vault` task agent. The runner is not required
 for the skill or lifecycle. Neither specialist pins a model or effort.
 
 ### Claude Code
@@ -377,6 +378,20 @@ Per-run selections and project settings can override a user preference, so
 inspect the child session's recorded `thinking_level_change` rather than relying
 on the runner summary or the model's self-report. An omitted summary value does
 not prove thinking is off. No package-owned Pi reasoning setting is added.
+
+### omp
+
+omp loads the package's Pi extension and skills from the `pi` manifest and task
+agents from the package's top-level `agents/` directory, so it uses the
+Claude Code `agents/wiki-vault.md` file, not `agents/pi/`. Install the package
+with `omp plugin install @soulwaxx/obsidian-second-brain`, or link an
+existing Pi copy with `omp plugin link <pi-agent-dir>/npm/node_modules/@soulwaxx/obsidian-second-brain`.
+A linked copy follows Pi updates (`pi update --extensions`). omp does not expand
+`${CLAUDE_PLUGIN_ROOT}` in agent bodies; the specialist reads `skill://wiki`
+there instead. Choose its model or thinking level with omp's
+`task.agentModelOverrides.wiki-vault`. Live validation with omp 18.18.6 covered
+a read-only doctor run from an unrelated cwd; omp writes through the Pi
+lifecycle extension remain unverified.
 
 Keep one wiki writer; multiple read-only agents can consult the vault concurrently.
 

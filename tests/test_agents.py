@@ -76,6 +76,8 @@ for name in skill_names:
 assert (root / 'agents/pi' / pi['subagentOnlyExtensions']).resolve() == (root / 'extensions/obsidian.ts').resolve()
 claude_body = (root / 'agents/wiki-vault.md').read_text()
 assert '${CLAUDE_PLUGIN_ROOT}/skills/wiki/SKILL.md' in claude_body
+# omp loads this same root agent but does not expand CLAUDE_PLUGIN_ROOT.
+assert '`skill://wiki`' in claude_body
 for boundary in ('Before any vault read or write', 'doctor --json',
                  'OBSIDIAN_AGENT_CONFIG', 'OBSIDIAN_VAULT_PATH', 'config.path',
                  'never substitute the default config path by hand',
@@ -92,4 +94,4 @@ for path in (root / 'agents/wiki-vault.md', root / 'agents/pi/wiki-vault.md'):
     assert "shared skill's Trust Boundary and Wiki-First Answering sections" in body
     assert 'including focused workflows' in body
     assert 'do not define separate permissions or evidence guarantees' in body
-print('Claude and Pi vault agent packaging PASS')
+print('Claude, Pi, and omp vault agent packaging PASS')

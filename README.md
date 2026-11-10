@@ -285,7 +285,8 @@ prefer matching dated notes/relevant dated sections. See
 Claude Code supports `@agent-obsidian-second-brain:wiki-vault`. For Pi, optionally
 install `pi-subagents` with `pi install npm:pi-subagents`, then ask the parent to
 run `obsidian-second-brain.wiki-vault`, or use
-`/run obsidian-second-brain.wiki-vault "your task"`. The specialist resolves the
+`/run obsidian-second-brain.wiki-vault "your task"`. omp lists it as the
+`wiki-vault` task agent. The specialist resolves the
 same configured vault; it does not require the parent to start there.
 
 Neither packaged specialist pins a model or effort. Claude Code 2.1.292+ adds
