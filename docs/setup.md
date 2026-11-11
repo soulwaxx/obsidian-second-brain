@@ -197,8 +197,9 @@ still exits 0 with a valid config and supported Python.
   local Markdown reads or BM25 search as broken; a stale or missing index
   makes `lexicalSearch` (and the BM25-fused `semanticRerank`) unavailable,
   and search still falls back to generated navigation. An invalid selected
-  config makes `reviewedWrites` and `sourceChecks` unavailable because those
-  commands refuse it; reads and `evidence-report` do not consult it.
+  config makes `reviewedWrites` and `sourceChecks` unavailable because the
+  write commands and `source-check` refuse it (conservatively including
+  `source-history`); reads and `evidence-report` do not consult it.
 - `readiness.stages` is ordered: `package` (Python, required PyYAML, `jq`
   when a config exists; optional `markdownItPy`/`git`; installed root and
   version), `vaultSelected` (with `source`: `config` or `override`),
@@ -218,8 +219,11 @@ still exits 0 with a valid config and supported Python.
   interpreter and this package's absolute root, never a bin on `PATH`.
   Suggestions are limited to scaffold/configuration previews, the explicit BM25
   `build`, and a manual `requirements.txt` install. When the selected config
-  is invalid or selects another vault, setup previews would be refused, so the
-  config review/repair guidance is suggested instead. Doctor never runs them,
+  is invalid or selects another vault, or the config path or `.obsidian/` is a
+  symlink, setup previews would be refused, so the matching review/repair
+  guidance is suggested instead. A preview can still refuse conditions doctor
+  does not scan for, such as symlinks deeper inside `wiki/` or `.obsidian/`,
+  or a user-owned log collision; it reports them without writing. Doctor never runs them,
   never suggests `--apply` (that needs a reviewed plan hash), Git commands,
   plugin or model installs, semantic builds, config resets, or lifecycle
   finalization.

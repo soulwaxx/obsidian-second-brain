@@ -4,12 +4,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 KNOWN_FLAGS = ("guard", "toc", "autoCommit", "retrievalRefresh")
 OBSIDIAN_GIT_ID = "obsidian-git"
 OBSIDIAN_GIT_MINIMUM = (2, 39, 0)
+
+
+def system_path_alias(path: Path) -> bool:
+    """OS-owned path aliases that setup accepts in an otherwise symlink-free config path."""
+    return sys.platform == "darwin" and path == Path("/var")
+
+
+def symlinked_config_component(config: Path) -> Path | None:
+    """First symlinked component of the agent config path that reviewed setup refuses."""
+    return next((part for part in (config, *config.parents) if part.is_symlink() and not system_path_alias(part)), None)
 
 
 def obsidian_git_diagnostics(vault: Path) -> list[tuple[str, str]]:

@@ -13,7 +13,8 @@ import subprocess
 import sys
 import tempfile
 
-from config_contract import OBSIDIAN_GIT_ID, load_config, obsidian_git_diagnostics
+from config_contract import (OBSIDIAN_GIT_ID, load_config, obsidian_git_diagnostics,
+                             symlinked_config_component, system_path_alias as _system_path_alias)
 
 ROOT = Path(__file__).resolve().parents[1]
 MIDDLEWARE = ROOT / "skills/wiki/scripts/okf_mw"
@@ -91,9 +92,8 @@ def plan_for(vault: Path, config: Path, configure: bool = False) -> dict:
             if path.is_symlink():
                 raise ValueError(f"refusing symlink in wiki tree: {path}")
 
-    for component in (config, *config.parents):
-        if component.is_symlink() and not _system_path_alias(component):
-            raise ValueError(f"refusing symlinked agent config path: {component}")
+    if (component := symlinked_config_component(config)) is not None:
+        raise ValueError(f"refusing symlinked agent config path: {component}")
     # Configuration only changes settings; existing logs remain untouched.
     if wiki.exists() and not configure:
         for path in wiki.rglob("*"):
@@ -333,10 +333,6 @@ def plan_for(vault: Path, config: Path, configure: bool = False) -> dict:
 def digest(plan: dict) -> str:
     payload = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
-
-
-def _system_path_alias(path: Path) -> bool:
-    return sys.platform == "darwin" and path == Path("/var")
 
 
 def _git_ignore_record(vault: Path, path: str) -> tuple[bytes, bytes, bytes] | None:

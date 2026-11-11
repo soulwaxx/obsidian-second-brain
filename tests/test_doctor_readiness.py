@@ -31,7 +31,7 @@ CAPABILITIES = ["lexicalSearch", "spanReads", "sectionReads", "evidenceReport", 
 STAGES = ["package", "vaultSelected", "scaffold", "workflow", "pendingContent", "pendingRetrieval"]
 ACTION_CODES = {
     "select-python", "install-requirements", "install-jq", "choose-vault", "repair-config", "preview-scaffold",
-    "inspect-wiki-path", "preview-configure", "review-config-selection", "inspect-obsidian-settings",
+    "inspect-wiki-path", "inspect-config-path", "preview-configure", "review-config-selection", "inspect-obsidian-settings",
     "install-obsidian-git", "install-git", "set-up-vault-git", "review-derived-state", "finish-wiki-session",
     "inspect-lifecycle-state", "build-index", "inspect-retrieval-cache", "inspect-retrieval-state",
 }
@@ -235,6 +235,39 @@ class DoctorReadinessTests(unittest.TestCase):
         self.assertEqual(states["spanReads"], ("ready", None))
         self.assertEqual(states["evidenceReport"], ("ready", None))
 
+    def test_preview_blockers_from_symlinked_config_path_and_obsidian_settings(self):
+        self.scaffold()
+        real_cfg = self.root / "real-cfg"
+        real_cfg.mkdir()
+        linked = self.root / "linked-cfg"
+        linked.symlink_to(real_cfg)
+        self.config = linked / "properties.json"
+        self.env["OBSIDIAN_AGENT_CONFIG"] = str(self.config)
+        report = self.doctor("--vault", str(self.vault))
+        self.assertEqual(report["readiness"]["reason"], "config-missing")
+        self.assertEqual(self.codes(report), ["inspect-config-path"])
+        self.config = real_cfg / "properties.json"
+        self.env["OBSIDIAN_AGENT_CONFIG"] = str(self.config)
+        self.write_config({"vaultPath": str(self.vault)})
+        real_obsidian = self.root / "real-obsidian"
+        real_obsidian.mkdir()
+        (self.vault / ".obsidian").symlink_to(real_obsidian)
+        report = self.doctor()
+        self.assertEqual((report["readiness"]["reason"], self.stage(report, "workflow")["status"]), ("obsidian-settings-unsafe", "unknown"))
+        self.assertEqual(self.codes(report), ["inspect-obsidian-settings"])
+        (self.vault / "wiki/index.md").unlink()
+        report = self.doctor()
+        self.assertEqual(report["readiness"]["reason"], "wiki-index-missing")
+        self.assertEqual(self.codes(report), ["inspect-obsidian-settings"])
+
+    def test_invalid_config_with_vault_path_is_attributed_to_config(self):
+        self.scaffold()
+        self.write_config({"vaultPath": str(self.vault), "features": []})
+        report = json.loads(self.run_cli("doctor", "--json").stdout)
+        self.assert_contract(report)
+        self.assertEqual(self.stage(report, "vaultSelected")["source"], "config")
+        self.assertEqual(report["readiness"]["reason"], "config-invalid")
+
     def test_suggested_setup_previews_run_and_write_nothing(self):
         def run_suggestion(report, code):
             action = next(action for action in report["readiness"]["nextActions"] if action["code"] == code)
@@ -268,6 +301,8 @@ class DoctorReadinessTests(unittest.TestCase):
         (self.vault / ".vault-meta").symlink_to(self.root / "real-meta")
         report = self.doctor()
         self.assertEqual(self.states(report)["lexicalSearch"], ("unavailable", "index-unsafe"))
+        (self.root / "real-meta/lifecycle").mkdir()  # lifecycle errors must not mask the unsafe cache
+        self.assertEqual(self.states(self.doctor())["lexicalSearch"], ("unavailable", "index-unsafe"))
         self.assertEqual(self.stage(report, "pendingRetrieval")["reason"], "index-unsafe")
         self.assertEqual(CLI_MODULE._next_actions("index-unsafe", self.vault, self.config)[0]["code"], "inspect-retrieval-cache")
 

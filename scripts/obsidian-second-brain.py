@@ -13,7 +13,7 @@ import sys
 import shutil
 from typing import Any
 
-from config_contract import load_config, obsidian_git_diagnostics
+from config_contract import load_config, obsidian_git_diagnostics, symlinked_config_component
 from module_loading import load_source
 
 INDEX_MODULE = load_source("obsidian_cli_bm25", str(Path(__file__).with_name("bm25-index.py")))
@@ -229,6 +229,7 @@ def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[di
         "config-vault-null": [configure],
         "configure-not-applied": [configure],
         "cache-exclusions-ineffective": [configure],
+        "config-path-unsafe": [_action("inspect-config-path", "Setup refuses a symlinked agent config path; select a non-symlinked OBSIDIAN_AGENT_CONFIG path.", "selected-config-and-repair", manual=True)],
         "config-selects-other-vault": [_action("review-config-selection", "The config selects another vault; it is preserved, never retargeted automatically.", "selected-config-and-repair", manual=True)],
         "obsidian-settings-unsafe": [_action("inspect-obsidian-settings", "Inspect symlinked Obsidian settings; setup refuses them.", "3-install-and-enable-obsidian-git", manual=True)],
         "git-missing": [_action("install-git", "Install Git; Obsidian Git needs it.", "1-prepare-tools-and-select-paths", manual=True)],
@@ -250,12 +251,12 @@ def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[di
 
 
 
-def _retrieval_code(retrieval: dict[str, Any]) -> tuple[str, str | None]:
+def _retrieval_code(retrieval: dict[str, Any], vault: Path) -> tuple[str, str | None]:
     """Map the legacy retrieval check to (state, reason code)."""
     if retrieval.get("ready"):
         return "ready", None
     reason = retrieval.get("reason") or ""
-    if "symlink" in reason:
+    if _symlinked(vault / ".vault-meta", vault / ".vault-meta/retrieval", vault / DEFAULT_INDEX) or "symlink" in reason:
         return "unavailable", "index-unsafe"
     if not retrieval.get("indexExists"):
         return "unavailable", "index-missing"
@@ -300,7 +301,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         reason = "config-invalid" if config_error else "config-missing-no-vault" if not config_exists else "vault-null"
         stages.append(_stage("vaultSelected", "blocked", reason, "no vault is selected", source=None))
     else:
-        source = "config" if configured == vault else "override"
+        # Attribution only: an otherwise-invalid config can still select its vaultPath.
+        source = "config" if _configured_vault(config) == vault else "override"
         if not vault.exists():
             stages.append(_stage("vaultSelected", "blocked", "vault-missing", "the selected vault path does not exist", source=source))
         elif not vault_ok:
@@ -330,7 +332,9 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         exclusions = checks["cacheExclusions"]
         features = config.get("features") if isinstance(config, dict) else None
         status, reason, detail = "ok", None, "configured; Obsidian Git schedules sync independently and its app state is not probed"
-        if config_error:
+        if _symlinked(obsidian, obsidian / "plugins", plugin, plugin / "manifest.json", obsidian / "community-plugins.json"):
+            status, reason, detail = "unknown", "obsidian-settings-unsafe", "Obsidian settings contain a symlink that setup refuses"
+        elif config_error:
             status, reason, detail = "blocked", "config-invalid", "the selected config is invalid"
         elif not config_exists:
             status, reason, detail = "blocked", "config-missing", "no integration config exists yet"
@@ -340,8 +344,6 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
             status, reason, detail = "blocked", "config-selects-other-vault", "the config selects a different vault"
         elif not (isinstance(features, dict) and features.get("autoCommit") is False):
             status, reason, detail = "blocked", "configure-not-applied", "the reviewed configuration has not been applied"
-        elif _symlinked(obsidian, obsidian / "plugins", plugin, plugin / "manifest.json", obsidian / "community-plugins.json"):
-            status, reason, detail = "unknown", "obsidian-settings-unsafe", "Obsidian settings contain a symlink"
         elif problems := obsidian_git_diagnostics(vault):
             status, reason, detail = "blocked", problems[0][0], problems[0][1]
         elif not deps["git"]:
@@ -365,7 +367,7 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         stages.append(_stage("pendingContent", "ok"))
 
     retrieval = checks["retrieval"]
-    retrieval_state, retrieval_reason = _retrieval_code(retrieval) if vault_ok else ("unavailable", None)
+    retrieval_state, retrieval_reason = _retrieval_code(retrieval, vault) if vault_ok else ("unavailable", None)
     if not vault_ok:
         stages.append(_stage("pendingRetrieval", "skipped", "requires-vault"))
     elif retrieval_state == "ready":
@@ -374,15 +376,18 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         stages.append(_stage("pendingRetrieval", "unknown" if retrieval_state == "unknown" else "pending", retrieval_reason, retrieval.get("reason")))
 
     first = next((stage for stage in stages if stage["status"] != "ok"), None)
-    # Setup previews refuse an invalid config or one selecting another vault, so
-    # surface that conflict instead of suggesting a preview that cannot run.
-    config_conflict = ("config-invalid" if config_error else
+    # Setup previews refuse a symlinked config path or Obsidian settings directory,
+    # an invalid config, or one selecting another vault; surface that blocker
+    # instead of suggesting a preview that cannot run.
+    preview_blocker = ("config-path-unsafe" if symlinked_config_component(config_file) is not None else
+                       "obsidian-settings-unsafe" if vault is not None and (vault / ".obsidian").is_symlink() else
+                       "config-invalid" if config_error else
                        "config-selects-other-vault" if configured is not None and configured != vault else None)
     actions: list[dict[str, Any]] = []
     for code in ([first["reason"]] if first else []) + package_problems:
         suggested = _next_actions(code, vault, config_file)
-        if config_conflict and any(action["code"] in {"preview-scaffold", "preview-configure"} for action in suggested):
-            suggested = _next_actions(config_conflict, vault, config_file)
+        if preview_blocker and any(action["code"] in {"preview-scaffold", "preview-configure"} for action in suggested):
+            suggested = _next_actions(preview_blocker, vault, config_file)
         for action in suggested:
             if all(action["code"] != existing["code"] for existing in actions):
                 actions.append(action)
