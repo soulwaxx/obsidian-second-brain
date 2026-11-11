@@ -237,6 +237,7 @@ class DoctorReadinessTests(unittest.TestCase):
 
     def test_preview_blockers_from_symlinked_config_path_and_obsidian_settings(self):
         self.scaffold()
+        self.install_plugin()
         real_cfg = self.root / "real-cfg"
         real_cfg.mkdir()
         linked = self.root / "linked-cfg"
@@ -250,7 +251,11 @@ class DoctorReadinessTests(unittest.TestCase):
         self.env["OBSIDIAN_AGENT_CONFIG"] = str(self.config)
         self.write_config({"vaultPath": str(self.vault)})
         real_obsidian = self.root / "real-obsidian"
-        real_obsidian.mkdir()
+        shutil.move(self.vault / ".obsidian", real_obsidian)
+        (self.vault / ".obsidian").write_text("not a directory")
+        report = self.doctor()
+        self.assertEqual((report["readiness"]["reason"], self.codes(report)), ("obsidian-settings-unsafe", ["inspect-obsidian-settings"]))
+        (self.vault / ".obsidian").unlink()
         (self.vault / ".obsidian").symlink_to(real_obsidian)
         report = self.doctor()
         self.assertEqual((report["readiness"]["reason"], self.stage(report, "workflow")["status"]), ("obsidian-settings-unsafe", "unknown"))
@@ -282,6 +287,7 @@ class DoctorReadinessTests(unittest.TestCase):
         self.vault.mkdir()
         run_suggestion(self.doctor(), "preview-scaffold")  # wiki-missing
         self.scaffold()
+        self.install_plugin()
         report = self.doctor()
         self.assertEqual(report["readiness"]["reason"], "configure-not-applied")
         run_suggestion(report, "preview-configure")
@@ -312,12 +318,23 @@ class DoctorReadinessTests(unittest.TestCase):
         report = self.doctor("--vault", str(self.vault))
         self.assertEqual(report["readiness"]["reason"], "wiki-missing")
         self.assertEqual(self.codes(report), ["preview-scaffold"])
+        (self.vault / "wiki").write_text("not a directory")
+        report = self.doctor("--vault", str(self.vault))
+        self.assertEqual(report["readiness"]["reason"], "wiki-not-directory")
+        self.assertEqual(self.codes(report), ["inspect-wiki-path"])  # setup would refuse the collision
+        self.assertEqual(self.states(report)["spanReads"], ("unavailable", "wiki-not-directory"))
+        (self.vault / "wiki").unlink()
         (self.vault / "wiki").mkdir()
         self.assertEqual(self.doctor("--vault", str(self.vault))["readiness"]["reason"], "wiki-index-missing")
         self.scaffold()
         result = self.run_cli("doctor", "--json", "--vault", str(self.vault))
         self.assertEqual(result.returncode, 0)  # not-yet-configured is not an error exit
         report = json.loads(result.stdout)
+        # Configuration apply requires the operator-installed plugin, so it comes first.
+        self.assertEqual((report["readiness"]["stage"], report["readiness"]["reason"]), ("workflow", "obsidian-git-missing"))
+        self.assertEqual(self.codes(report), ["install-obsidian-git"])
+        self.install_plugin()
+        report = self.doctor("--vault", str(self.vault))
         self.assertEqual((report["readiness"]["stage"], report["readiness"]["reason"]), ("workflow", "config-missing"))
         self.assertEqual(self.codes(report), ["preview-configure"])
         self.assertEqual(report["readiness"]["nextActions"][0]["argv"][2:], ["--vault", str(self.vault), "--configure"])
@@ -328,6 +345,15 @@ class DoctorReadinessTests(unittest.TestCase):
 
     def test_workflow_configuration_states(self):
         self.scaffold()
+        self.write_config({"vaultPath": str(self.vault), "features": {"autoCommit": False}})
+        report = self.doctor()
+        self.assertEqual(report["readiness"]["reason"], "obsidian-git-missing")
+        self.assertEqual(self.codes(report), ["install-obsidian-git"])
+        self.install_plugin(version="2.38.0")
+        self.assertEqual(self.doctor()["readiness"]["reason"], "obsidian-git-incompatible")
+        self.install_plugin(enabled=False)
+        self.assertEqual(self.doctor()["readiness"]["reason"], "obsidian-git-disabled")
+        self.install_plugin()
         self.write_config({"vaultPath": None})
         self.assertEqual(self.doctor("--vault", str(self.vault))["readiness"]["reason"], "config-vault-null")
         other = self.root / "other"
@@ -340,14 +366,6 @@ class DoctorReadinessTests(unittest.TestCase):
             self.write_config({"vaultPath": str(self.vault), **({"features": features} if features is not None else {})})
             self.assertEqual(self.doctor()["readiness"]["reason"], "configure-not-applied")
         self.write_config({"vaultPath": str(self.vault), "features": {"autoCommit": False}})
-        report = self.doctor()
-        self.assertEqual(report["readiness"]["reason"], "obsidian-git-missing")
-        self.assertEqual(self.codes(report), ["install-obsidian-git"])
-        self.install_plugin(version="2.38.0")
-        self.assertEqual(self.doctor()["readiness"]["reason"], "obsidian-git-incompatible")
-        self.install_plugin(enabled=False)
-        self.assertEqual(self.doctor()["readiness"]["reason"], "obsidian-git-disabled")
-        self.install_plugin()
         report = self.doctor()
         self.assertEqual(report["readiness"]["reason"], "vault-not-git-worktree")
         self.assertEqual(self.codes(report), ["set-up-vault-git"])

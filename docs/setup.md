@@ -203,9 +203,10 @@ still exits 0 with a valid config and supported Python.
 - `readiness.stages` is ordered: `package` (Python, required PyYAML, `jq`
   when a config exists; optional `markdownItPy`/`git`; installed root and
   version), `vaultSelected` (with `source`: `config` or `override`),
-  `scaffold` (`wiki/` and `wiki/index.md`), `workflow` (config selects
-  this vault, reviewed configuration applied, Obsidian Git manifest/enabled
-  list, Git repository and derived-state exclusions), `pendingContent`
+  `scaffold` (`wiki/` and `wiki/index.md`), `workflow` (in setup order:
+  Obsidian Git manifest/enabled list, which configuration apply requires;
+  config selects this vault; reviewed configuration applied; Git repository
+  and derived-state exclusions), `pendingContent`
   (lifecycle captures), and `pendingRetrieval` (index missing, stale, or
   awaiting refresh). Each stage has `status` `ok`, `blocked`, `pending`,
   `unknown`, or `skipped`. `readiness.stage`/`reason` name the first stage
@@ -219,8 +220,8 @@ still exits 0 with a valid config and supported Python.
   interpreter and this package's absolute root, never a bin on `PATH`.
   Suggestions are limited to scaffold/configuration previews, the explicit BM25
   `build`, and a manual `requirements.txt` install. When the selected config
-  is invalid or selects another vault, or the config path or `.obsidian/` is a
-  symlink, setup previews would be refused, so the matching review/repair
+  is invalid or selects another vault, or the config path, `wiki`, or `.obsidian`
+  is a symlink or not a directory, setup previews would be refused, so the matching review/repair
   guidance is suggested instead. A preview can still refuse conditions doctor
   does not scan for, such as symlinks deeper inside `wiki/` or `.obsidian/`,
   or a user-owned log collision; it reports them without writing. Doctor never runs them,

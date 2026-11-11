@@ -115,6 +115,10 @@ try {
   const readinessVault = path.join(work, "readiness vault ü");
   fs.mkdirSync(path.join(readinessVault, "wiki"), { recursive: true });
   fs.writeFileSync(path.join(readinessVault, "wiki/index.md"), "# Index\n");
+  fs.mkdirSync(path.join(readinessVault, ".obsidian/plugins/obsidian-git"), { recursive: true });
+  fs.writeFileSync(path.join(readinessVault, ".obsidian/plugins/obsidian-git/manifest.json"), JSON.stringify({ id: "obsidian-git", version: "2.39.0" }));
+  fs.writeFileSync(path.join(readinessVault, ".obsidian/community-plugins.json"), JSON.stringify(["obsidian-git"]));
+  const readinessFiles = fs.readdirSync(readinessVault, { recursive: true }).sort();
   const readinessCwd = path.join(work, "outside cwd ü");
   fs.mkdirSync(readinessCwd);
   for (const command of [[cli], [process.execPath, path.join(installed, "scripts/obsidian-second-brain.mjs")]]) {
@@ -128,7 +132,7 @@ try {
     assert.deepEqual(configure.argv.slice(1), [path.join(installedRoot, "scripts/bootstrap-vault.py"), "--vault", fs.realpathSync(readinessVault), "--configure"]);
     assert.ok(!configure.argv.includes("--apply"));
   }
-  assert.deepEqual(fs.readdirSync(readinessVault, { recursive: true }).sort(), ["wiki", path.join("wiki", "index.md")], "installed readiness discovery writes nothing");
+  assert.deepEqual(fs.readdirSync(readinessVault, { recursive: true }).sort(), readinessFiles, "installed readiness discovery writes nothing");
   const binSearchPath = process.env.PATH.split(path.delimiter).filter((entry) => path.resolve(entry) !== path.resolve(path.join(prefix, "node_modules/.bin"))).join(path.delimiter);
   assert.ok(!binSearchPath.split(path.delimiter).some((entry) => path.resolve(entry) === path.resolve(path.join(prefix, "node_modules/.bin"))));
   const unrelatedCwd = path.join(work, "caller cwd ü space");

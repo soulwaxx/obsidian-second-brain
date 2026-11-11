@@ -224,14 +224,14 @@ def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[di
         "vault-not-directory": [_action("choose-vault", "The selected vault is not a directory; choose the intended vault path.", "selected-config-and-repair", manual=True)],
         "wiki-missing": [scaffold],
         "wiki-index-missing": [scaffold],
-        "wiki-unsafe": [_action("inspect-wiki-path", "Inspect the symlinked wiki path; setup refuses symlinked vault paths.", "2-scaffold-a-new-wiki", manual=True)],
+        "wiki-unsafe": [_action("inspect-wiki-path", "Inspect the wiki path; setup refuses a symlinked or non-directory wiki.", "2-scaffold-a-new-wiki", manual=True)],
         "config-missing": [configure],
         "config-vault-null": [configure],
         "configure-not-applied": [configure],
         "cache-exclusions-ineffective": [configure],
         "config-path-unsafe": [_action("inspect-config-path", "Setup refuses a symlinked agent config path; select a non-symlinked OBSIDIAN_AGENT_CONFIG path.", "selected-config-and-repair", manual=True)],
         "config-selects-other-vault": [_action("review-config-selection", "The config selects another vault; it is preserved, never retargeted automatically.", "selected-config-and-repair", manual=True)],
-        "obsidian-settings-unsafe": [_action("inspect-obsidian-settings", "Inspect symlinked Obsidian settings; setup refuses them.", "3-install-and-enable-obsidian-git", manual=True)],
+        "obsidian-settings-unsafe": [_action("inspect-obsidian-settings", "Inspect Obsidian settings; setup refuses symlinked or non-directory settings.", "3-install-and-enable-obsidian-git", manual=True)],
         "git-missing": [_action("install-git", "Install Git; Obsidian Git needs it.", "1-prepare-tools-and-select-paths", manual=True)],
         "vault-not-git-worktree": [_action("set-up-vault-git", "Use the owner-controlled Obsidian Git workflow to initialize or select the vault repository.", "3-install-and-enable-obsidian-git", manual=True)],
         "derived-state-tracked": [_action("review-derived-state", "Derived retrieval/lifecycle state is tracked in Git; review the ignore and privacy guidance.", "",
@@ -246,6 +246,7 @@ def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[di
         actions[code] = [_action("install-obsidian-git", "Install or enable Obsidian Git 2.39.0+ in Obsidian (Settings > Community plugins).",
                                  "3-install-and-enable-obsidian-git", manual=True)]
     actions["freshness-unknown"] = actions["retrieval-state-unknown"]
+    actions["wiki-not-directory"] = actions["wiki-unsafe"]
     actions["content-pending"] = actions["lifecycle-pending"]
     return actions.get(reason, [])
 
@@ -316,6 +317,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         wiki, root_index = vault / "wiki", vault / "wiki/index.md"
         if _symlinked(wiki, root_index):
             stages.append(_stage("scaffold", "blocked", "wiki-unsafe", "wiki/ or wiki/index.md is a symlink"))
+        elif wiki.exists() and not wiki.is_dir():
+            stages.append(_stage("scaffold", "blocked", "wiki-not-directory", "wiki exists but is not a directory"))
         elif not wiki.is_dir():
             stages.append(_stage("scaffold", "blocked", "wiki-missing", "wiki/ is missing"))
         elif not root_index.is_file():
@@ -324,6 +327,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
             stages.append(_stage("scaffold", "ok"))
 
     sync = {"syncOwner": "obsidian-git", "appState": "not-probed"}
+    obsidian_unsafe = vault is not None and ((vault / ".obsidian").is_symlink()
+                                             or ((vault / ".obsidian").exists() and not (vault / ".obsidian").is_dir()))
     if not vault_ok:
         stages.append(_stage("workflow", "skipped", "requires-vault", **sync))
     else:
@@ -332,20 +337,22 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         exclusions = checks["cacheExclusions"]
         features = config.get("features") if isinstance(config, dict) else None
         status, reason, detail = "ok", None, "configured; Obsidian Git schedules sync independently and its app state is not probed"
-        if _symlinked(obsidian, obsidian / "plugins", plugin, plugin / "manifest.json", obsidian / "community-plugins.json"):
-            status, reason, detail = "unknown", "obsidian-settings-unsafe", "Obsidian settings contain a symlink that setup refuses"
+        # Order follows setup: blockers that refuse any preview, then the
+        # operator-installed plugin that configuration apply requires, then config.
+        if obsidian_unsafe or _symlinked(obsidian / "plugins", plugin, plugin / "manifest.json", obsidian / "community-plugins.json"):
+            status, reason, detail = "unknown", "obsidian-settings-unsafe", "Obsidian settings are symlinked or not a directory; setup refuses them"
         elif config_error:
             status, reason, detail = "blocked", "config-invalid", "the selected config is invalid"
+        elif configured is not None and configured != vault:
+            status, reason, detail = "blocked", "config-selects-other-vault", "the config selects a different vault"
+        elif problems := obsidian_git_diagnostics(vault):
+            status, reason, detail = "blocked", problems[0][0], problems[0][1]
         elif not config_exists:
             status, reason, detail = "blocked", "config-missing", "no integration config exists yet"
         elif configured is None:
             status, reason, detail = "blocked", "config-vault-null", "the config does not select a vault"
-        elif configured != vault:
-            status, reason, detail = "blocked", "config-selects-other-vault", "the config selects a different vault"
         elif not (isinstance(features, dict) and features.get("autoCommit") is False):
             status, reason, detail = "blocked", "configure-not-applied", "the reviewed configuration has not been applied"
-        elif problems := obsidian_git_diagnostics(vault):
-            status, reason, detail = "blocked", problems[0][0], problems[0][1]
         elif not deps["git"]:
             status, reason, detail = "blocked", "git-missing", "git is not installed"
         elif not exclusions.get("applicable"):
@@ -380,7 +387,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     # an invalid config, or one selecting another vault; surface that blocker
     # instead of suggesting a preview that cannot run.
     preview_blocker = ("config-path-unsafe" if symlinked_config_component(config_file) is not None else
-                       "obsidian-settings-unsafe" if vault is not None and (vault / ".obsidian").is_symlink() else
+                       "obsidian-settings-unsafe" if obsidian_unsafe else
+                       "wiki-not-directory" if vault is not None and (vault / "wiki").exists() and not (vault / "wiki").is_dir() else
                        "config-invalid" if config_error else
                        "config-selects-other-vault" if configured is not None and configured != vault else None)
     actions: list[dict[str, Any]] = []
@@ -402,7 +410,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     elif not vault_ok:
         base = "vault-missing" if not vault.exists() else "vault-not-directory"
     elif not wiki_ok:
-        base = "wiki-unsafe" if (vault / "wiki").is_symlink() else "wiki-missing"
+        base = ("wiki-unsafe" if (vault / "wiki").is_symlink() else
+                "wiki-not-directory" if (vault / "wiki").exists() else "wiki-missing")
     else:
         base = None
 
