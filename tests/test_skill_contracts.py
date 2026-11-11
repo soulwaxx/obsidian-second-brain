@@ -184,11 +184,11 @@ patterns = ' '.join(patterns_text.lower().split())
 workflow_sections = dict(re.findall(r'^## ([^\n]+)\n(.*?)(?=^## |\Z)',
                                     (ROOT / 'skills/wiki/references/focused-workflows.md').read_text(),
                                     re.S | re.M))
-for name in ('Explicit selected-conversation save', 'Ingest', 'Research'):
-    assert '(authoring-patterns.md)' in workflow_sections[name], name
-for name in ('Query', 'Health'):
-    assert 'authoring-patterns' not in workflow_sections[name], name
-entry_sections = dict(re.findall(r'^## ([^\n]+)\n(.*?)(?=^## |\Z)', entry_path.read_text(), re.S | re.M))
+assert {name for name, body in workflow_sections.items() if '(authoring-patterns.md)' in body} == {
+    'Explicit selected-conversation save', 'Ingest', 'Research'}
+assert 'authoring-patterns' not in workflow_sections['Query'] + workflow_sections['Health']
+# Split on ## and ### so Chat/Init/Update/Auto Mode are not counted as Operations.
+entry_sections = dict(re.findall(r'^#{2,3} ([^\n]+)\n(.*?)(?=^#{2,3} |\Z)', entry_path.read_text(), re.S | re.M))
 assert [name for name, body in entry_sections.items() if 'authoring-patterns' in body] == ['Operations']
 assert '(references/authoring-patterns.md)' in entry_sections['Operations']
 for document in ('skills/wiki/references/init-mode.md', 'skills/wiki/references/auto-mode.md',

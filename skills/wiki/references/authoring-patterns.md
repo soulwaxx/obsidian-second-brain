@@ -224,8 +224,8 @@ already follows the vault's convention for work pages.
 **Expected.** Add a follow-up to the existing page: owner is the user, as
 stated; status is open; the due date is unknown. Do not invent a date, ticket
 ID, or priority. Do not create a commitments file or a new page, and do not
-add commitment fields or other new metadata; otherwise follow the vault's
-existing frontmatter conventions.
+add commitment fields; update `last_updated` only as the normal update rules
+require. The snippet is an excerpt.
 
 ```markdown
 ---
@@ -301,6 +301,7 @@ type: runbook
 ## Decisions
 
 - User decision (2030-10-02): keep six-hour backups until the restore test
-  passes. The user linked a vendor article on backup intervals; it was not
-  inspected and is not cited as support for this decision.
+  passes. The user linked a
+  [vendor article](https://example.com/backup-intervals) on backup intervals;
+  it was not inspected and is not cited as support for this decision.
 ```
