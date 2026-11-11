@@ -530,9 +530,14 @@ def print_setup(output: dict[str, Any]) -> None:
         print("No changes planned.")
     if output["applied"]:
         print(f"Applied {output['phase']} plan {output['planHash']}")
-    else:
+    elif output["phase"] == "configure" and not plan["pluginReady"]:
+        print("Configuration apply requires Obsidian Git installed and enabled; install/enable it, then preview again.")
+    elif plan["directories"] or plan["writes"]:
         argv = ["obsidian-second-brain", "setup", "--vault", plan["vault"]] + (["--configure"] if output["phase"] == "configure" else [])
-        print(f"Review, then apply exactly this plan: {shlex.join(argv + ['--apply', '--confirm', output['planHash']])}")
+        # The hash binds the selected config, so keep the same selection when applying.
+        selected = os.environ.get("OBSIDIAN_AGENT_CONFIG")
+        prefix = f"OBSIDIAN_AGENT_CONFIG={shlex.quote(selected)} " if selected is not None else ""
+        print(f"Review, then apply exactly this plan: {prefix}{shlex.join(argv + ['--apply', '--confirm', output['planHash']])}")
     readiness = output["readiness"]
     print(f"Stage: {readiness['stage']}" + (f" ({readiness['reason']})" if readiness["reason"] else ""))
     print_next_actions(output["nextActions"])

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -149,6 +150,20 @@ class SetupTests(unittest.TestCase):
         self.vault.mkdir()
         relative = os.path.relpath(self.vault, self.outside)
         self.assertEqual(self.assert_parity(vault=relative)["plan"]["vault"], str(self.vault))
+
+    def test_vault_override_environment_is_not_consulted(self):
+        other = self.root / "other vault"
+        (other / "wiki").mkdir(parents=True)
+        self.vault.mkdir()
+        self.env["OBSIDIAN_VAULT_PATH"] = str(other)
+        before = tree_snapshot(other)
+        output = self.assert_parity()
+        self.assertEqual(output["plan"]["vault"], str(self.vault))
+        self.assertEqual(output["readiness"]["reason"], "wiki-missing")
+        self.assertEqual(output["nextActions"][0]["argv"][2:], ["setup", "--vault", str(self.vault)])
+        self.apply(output)
+        self.assertTrue((self.vault / "wiki/index.md").is_file())
+        self.assertEqual(tree_snapshot(other), before)
 
     def test_null_selection_configure_parity_and_apply(self):
         self.vault.mkdir()
@@ -340,7 +355,11 @@ class SetupTests(unittest.TestCase):
         plan_hash = json.loads(self.setup_cli().stdout)["planHash"]
         self.assertIn(f"Plan hash: {plan_hash}\n", preview.stdout)
         self.assertIn(f"Write: {self.vault / 'wiki/quickstart.md'}\n", preview.stdout)
+        self.assertIn(f"OBSIDIAN_AGENT_CONFIG={shlex.quote(str(self.config))} obsidian-second-brain setup", preview.stdout)
         self.assertIn(f"--apply --confirm {plan_hash}", preview.stdout)
+        unplugged = self.setup_cli("--configure", json_output=False)
+        self.assertIn("requires Obsidian Git installed and enabled", unplugged.stdout)
+        self.assertNotIn("--apply --confirm", unplugged.stdout)
         self.assertIn("Stage: ", preview.stdout)
         self.assertFalse((self.vault / "wiki").exists())
         stale = self.setup_cli("--apply", "--confirm", "wrong", json_output=False)
@@ -355,6 +374,10 @@ class SetupTests(unittest.TestCase):
         self.assertIn("Config features.autoCommit: \"<missing>\" -> false\n", configure.stdout)
         self.assertIn("(private content bound to the plan hash)", configure.stdout)
         self.assertNotIn("disablePush", configure.stdout, "preserved settings are not proposed changes")
+        self.assertIn("--configure --apply --confirm", configure.stdout)
+        noop = self.setup_cli(json_output=False)
+        self.assertIn("No changes planned.", noop.stdout)
+        self.assertNotIn("--apply --confirm", noop.stdout)
 
     def test_launcher_reports_unstartable_interpreter(self):
         node = shutil.which("node")

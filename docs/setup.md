@@ -31,8 +31,10 @@ actions after the step (never executed). Failures report `stale-plan` or
 `setup-refused` with exit status 1; invalid arguments report
 `invalid-arguments` with exit status 2. Setup takes no `--config` or
 `OBSIDIAN_VAULT_PATH` selection. The lower-level
-`python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py"` with the same arguments
-remains supported and produces identical plans and hashes.
+`python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py"` remains supported: with the
+same `--vault`, `--configure`, and `--apply --confirm` arguments (it has no
+`--json`) and the same `OBSIDIAN_AGENT_CONFIG`, it produces identical plans and
+hashes.
 
 Keep the variables in the same shell. Set `OBSIDIAN_AGENT_CONFIG` before preview
 if selecting a non-default integration config. Do not guess or retarget a
