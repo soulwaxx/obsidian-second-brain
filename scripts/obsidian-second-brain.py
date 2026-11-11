@@ -535,7 +535,10 @@ def print_setup(output: dict[str, Any]) -> None:
     elif plan["directories"] or plan["writes"]:
         argv = ["obsidian-second-brain", "setup", "--vault", plan["vault"]] + (["--configure"] if output["phase"] == "configure" else [])
         # The hash binds the selected config, so keep the same selection when applying.
+        # Print it absolute (as bootstrap resolves it) so the hint works from any cwd.
         selected = os.environ.get("OBSIDIAN_AGENT_CONFIG")
+        if selected:
+            selected = str(Path(selected).expanduser().absolute())
         prefix = f"OBSIDIAN_AGENT_CONFIG={shlex.quote(selected)} " if selected is not None else ""
         print(f"Review, then apply exactly this plan: {prefix}{shlex.join(argv + ['--apply', '--confirm', output['planHash']])}")
     readiness = output["readiness"]

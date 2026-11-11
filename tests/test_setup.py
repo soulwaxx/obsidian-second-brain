@@ -379,6 +379,19 @@ class SetupTests(unittest.TestCase):
         self.assertIn("No changes planned.", noop.stdout)
         self.assertNotIn("--apply --confirm", noop.stdout)
 
+    def test_human_apply_hint_binds_absolute_config_selection(self):
+        self.vault.mkdir()
+        self.env["OBSIDIAN_AGENT_CONFIG"] = "relative cfg/p.json"
+        absolute = self.outside / "relative cfg/p.json"
+        preview = self.setup_cli(json_output=False)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertIn(f"OBSIDIAN_AGENT_CONFIG={shlex.quote(str(absolute))} obsidian-second-brain setup", preview.stdout)
+        plan_hash = json.loads(self.setup_cli().stdout)["planHash"]
+        self.env["OBSIDIAN_AGENT_CONFIG"] = str(absolute)
+        applied = self.call([sys.executable, str(CLI), "setup", "--vault", str(self.vault), "--apply", "--confirm", plan_hash],
+                            cwd=self.root)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+
     def test_launcher_reports_unstartable_interpreter(self):
         node = shutil.which("node")
         self.assertIsNotNone(node, "node is required for the package launcher")
