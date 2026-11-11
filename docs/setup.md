@@ -221,7 +221,8 @@ still exits 0 with a valid config and supported Python.
   Suggestions are limited to scaffold/configuration previews, the explicit BM25
   `build`, and a manual `requirements.txt` install. When the selected config
   is invalid or selects another vault, or the config path, `wiki`, or `.obsidian`
-  is a symlink or not a directory, setup previews would be refused, so the matching review/repair
+  is a symlink or not a directory, or Git is not installed, setup previews
+  would be refused, so the matching review/repair
   guidance is suggested instead. A preview can still refuse conditions doctor
   does not scan for, such as symlinks deeper inside `wiki/` or `.obsidian/`,
   or a user-owned log collision; it reports them without writing. Doctor never runs them,

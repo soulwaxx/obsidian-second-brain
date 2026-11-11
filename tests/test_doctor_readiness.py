@@ -469,6 +469,12 @@ class DoctorReadinessTests(unittest.TestCase):
             report = self.doctor_in_process()
         self.assertEqual(report["readiness"]["reason"], "git-missing")
         self.assertEqual(report["capabilities"]["sourceChecks"]["limitations"], ["git-missing"])
+        # Setup previews themselves need git, so they are not suggested without it.
+        self.write_config({"vaultPath": str(self.vault)})
+        with mock.patch("shutil.which", lambda name, *a, **k: None if name == "git" else real_which(name, *a, **k)):
+            report = self.doctor_in_process()
+        self.assertEqual((report["readiness"]["reason"], self.codes(report)), ("configure-not-applied", ["install-git"]))
+        self.write_config({"vaultPath": str(self.vault), "features": {"autoCommit": False}})
         with mock.patch("shutil.which", lambda name, *a, **k: None if name == "jq" else real_which(name, *a, **k)):
             report = self.doctor_in_process()
         self.assertEqual(report["readiness"]["reason"], "jq-missing")

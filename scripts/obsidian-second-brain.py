@@ -389,6 +389,7 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     preview_blocker = ("config-path-unsafe" if symlinked_config_component(config_file) is not None else
                        "obsidian-settings-unsafe" if obsidian_unsafe else
                        "wiki-not-directory" if vault is not None and (vault / "wiki").exists() and not (vault / "wiki").is_dir() else
+                       "git-missing" if not deps["git"] else
                        "config-invalid" if config_error else
                        "config-selects-other-vault" if configured is not None and configured != vault else None)
     actions: list[dict[str, Any]] = []
