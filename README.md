@@ -209,7 +209,9 @@ agents always use the package-relative launcher.
 
 Search uses the selected vault and does not rebuild the index; doctor reports
 configuration, dependencies, vault, cache-exclusion, lifecycle, and retrieval
-status without repairing them. `evidence-report` is also read-only; optional
+status without repairing them. It also reports which shipped capabilities are
+ready, the first unmet setup stage, and up to three safe next-step suggestions
+that it never runs; see [readiness and next steps](docs/setup.md#readiness-and-next-steps). `evidence-report` is also read-only; optional
 source/claim records are not migrated or required, and its structural,
 freshness, and relationship output does not establish factual truth or source
 verification. `source-check` is a separate, explicitly selected, read-only

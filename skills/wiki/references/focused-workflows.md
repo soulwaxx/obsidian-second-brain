@@ -42,7 +42,9 @@ Each shipped skill is directly under `<package-root>/skills/`; moving up two
 levels from its skill directory yields the active package root. This keeps
 invocation bound to the version the client loaded and works independently of
 caller cwd and selected vault. Quote the resolved absolute paths as shown.
-Replace `doctor --json` with `search "query terms" --json` when needed. Never
+Replace `doctor --json` with `search "query terms" --json` when needed.
+Doctor's `readiness.nextActions` argv already uses this package root and the
+running interpreter; show it to the user rather than executing it. Never
 rely on `CLAUDE_PLUGIN_ROOT` in ordinary Bash, install a global CLI, add a vault
 wrapper/copy, or change package versions merely to query.
 
