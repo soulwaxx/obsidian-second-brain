@@ -59,7 +59,7 @@ optional conventions for highlighting wiki states:
 | Callout | Use for |
 |---------|---------|
 | `contradiction` | A new source conflicts with an existing claim. |
-| `gap` | A topic has no source yet. |
+| `gap` | Missing evidence or an unresolved question. |
 | `key-insight` | An important takeaway worth highlighting. |
 | `stale` | A claim may be outdated. |
 

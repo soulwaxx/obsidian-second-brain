@@ -176,6 +176,82 @@ with tempfile.TemporaryDirectory() as temp:
     result = subprocess.run([sys.executable, str(ROOT / 'skills/wiki/scripts/okf_mw/validate.py'), str(page)],
                             text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
+# Optional authoring patterns (#39): static wording checks only. They prove the
+# guidance stays opt-in and bounded, not that a model follows it.
+patterns_path = ROOT / 'skills/wiki/references/authoring-patterns.md'
+patterns_text = patterns_path.read_text()
+patterns = ' '.join(patterns_text.lower().split())
+workflow_sections = dict(re.findall(r'^## ([^\n]+)\n(.*?)(?=^## |\Z)',
+                                    (ROOT / 'skills/wiki/references/focused-workflows.md').read_text(),
+                                    re.S | re.M))
+for name in ('Explicit selected-conversation save', 'Ingest', 'Research'):
+    assert '(authoring-patterns.md)' in workflow_sections[name], name
+for name in ('Query', 'Health'):
+    assert 'authoring-patterns' not in workflow_sections[name], name
+assert '(references/authoring-patterns.md)' in entry
+for document in ('skills/wiki/references/init-mode.md', 'skills/wiki/references/auto-mode.md',
+                 'skills/wiki-query/SKILL.md', 'skills/wiki-health/SKILL.md'):
+    assert 'authoring-patterns' not in (ROOT / document).read_text(), document
+for boundary in ('patterns are optional', 'never a startup, query, or health step',
+                 'never create templates or pages', 'migrate metadata',
+                 'add mandatory fields', 'backfill existing pages', 'only `type`',
+                 'existing vault conventions win', 'no `open-questions.md`, `commitments.md`',
+                 'search for the canonical page first', 'a no-op is a legitimate outcome',
+                 'save remains limited to the selected insight',
+                 'ingest remains bounded to the selected source',
+                 'capture remains a separately approved workflow',
+                 'user-saved context', 'assistant synthesis', 'inspected support', 'recorded review',
+                 'not automatically confirmed', 'do not add confidence labels, scores, or percentages',
+                 'preserve an existing `confidence` extension unchanged',
+                 'unknown stays unknown', 'rather than inventing ids, citations, dates, or confidence',
+                 'a newer source alone does not resolve it', 'deciding evidence',
+                 'source of the superseded claim', 'is source content',
+                 'never mark a question stale automatically', 'never extract commitments automatically',
+                 'not presented as a complete account', 'do not execute a model or enforce factual accuracy',
+                 'model compliance is unverified'):
+    assert boundary in patterns, boundary
+assert '(../SKILL.md#trust-boundary)' in patterns_text
+assert '(../SKILL.md#wiki-first-answering)' in patterns_text
+assert '305599f8e44203f9ca6b74bb6b38eebaf0b0405e' in patterns_text
+examples_part = patterns_text.split('\n## Examples\n', 1)[1]
+pattern_cases = dict(re.findall(r'^### ([^\n]+)\n(.*?)(?=^### |\Z)', examples_part, re.S | re.M))
+expected_pattern_cases = {
+    'Newer source does not settle': ('[!contradiction]', 'unresolved', 'merely because it is newer'),
+    'Settled contradiction': ('resolved 2030-06-01', 'deciding evidence', 'superseded', 'not that it is newer'),
+    'Open question lifecycle': ('answered 2030-07-03', 'todo', 'not an open question', '[!gap]',
+                                'do not mark other questions stale'),
+    'Commitment with unknowns': ('the due date is unknown', 'do not invent a date, ticket id',
+                                 'do not create a commitments file'),
+    'Bounded ingest coverage': ('## coverage', 'excluded', 'does not present a complete timeline'),
+    'Existing page reused or no-op': ('make no change', 'already covered', 'not creating an open-questions file'),
+    'Selected save': ('only the decision', 'not automatically confirmed', 'no confidence label',
+                      'do not ingest or capture'),
+}
+assert pattern_cases.keys() == expected_pattern_cases.keys(), pattern_cases.keys()
+for name, phrases in expected_pattern_cases.items():
+    case = ' '.join(pattern_cases[name].lower().split())
+    for label in ('**task.**', '**evidence.**', '**expected.**'):
+        assert label in case, (name, label)
+    for phrase in phrases:
+        assert phrase in case, (name, phrase)
+pattern_pages = re.findall(r'^```markdown\n(.*?)\n```$', patterns_text, re.S | re.M)
+assert len(pattern_pages) == 6, len(pattern_pages)
+with tempfile.TemporaryDirectory() as temp:
+    for number, snippet in enumerate(pattern_pages):
+        frontmatter = yaml.safe_load(snippet.split('---\n', 2)[1])
+        assert set(frontmatter) == {'type'}, (number, frontmatter)
+        assert not re.search(r'confidence:|\d%|\[\^', snippet), number
+        page = Path(temp) / f'pattern-{number}.md'
+        page.write_text(snippet + '\n')
+        result = subprocess.run([sys.executable, str(ROOT / 'skills/wiki/scripts/okf_mw/validate.py'), str(page)],
+                                text=True, capture_output=True)
+        assert result.returncode == 0, (number, result.stderr)
+for target in re.findall(r'\]\(([^)#:]+\.md)(?:#[^)]+)?\)', re.sub(r'^```.*?^```$', '', patterns_text, flags=re.S | re.M)):
+    assert (patterns_path.parent / target).resolve().is_file(), target
+css_gap = next(line for line in (ROOT / 'skills/wiki/references/css-snippets.md').read_text().splitlines()
+               if line.startswith('| `gap` |'))
+assert 'unresolved question' in css_gap, css_gap
+
 baseline_doc = (ROOT / 'docs/source-baselines.md').read_text().lower().replace('**', '')
 for boundary in ('observe-inspect', 'observe-apply', 'baseline-inspect', 'baseline-apply',
                  'source-history', 'no-change', '64 mib', 'not copied or archived',

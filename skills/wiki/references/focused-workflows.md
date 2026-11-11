@@ -84,7 +84,10 @@ A save request must identify the answer, decision, or insight to preserve. Save
 only that selected material, not the full transcript or unrelated context.
 Separate the assistant's synthesis from user statements and cited evidence;
 preserve uncertainty, disagreement, and limits. Never invent citations or
-claim the conversation itself is an external source.
+claim the conversation itself is an external source. Only when the selected
+material contains a contested fact, open question, or commitment, the optional
+[authoring patterns](authoring-patterns.md) show how to record it on the
+canonical page.
 
 Before creating a page, query the wiki and inspect likely existing pages. Update
 the best canonical page when the material belongs there; create a new page only
@@ -231,8 +234,10 @@ batch path described below; use them only when useful for the selected task,
 never as a prerequisite or fabricated retrofit. For repository changes, use
 [update mode](update-mode.md); for other user-selected material, use
 [research discipline](research-discipline.md) and
-[authoring standards](authoring-standards.md). Ask before expanding beyond the
-selected source/topic or making destructive changes.
+[authoring standards](authoring-standards.md). Only when the selected source
+contains a contested fact, open question, or commitment, or was scanned within
+bounds, use the optional [authoring patterns](authoring-patterns.md). Ask before
+expanding beyond the selected source/topic or making destructive changes.
 
 ## Research
 
@@ -248,7 +253,9 @@ records are optional; when helpful and authorized, record only inspected source
 identities, support, contradictions, uncertainty, and actual review state using
 the shared evidence workflow. Do not mark unknown freshness as current or call
 linked claims verified. Follow [research discipline](research-discipline.md) and
-[authoring standards](authoring-standards.md).
+[authoring standards](authoring-standards.md). When filing and only when the
+findings include a contested fact, open question, commitment, or bounded scan,
+use the optional [authoring patterns](authoring-patterns.md).
 
 ## Health
 
