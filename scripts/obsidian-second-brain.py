@@ -7,12 +7,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import shutil
 from typing import Any
 
-from config_contract import load_config
+from config_contract import load_config, obsidian_git_diagnostics
 from module_loading import load_source
 
 INDEX_MODULE = load_source("obsidian_cli_bm25", str(Path(__file__).with_name("bm25-index.py")))
@@ -21,6 +22,10 @@ LIFECYCLE_MODULE = load_source("obsidian_cli_lifecycle", str(Path(__file__).with
 DEFAULT_CONFIG = Path.home() / ".config/obsidian-second-brain/properties.json"
 DEFAULT_INDEX = Path(".vault-meta/retrieval/bm25.json")
 MAX_EXCERPT = 360
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+DOCTOR_SCHEMA_VERSION = 1
+SEMANTIC_CACHE = Path(".vault-meta/retrieval/chunks.json")
+SETUP_DOC = "docs/setup.md"
 READS_MODULE = load_source("obsidian_cli_retrieval_reads", str(Path(__file__).with_name("retrieval_reads.py")))
 
 
@@ -90,7 +95,7 @@ def doctor(config_file: Path, config: dict[str, Any] | None, config_error: str |
         checks.update({"cacheExclusions": {"applicable": False, "effective": None, "detail": "no vault selected"},
                        "lifecycle": {"pending": False, "count": 0, "state": "unavailable: no vault selected"},
                        "retrieval": {"ready": False, "indexExists": False, "reason": "no vault selected"}})
-        return checks
+        return add_readiness(checks, config_file, config, config_error, vault)
     wiki = vault / "wiki"
     checks["vaultExists"] = vault.is_dir() and not vault.is_symlink()
     checks["wikiExists"] = wiki.is_dir() and not wiki.is_symlink()
@@ -142,7 +147,297 @@ def doctor(config_file: Path, config: dict[str, Any] | None, config_error: str |
     if retry.get("pending") or retry.get("error"):
         retrieval.update({"ready": False, "reason": "published wiki batch has a pending retrieval refresh" if retry.get("pending") else retry["error"]})
     checks["retrieval"] = retrieval
+    return add_readiness(checks, config_file, config, config_error, vault)
+
+
+# Readiness/capability discovery (schema v1). Additive to the legacy doctor keys:
+# it reuses the facts gathered above plus cheap static lstat/read checks, never
+# walks the vault, probes Ollama or the Obsidian app, writes, or runs suggestions.
+CAPABILITY_COMMANDS = {
+    "lexicalSearch": ["search", "build"],
+    "spanReads": ["read --start/--end"],
+    "sectionReads": ["outline", "read --section"],
+    "evidenceReport": ["evidence-report"],
+    "reviewedWrites": ["batch-*", "capture-*", "observe-*", "baseline-*"],
+    "sourceChecks": ["source-check", "source-history"],
+    "semanticRerank": ["search --hybrid", "build --semantic-chunks"],
+}
+
+
+def package_version() -> str | None:
+    try:
+        version = json.loads((PACKAGE_ROOT / "package.json").read_text(encoding="utf-8")).get("version")
+    except (OSError, UnicodeError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) else None
+
+
+def _configured_vault(config: dict[str, Any] | None) -> Path | None:
+    """Resolve only the config's own selection, mirroring resolve_vault without overrides."""
+    value = config.get("vaultPath") if isinstance(config, dict) else None
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return Path(os.path.abspath(path)).resolve()
+
+
+def _symlinked(*paths: Path) -> bool:
+    return any(path.is_symlink() for path in paths)
+
+
+def _action(code: str, summary: str, anchor: str, argv: list[str] | None = None, *, doc: str = SETUP_DOC,
+            env: dict[str, str] | None = None, mutates: bool = False, review: bool = False,
+            manual: bool = False) -> dict[str, Any]:
+    """A suggestion only: doctor never executes it. argv is anchored at this package root."""
+    action: dict[str, Any] = {"code": code, "summary": summary, "doc": f"{doc}#{anchor}" if anchor else doc,
+                              "argv": argv, "mutates": mutates, "requiresReview": review, "manual": manual}
+    if env:
+        action["env"] = env
+    return action
+
+
+def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[dict[str, Any]]:
+    python = sys.executable
+    bootstrap = str(PACKAGE_ROOT / "scripts/bootstrap-vault.py")
+    env = {"OBSIDIAN_AGENT_CONFIG": str(config_file)}
+    scaffold = _action("preview-scaffold", "Preview the reviewed wiki scaffold for the selected vault; apply only its reviewed plan hash.",
+                       "2-scaffold-a-new-wiki", [python, bootstrap, "--vault", str(vault)], env=env)
+    configure = _action("preview-configure", "Preview the reviewed configuration plan for the selected vault; apply only its reviewed plan hash.",
+                        "4-preview-the-configuration-profile", [python, bootstrap, "--vault", str(vault), "--configure"], env=env)
+    build = _action("build-index", "Rebuild the derived BM25 cache after reviewing pending changes (explicit, derived-state write).",
+                    "local-retrieval", [python, str(PACKAGE_ROOT / "scripts/obsidian-second-brain.py"), "build", "--vault", str(vault)],
+                    mutates=True, review=True)
+    actions = {
+        "python-unsupported": [_action("select-python", "Select a Python 3.14+ environment for both clients.", "1-prepare-tools-and-select-paths", manual=True)],
+        "pyyaml-missing": [_action("install-requirements", "Install the shipped requirements into this Python environment.",
+                                   "1-prepare-tools-and-select-paths",
+                                   [python, "-m", "pip", "install", "-r", str(PACKAGE_ROOT / "requirements.txt")],
+                                   mutates=True, review=True, manual=True)],
+        "jq-missing": [_action("install-jq", "Install jq; the lifecycle hook needs it when a config exists.", "1-prepare-tools-and-select-paths", manual=True)],
+        "config-missing-no-vault": [_action("choose-vault", "Choose an absolute vault path, then preview the reviewed scaffold for it.", "2-scaffold-a-new-wiki", manual=True)],
+        "vault-null": [_action("choose-vault", "Choose an absolute vault path explicitly, then preview the reviewed configuration for it.", "selected-config-and-repair", manual=True)],
+        "config-invalid": [_action("repair-config", "Review a minimal repair of the selected config; preserve unrelated fields.", "selected-config-and-repair", manual=True, review=True)],
+        "vault-missing": [scaffold],
+        "vault-not-directory": [_action("choose-vault", "The selected vault is not a directory; choose the intended vault path.", "selected-config-and-repair", manual=True)],
+        "wiki-missing": [scaffold],
+        "wiki-index-missing": [scaffold],
+        "wiki-unsafe": [_action("inspect-wiki-path", "Inspect the symlinked wiki path; setup refuses symlinked vault paths.", "2-scaffold-a-new-wiki", manual=True)],
+        "config-missing": [configure],
+        "config-vault-null": [configure],
+        "configure-not-applied": [configure],
+        "cache-exclusions-ineffective": [configure],
+        "config-selects-other-vault": [_action("review-config-selection", "The config selects another vault; it is preserved, never retargeted automatically.", "selected-config-and-repair", manual=True)],
+        "obsidian-settings-unsafe": [_action("inspect-obsidian-settings", "Inspect symlinked Obsidian settings; setup refuses them.", "3-install-and-enable-obsidian-git", manual=True)],
+        "git-missing": [_action("install-git", "Install Git; Obsidian Git needs it.", "1-prepare-tools-and-select-paths", manual=True)],
+        "vault-not-git-worktree": [_action("set-up-vault-git", "Use the owner-controlled Obsidian Git workflow to initialize or select the vault repository.", "3-install-and-enable-obsidian-git", manual=True)],
+        "derived-state-tracked": [_action("review-derived-state", "Derived retrieval/lifecycle state is tracked in Git; review the ignore and privacy guidance.", "",
+                                          doc="skills/wiki/references/git-setup.md", manual=True)],
+        "lifecycle-pending": [_action("finish-wiki-session", "Captured wiki writes finalize at the end of the writing session; repair invalid pages if any.", "5-use-the-wiki-from-the-source-workspace", manual=True)],
+        "lifecycle-state-unreadable": [_action("inspect-lifecycle-state", "Inspect the lifecycle state reported by doctor; do not delete it to force progress.", "check-a-problem", manual=True)],
+        "index-missing": [build], "index-stale": [build], "index-invalid": [build], "retrieval-refresh-pending": [build],
+        "index-unsafe": [_action("inspect-retrieval-cache", "Inspect the symlinked retrieval cache path; build refuses it.", "local-retrieval", manual=True)],
+        "retrieval-state-unknown": [_action("inspect-retrieval-state", "Inspect the retrieval state reported by doctor.", "check-a-problem", manual=True)],
+    }
+    for code in OBSIDIAN_GIT_CODES:
+        actions[code] = [_action("install-obsidian-git", "Install or enable Obsidian Git 2.39.0+ in Obsidian (Settings > Community plugins).",
+                                 "3-install-and-enable-obsidian-git", manual=True)]
+    actions["freshness-unknown"] = actions["retrieval-state-unknown"]
+    actions["content-pending"] = actions["lifecycle-pending"]
+    return actions.get(reason, [])
+
+
+OBSIDIAN_GIT_CODES = ("obsidian-git-missing", "obsidian-git-invalid", "obsidian-git-incompatible", "obsidian-git-disabled")
+
+
+def _retrieval_code(retrieval: dict[str, Any]) -> tuple[str, str | None]:
+    """Map the legacy retrieval check to (state, reason code)."""
+    if retrieval.get("ready"):
+        return "ready", None
+    reason = retrieval.get("reason") or ""
+    if not retrieval.get("indexExists"):
+        return "unavailable", "index-unsafe" if "symlink" in reason else "index-missing"
+    if reason.startswith("index invalid"):
+        return "unavailable", "index-invalid"
+    retry = retrieval.get("retry") or {}
+    if retry.get("error"):
+        return "unknown", "retrieval-state-unknown"
+    if retry.get("pending"):
+        return "unavailable", "retrieval-refresh-pending"
+    return {"pending-content": ("unavailable", "content-pending"), "pending-refresh": ("unavailable", "retrieval-refresh-pending"),
+            "stale": ("unavailable", "index-stale"), "stale-projection": ("unavailable", "index-stale")}.get(
+                retrieval.get("freshness"), ("unknown", "freshness-unknown"))
+
+
+def _stage(name: str, status: str, reason: str | None = None, detail: str | None = None, **extra: Any) -> dict[str, Any]:
+    return {"name": name, "status": status, "reason": reason, "detail": detail, **extra}
+
+
+def _capability(state: str, reason: str | None, detail: str | None, name: str, **extra: Any) -> dict[str, Any]:
+    return {"state": state, "reason": reason, "detail": detail, "commands": CAPABILITY_COMMANDS[name], **extra}
+
+
+def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, Any] | None,
+                  config_error: str | None, vault: Path | None) -> dict[str, Any]:
+    deps = checks["dependencies"]
+    markdown_it = importlib.util.find_spec("markdown_it") is not None
+    config_exists = checks["config"]["exists"]
+    vault_ok = vault is not None and bool(checks.get("vaultExists"))
+    wiki_ok = vault_ok and bool(checks.get("wikiExists"))
+
+    package_problems = [code for code, failed in (("python-unsupported", not deps["pythonSupported"]),
+                                                  ("pyyaml-missing", not deps["pyyaml"]),
+                                                  ("jq-missing", config_exists and not deps["jq"])) if failed]
+    stages = [_stage("package", "blocked" if package_problems else "ok", package_problems[0] if package_problems else None,
+                     "Python 3.14+, PyYAML, and (with a config) jq are required" if package_problems else None,
+                     root=str(PACKAGE_ROOT), version=package_version(), python=deps["python"], problems=package_problems,
+                     optional={"markdownItPy": markdown_it, "git": deps["git"]})]
+
+    configured = _configured_vault(config) if config_error is None else None
+    if vault is None:
+        reason = "config-invalid" if config_error else "config-missing-no-vault" if not config_exists else "vault-null"
+        stages.append(_stage("vaultSelected", "blocked", reason, "no vault is selected", source=None))
+    else:
+        source = "config" if configured == vault else "override"
+        if not vault.exists():
+            stages.append(_stage("vaultSelected", "blocked", "vault-missing", "the selected vault path does not exist", source=source))
+        elif not vault_ok:
+            stages.append(_stage("vaultSelected", "blocked", "vault-not-directory", "the selected vault is not a directory", source=source))
+        else:
+            stages.append(_stage("vaultSelected", "ok", source=source))
+
+    if not vault_ok:
+        stages.append(_stage("scaffold", "skipped", "requires-vault"))
+    else:
+        wiki, root_index = vault / "wiki", vault / "wiki/index.md"
+        if _symlinked(wiki, root_index):
+            stages.append(_stage("scaffold", "blocked", "wiki-unsafe", "wiki/ or wiki/index.md is a symlink"))
+        elif not wiki.is_dir():
+            stages.append(_stage("scaffold", "blocked", "wiki-missing", "wiki/ is missing"))
+        elif not root_index.is_file():
+            stages.append(_stage("scaffold", "blocked", "wiki-index-missing", "wiki/index.md navigation is missing"))
+        else:
+            stages.append(_stage("scaffold", "ok"))
+
+    sync = {"syncOwner": "obsidian-git", "appState": "not-probed"}
+    if not vault_ok:
+        stages.append(_stage("workflow", "skipped", "requires-vault", **sync))
+    else:
+        obsidian = vault / ".obsidian"
+        plugin = obsidian / "plugins/obsidian-git"
+        exclusions = checks["cacheExclusions"]
+        features = config.get("features") if isinstance(config, dict) else None
+        status, reason, detail = "ok", None, "configured; Obsidian Git schedules sync independently and its app state is not probed"
+        if config_error:
+            status, reason, detail = "blocked", "config-invalid", "the selected config is invalid"
+        elif not config_exists:
+            status, reason, detail = "blocked", "config-missing", "no integration config exists yet"
+        elif configured is None:
+            status, reason, detail = "blocked", "config-vault-null", "the config does not select a vault"
+        elif configured != vault:
+            status, reason, detail = "blocked", "config-selects-other-vault", "the config selects a different vault"
+        elif not (isinstance(features, dict) and features.get("autoCommit") is False):
+            status, reason, detail = "blocked", "configure-not-applied", "the reviewed configuration has not been applied"
+        elif _symlinked(obsidian, obsidian / "plugins", plugin, plugin / "manifest.json", obsidian / "community-plugins.json"):
+            status, reason, detail = "unknown", "obsidian-settings-unsafe", "Obsidian settings contain a symlink"
+        elif problems := obsidian_git_diagnostics(vault):
+            status, reason, detail = "blocked", problems[0][0], problems[0][1]
+        elif not deps["git"]:
+            status, reason, detail = "blocked", "git-missing", "git is not installed"
+        elif not exclusions.get("applicable"):
+            status, reason, detail = "blocked", "vault-not-git-worktree", "no Git repository at the vault root"
+        elif not exclusions.get("effective"):
+            status, reason, detail = "blocked", "cache-exclusions-ineffective", exclusions.get("detail")
+        elif exclusions.get("tracked"):
+            status, reason, detail = "blocked", "derived-state-tracked", "derived state is already tracked in Git"
+        stages.append(_stage("workflow", status, reason, detail, **sync))
+
+    lifecycle = checks["lifecycle"]
+    if not vault_ok:
+        stages.append(_stage("pendingContent", "skipped", "requires-vault"))
+    elif lifecycle.get("state") == "unavailable":
+        stages.append(_stage("pendingContent", "unknown", "lifecycle-state-unreadable", lifecycle.get("error")))
+    elif lifecycle.get("pending"):
+        stages.append(_stage("pendingContent", "pending", "lifecycle-pending", f"{lifecycle.get('count', 0)} captured page(s) await finalization"))
+    else:
+        stages.append(_stage("pendingContent", "ok"))
+
+    retrieval = checks["retrieval"]
+    retrieval_state, retrieval_reason = _retrieval_code(retrieval) if vault_ok else ("unavailable", None)
+    if not vault_ok:
+        stages.append(_stage("pendingRetrieval", "skipped", "requires-vault"))
+    elif retrieval_state == "ready":
+        stages.append(_stage("pendingRetrieval", "ok"))
+    else:
+        stages.append(_stage("pendingRetrieval", "unknown" if retrieval_state == "unknown" else "pending", retrieval_reason, retrieval.get("reason")))
+
+    first = next((stage for stage in stages if stage["status"] != "ok"), None)
+    actions: list[dict[str, Any]] = []
+    for code in ([first["reason"]] if first else []) + package_problems:
+        for action in _next_actions(code, vault, config_file):
+            if all(action["code"] != existing["code"] for existing in actions):
+                actions.append(action)
+    actions = actions[:3]
+
+    # Capabilities describe local availability only; optional gaps never mark
+    # local Markdown reads or BM25 search as broken.
+    if not deps["pythonSupported"]:
+        base = "python-unsupported"
+    elif vault is None:
+        base = "no-vault"
+    elif not vault_ok:
+        base = "vault-missing" if not vault.exists() else "vault-not-directory"
+    elif not wiki_ok:
+        base = "wiki-missing"
+    else:
+        base = None
+
+    def gated(name: str, *requirements: tuple[bool, str], detail: str | None = None, **extra: Any) -> dict[str, Any]:
+        if base:
+            return _capability("unavailable", base, None, name)
+        missing = next((code for present, code in requirements if not present), None)
+        return _capability("unavailable" if missing else "ready", missing, detail, name, **extra)
+
+    if base:
+        lexical = _capability("unavailable", base, None, "lexicalSearch")
+    else:
+        lexical = _capability(retrieval_state, retrieval_reason,
+                              None if retrieval_state == "ready" else "search falls back to generated wiki/index.md navigation when the index cannot answer",
+                              "lexicalSearch")
+    if base:
+        semantic = _capability("unavailable", base, None, "semanticRerank")
+    elif _symlinked(vault / ".vault-meta", vault / ".vault-meta/retrieval", vault / SEMANTIC_CACHE):
+        semantic = _capability("unavailable", "semantic-cache-unsafe", None, "semanticRerank")
+    elif not (vault / SEMANTIC_CACHE).is_file():
+        semantic = _capability("unavailable", "semantic-cache-missing", "optional; BM25 search is unaffected", "semanticRerank")
+    else:
+        semantic = _capability("supported", "service-not-probed",
+                               "cache present; the loopback embedding service is not probed; --hybrid keeps BM25 results on failure",
+                               "semanticRerank")
+    checks["schemaVersion"] = DOCTOR_SCHEMA_VERSION
+    checks["capabilities"] = {
+        "lexicalSearch": lexical,
+        "spanReads": gated("spanReads"),
+        "sectionReads": gated("sectionReads", (markdown_it, "markdown-it-missing")),
+        "evidenceReport": gated("evidenceReport", (deps["pyyaml"], "pyyaml-missing"), (markdown_it, "markdown-it-missing")),
+        "reviewedWrites": gated("reviewedWrites", (deps["pyyaml"], "pyyaml-missing")),
+        "sourceChecks": gated("sourceChecks", (deps["pyyaml"], "pyyaml-missing"),
+                              detail=None if deps["git"] else "source-history needs git; source-check does not",
+                              limitations=[] if deps["git"] else ["git-missing"]),
+        "semanticRerank": semantic,
+    }
+    checks["readiness"] = {"stage": first["name"] if first else "ready", "reason": first["reason"] if first else None,
+                           "stages": stages, "nextActions": actions}
     return checks
+
+
+def format_action(action: dict[str, Any]) -> str:
+    """Render a suggestion for humans; it is never executed by doctor."""
+    if action["argv"]:
+        prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in sorted((action.get("env") or {}).items()))
+        return (prefix + " " if prefix else "") + shlex.join(action["argv"])
+    return f"see {action['doc']}"
 
 
 def freshness(index: Path, pages: list[str], vault: Path) -> str:
@@ -651,6 +946,15 @@ def main() -> int:
             print(f"Retrieval: {'ready' if output['retrieval']['ready'] else output['retrieval']['reason']}")
             print(f"Lifecycle: {output['lifecycle']['state']}")
             print(f"Cache exclusions: {output['cacheExclusions']['detail']}")
+            readiness = output["readiness"]
+            print(f"Stage: {readiness['stage']}" + (f" ({readiness['reason']})" if readiness["reason"] else ""))
+            for name, capability in output["capabilities"].items():
+                print(f"Capability {name}: {capability['state']}" + (f" ({capability['reason']})" if capability["reason"] else ""))
+            for action in readiness["nextActions"]:
+                flags = ", ".join(flag for flag, on in (("manual", action["manual"]), ("writes", action["mutates"]),
+                                                         ("review first", action["requiresReview"])) if on)
+                print(f"Next: {action['summary']}" + (f" [{flags}]" if flags else ""))
+                print(f"  {format_action(action)}")
             if output['config']['error']:
                 print(output['config']['error'], file=sys.stderr)
             if output['dependencies']['pythonError']:

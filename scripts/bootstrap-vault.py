@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from config_contract import load_config
+from config_contract import OBSIDIAN_GIT_ID, load_config, obsidian_git_diagnostics
 
 ROOT = Path(__file__).resolve().parents[1]
 MIDDLEWARE = ROOT / "skills/wiki/scripts/okf_mw"
@@ -21,7 +21,6 @@ sys.path.insert(0, str(MIDDLEWARE))
 from ownership import record_created
 QUICKSTART = """---\ntype: note\ntitle: Quickstart\ndescription: Entry point and backlog for this vault.\n---\n# Quickstart\n\nThis wiki is the entry point for knowledge in this Obsidian vault. Add substantive pages as the vault grows; generated indexes provide navigation.\n\n## Backlog\n\n- Add topics and source references as needed.\n"""
 
-OBSIDIAN_GIT_ID = "obsidian-git"
 OBSIDIAN_GIT_PROFILE = {
     "autoSaveInterval": 5,
     "autoBackupAfterFileChange": True,
@@ -164,36 +163,8 @@ def plan_for(vault: Path, config: Path, configure: bool = False) -> dict:
 
     # Obsidian Git is operator-installed. Preview readiness without requiring it
     # for the independent wiki scaffold.
-    plugin_dir = obsidian / "plugins" / OBSIDIAN_GIT_ID
-    manifest_path = plugin_dir / "manifest.json"
-    settings_path = plugin_dir / "data.json"
-    enabled_path = obsidian / "community-plugins.json"
-    plugin_errors = []
-    manifest = None
-    manifest_loaded = False
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest_loaded = True
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        plugin_errors.append("Obsidian Git plugin is missing or has an unreadable manifest; install it in Obsidian")
-    if manifest_loaded:
-        if not isinstance(manifest, dict):
-            plugin_errors.append("Obsidian Git manifest is invalid; expected a JSON object")
-        else:
-            version = manifest.get("version")
-            match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version) if isinstance(version, str) else None
-            numbers = tuple(int(part) for part in match.groups()) if match else ()
-            if manifest.get("id") != OBSIDIAN_GIT_ID or not match or numbers < (2, 39, 0):
-                plugin_errors.append("Obsidian Git manifest id/version is incompatible (requires obsidian-git 2.39.0 or newer stable semver)")
-    enabled = []
-    try:
-        enabled = json.loads(enabled_path.read_text(encoding="utf-8"))
-        if not isinstance(enabled, list):
-            enabled = []
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        pass
-    if OBSIDIAN_GIT_ID not in enabled:
-        plugin_errors.append("Obsidian Git is not enabled in .obsidian/community-plugins.json")
+    settings_path = obsidian / "plugins" / OBSIDIAN_GIT_ID / "data.json"
+    plugin_errors = [message for _, message in obsidian_git_diagnostics(vault)]
     profile_diffs = {}
     if configure and not plugin_errors:
         if settings_path.exists():

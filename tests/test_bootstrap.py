@@ -11,7 +11,27 @@ from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/bootstrap-vault.py"
 sys.path.insert(0, str(SCRIPT.parent))
-from config_contract import load_config, repair_target
+from config_contract import load_config, obsidian_git_diagnostics, repair_target
+
+# The static Obsidian Git check is shared by setup and doctor; it reads only the
+# plugin manifest and enabled list and reports each prerequisite separately.
+with tempfile.TemporaryDirectory() as plugin_temp:
+    vault = Path(plugin_temp)
+    disabled = ("obsidian-git-disabled", "Obsidian Git is not enabled in .obsidian/community-plugins.json")
+    assert [code for code, _ in obsidian_git_diagnostics(vault)] == ["obsidian-git-missing", "obsidian-git-disabled"]
+    plugin = vault / ".obsidian/plugins/obsidian-git"
+    plugin.mkdir(parents=True)
+    for manifest_value, expected in (({"id": "obsidian-git", "version": "2.38.9"}, "obsidian-git-incompatible"),
+                                     ({"id": "other", "version": "2.40.0"}, "obsidian-git-incompatible"),
+                                     ([], "obsidian-git-invalid")):
+        (plugin / "manifest.json").write_text(json.dumps(manifest_value))
+        assert obsidian_git_diagnostics(vault)[0][0] == expected
+    (plugin / "manifest.json").write_text(json.dumps({"id": "obsidian-git", "version": "2.39.0"}))
+    assert obsidian_git_diagnostics(vault) == [disabled]
+    (vault / ".obsidian/community-plugins.json").write_text('{"obsidian-git": true}')
+    assert obsidian_git_diagnostics(vault) == [disabled]
+    (vault / ".obsidian/community-plugins.json").write_text('["obsidian-git"]')
+    assert obsidian_git_diagnostics(vault) == []
 
 # Shared config contract rejects malformed feature containers and known flags,
 # while treating null as omitted and preserving unknown fields.

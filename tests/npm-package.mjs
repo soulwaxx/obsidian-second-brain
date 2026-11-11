@@ -108,6 +108,27 @@ try {
   const nativeDoctor = JSON.parse(run(process.execPath, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "--pi-tool", "doctor", JSON.stringify({ vault: cliVault })], { cwd: work, encoding: "utf8" }));
   assert.equal(nativeDoctor.operation, "doctor");
   assert.equal(nativeDoctor.payload.vault, fs.realpathSync(cliVault), "packed native tool uses explicit vault without npm bin lookup");
+  assert.equal(nativeDoctor.payload.schemaVersion, 1, "packed native doctor passes readiness through");
+  // Installed readiness discovery from a cwd outside both package and vault,
+  // with space/Unicode paths: suggestions are anchored at the installed root.
+  const installedRoot = fs.realpathSync(installed);
+  const readinessVault = path.join(work, "readiness vault ü");
+  fs.mkdirSync(path.join(readinessVault, "wiki"), { recursive: true });
+  fs.writeFileSync(path.join(readinessVault, "wiki/index.md"), "# Index\n");
+  const readinessCwd = path.join(work, "outside cwd ü");
+  fs.mkdirSync(readinessCwd);
+  for (const command of [[cli], [process.execPath, path.join(installed, "scripts/obsidian-second-brain.mjs")]]) {
+    const report = JSON.parse(run(command[0], [...command.slice(1), "doctor", "--json", "--config", path.join(work, "missing-config.json"), "--vault", readinessVault], { cwd: readinessCwd, encoding: "utf8" }));
+    assert.equal(report.schemaVersion, 1);
+    assert.equal(report.readiness.stages[0].root, installedRoot, "doctor reports the installed package root");
+    assert.deepEqual([report.readiness.stage, report.readiness.reason], ["workflow", "config-missing"]);
+    assert.equal(report.capabilities.spanReads.state, "ready");
+    const [configure] = report.readiness.nextActions;
+    assert.equal(configure.code, "preview-configure");
+    assert.deepEqual(configure.argv.slice(1), [path.join(installedRoot, "scripts/bootstrap-vault.py"), "--vault", fs.realpathSync(readinessVault), "--configure"]);
+    assert.ok(!configure.argv.includes("--apply"));
+  }
+  assert.deepEqual(fs.readdirSync(readinessVault), ["wiki"], "installed readiness discovery writes nothing");
   const binSearchPath = process.env.PATH.split(path.delimiter).filter((entry) => path.resolve(entry) !== path.resolve(path.join(prefix, "node_modules/.bin"))).join(path.delimiter);
   assert.ok(!binSearchPath.split(path.delimiter).some((entry) => path.resolve(entry) === path.resolve(path.join(prefix, "node_modules/.bin"))));
   const unrelatedCwd = path.join(work, "caller cwd ü space");

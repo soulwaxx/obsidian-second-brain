@@ -167,6 +167,8 @@ configuration, dependency, vault, cache-exclusion, lifecycle, and retrieval
 status; it does not repair anything. Doctor exposes `dependencies.pythonMinimum`,
 `pythonSupported`, and `pythonError`; an unsupported interpreter produces an
 actionable diagnostic and exit status 1, even if the integration config is valid.
+Doctor also reports capability readiness and the next safe setup step; see
+[readiness and next steps](#readiness-and-next-steps).
 `obsidian-second-brain evidence-report --json` is an additional read-only report. For direct, hash-bound page reads
 without an index, see the [retrieval read/outline commands](retrieval-reads.md). Optional source/claim ledgers are
 canonical wiki data and are never migrated or required; the report describes
@@ -174,6 +176,55 @@ structure and declared metadata, not factual verification. Use the generated ind
 search is unavailable or unhelpful. See the
 [focused workflow reference](../skills/wiki/references/focused-workflows.md)
 for scope boundaries.
+
+## Readiness and next steps
+
+`doctor --json` (and Pi `wiki_doctor`) add three schema-v1 keys to the
+unchanged legacy output; the exit status is unchanged, so "not configured yet"
+still exits 0 with a valid config and supported Python.
+
+- `capabilities` lists only shipped features: `lexicalSearch`, `spanReads`,
+  `sectionReads`, `evidenceReport`, `reviewedWrites`, `sourceChecks`, and
+  `semanticRerank`. Each has a `state`, a bounded `reason` code, an optional
+  `detail`, and the CLI `commands` it covers. `ready` means every local
+  prerequisite was verified now; `supported` means local prerequisites exist
+  but readiness depends on a service doctor deliberately does not probe (the
+  loopback embedding service for `semanticRerank`); `unavailable` names a
+  missing or invalid local prerequisite; `unknown` means a check could not
+  decide. A missing optional parser, semantic cache, or Ollama never marks
+  local Markdown reads or BM25 search as broken; a stale or missing index
+  makes only `lexicalSearch` unavailable, and search still falls back to
+  generated navigation.
+- `readiness.stages` is ordered: `package` (Python, required PyYAML, `jq`
+  when a config exists; optional `markdownItPy`/`git`; installed root and
+  version), `vaultSelected` (with `source`: `config` or `override`),
+  `scaffold` (`wiki/` and `wiki/index.md`), `workflow` (config selects
+  this vault, reviewed configuration applied, Obsidian Git manifest/enabled
+  list, Git repository and derived-state exclusions), `pendingContent`
+  (lifecycle captures), and `pendingRetrieval` (index missing, stale, or
+  awaiting refresh). Each stage has `status` `ok`, `blocked`, `pending`,
+  `unknown`, or `skipped`. `readiness.stage`/`reason` name the first stage
+  that is not `ok`, or `ready`. Workflow reports `syncOwner: obsidian-git`
+  and `appState: not-probed`: enabled settings are not proof that Obsidian is
+  open or syncing, and pending content or a stale cache is not a sync failure.
+- `readiness.nextActions` holds at most three suggestions with a fixed
+  `code`, `summary`, `doc`, and `argv` (or `null` for manual steps), plus
+  `mutates`, `requiresReview`, `manual`, and an `env` binding the selected
+  `OBSIDIAN_AGENT_CONFIG` for setup previews. Commands use the running
+  interpreter and this package's absolute root, never a bin on `PATH`.
+  Suggestions are limited to scaffold/configuration previews, the explicit BM25
+  `build`, and a manual `requirements.txt` install. Doctor never runs them,
+  never suggests `--apply` (that needs a reviewed plan hash), Git commands,
+  plugin or model installs, semantic builds, config resets, or lifecycle
+  finalization.
+
+Discovery reads the existing doctor facts plus a few static files (Obsidian Git
+manifest and enabled list, cache presence). It does not walk the vault, write
+vault/config/cache files, or contact the network or the Obsidian app. Caller
+cwd does not affect it: the vault comes from `--vault`, `OBSIDIAN_VAULT_PATH`,
+or the selected config, and when the bin is not on `PATH` the
+[package-relative launcher](../skills/wiki/references/focused-workflows.md#run-the-package-cli)
+gives the same result.
 
 ## Local retrieval
 
