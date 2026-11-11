@@ -213,6 +213,64 @@ class DoctorReadinessTests(unittest.TestCase):
         self.write_config({"vaultPath": str(self.vault)})
         self.assertEqual(self.stage(self.doctor(), "vaultSelected")["source"], "config")
 
+    def test_config_conflicts_replace_previews_that_setup_would_refuse(self):
+        other = self.root / "other"
+        other.mkdir()
+        self.write_config({"vaultPath": str(other)})
+        self.vault.mkdir()
+        report = self.doctor("--vault", str(self.vault))
+        self.assertEqual(report["readiness"]["reason"], "wiki-missing")
+        self.assertEqual(self.codes(report), ["review-config-selection"])
+        self.write_config("{broken")
+        report = json.loads(self.run_cli("doctor", "--json", "--vault", str(self.vault)).stdout)
+        self.assert_contract(report)
+        self.assertEqual(self.codes(report), ["repair-config"])
+        self.scaffold()
+        report = json.loads(self.run_cli("doctor", "--json", "--vault", str(self.vault)).stdout)
+        states = self.states(report)
+        # Write commands and source-check refuse an invalid selected config;
+        # reads and evidence-report do not consult it.
+        self.assertEqual(states["reviewedWrites"], ("unavailable", "config-invalid"))
+        self.assertEqual(states["sourceChecks"], ("unavailable", "config-invalid"))
+        self.assertEqual(states["spanReads"], ("ready", None))
+        self.assertEqual(states["evidenceReport"], ("ready", None))
+
+    def test_suggested_setup_previews_run_and_write_nothing(self):
+        def run_suggestion(report, code):
+            action = next(action for action in report["readiness"]["nextActions"] if action["code"] == code)
+            env = {**self.env, **action["env"]}
+            before = tree_snapshot(self.root)
+            result = subprocess.run(action["argv"], cwd=self.outside, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("planHash", json.loads(result.stdout))
+            self.assertEqual(tree_snapshot(self.root), before)
+        self.write_config({"vaultPath": str(self.vault)})
+        run_suggestion(self.doctor(), "preview-scaffold")  # vault-missing
+        self.vault.mkdir()
+        run_suggestion(self.doctor(), "preview-scaffold")  # wiki-missing
+        self.scaffold()
+        report = self.doctor()
+        self.assertEqual(report["readiness"]["reason"], "configure-not-applied")
+        run_suggestion(report, "preview-configure")
+
+    def test_symlinked_wiki_and_retrieval_cache_are_reported_as_unsafe(self):
+        self.configure()
+        real_wiki = self.root / "real-wiki"
+        shutil.move(self.vault / "wiki", real_wiki)
+        (self.vault / "wiki").symlink_to(real_wiki)
+        report = self.doctor()
+        self.assertEqual(report["readiness"]["reason"], "wiki-unsafe")
+        self.assertEqual(self.states(report)["spanReads"], ("unavailable", "wiki-unsafe"))
+        (self.vault / "wiki").unlink()
+        shutil.move(real_wiki, self.vault / "wiki")
+        self.build()
+        shutil.move(self.vault / ".vault-meta", self.root / "real-meta")
+        (self.vault / ".vault-meta").symlink_to(self.root / "real-meta")
+        report = self.doctor()
+        self.assertEqual(self.states(report)["lexicalSearch"], ("unavailable", "index-unsafe"))
+        self.assertEqual(self.stage(report, "pendingRetrieval")["reason"], "index-unsafe")
+        self.assertEqual(CLI_MODULE._next_actions("index-unsafe", self.vault, self.config)[0]["code"], "inspect-retrieval-cache")
+
     # -- scaffold and workflow states -----------------------------------------
     def test_wiki_missing_then_scaffold_only_keeps_local_markdown_usable(self):
         self.vault.mkdir()
@@ -325,6 +383,9 @@ class DoctorReadinessTests(unittest.TestCase):
         report = self.doctor()
         self.assertEqual(self.states(report)["semanticRerank"], ("supported", "service-not-probed"))
         self.assertEqual(report["readiness"]["stage"], "ready")
+        # Hybrid search fuses with BM25, so a cache alone is not enough.
+        (self.vault / "wiki/coffee.md").write_text("---\ntype: note\n---\n# Coffee\n\nChanged.\n", encoding="utf-8")
+        self.assertEqual(self.states(self.doctor())["semanticRerank"], ("unavailable", "index-stale"))
 
     def test_missing_optional_parser_does_not_break_local_search(self):
         self.configure()

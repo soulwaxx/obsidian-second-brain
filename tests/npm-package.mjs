@@ -128,7 +128,7 @@ try {
     assert.deepEqual(configure.argv.slice(1), [path.join(installedRoot, "scripts/bootstrap-vault.py"), "--vault", fs.realpathSync(readinessVault), "--configure"]);
     assert.ok(!configure.argv.includes("--apply"));
   }
-  assert.deepEqual(fs.readdirSync(readinessVault), ["wiki"], "installed readiness discovery writes nothing");
+  assert.deepEqual(fs.readdirSync(readinessVault, { recursive: true }).sort(), ["wiki", path.join("wiki", "index.md")], "installed readiness discovery writes nothing");
   const binSearchPath = process.env.PATH.split(path.delimiter).filter((entry) => path.resolve(entry) !== path.resolve(path.join(prefix, "node_modules/.bin"))).join(path.delimiter);
   assert.ok(!binSearchPath.split(path.delimiter).some((entry) => path.resolve(entry) === path.resolve(path.join(prefix, "node_modules/.bin"))));
   const unrelatedCwd = path.join(work, "caller cwd ü space");

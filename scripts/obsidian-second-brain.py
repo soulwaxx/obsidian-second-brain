@@ -162,6 +162,7 @@ CAPABILITY_COMMANDS = {
     "sourceChecks": ["source-check", "source-history"],
     "semanticRerank": ["search --hybrid", "build --semantic-chunks"],
 }
+OBSIDIAN_GIT_CODES = ("obsidian-git-missing", "obsidian-git-invalid", "obsidian-git-incompatible", "obsidian-git-disabled")
 
 
 def package_version() -> str | None:
@@ -248,16 +249,16 @@ def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[di
     return actions.get(reason, [])
 
 
-OBSIDIAN_GIT_CODES = ("obsidian-git-missing", "obsidian-git-invalid", "obsidian-git-incompatible", "obsidian-git-disabled")
-
 
 def _retrieval_code(retrieval: dict[str, Any]) -> tuple[str, str | None]:
     """Map the legacy retrieval check to (state, reason code)."""
     if retrieval.get("ready"):
         return "ready", None
     reason = retrieval.get("reason") or ""
+    if "symlink" in reason:
+        return "unavailable", "index-unsafe"
     if not retrieval.get("indexExists"):
-        return "unavailable", "index-unsafe" if "symlink" in reason else "index-missing"
+        return "unavailable", "index-missing"
     if reason.startswith("index invalid"):
         return "unavailable", "index-invalid"
     retry = retrieval.get("retry") or {}
@@ -373,9 +374,16 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         stages.append(_stage("pendingRetrieval", "unknown" if retrieval_state == "unknown" else "pending", retrieval_reason, retrieval.get("reason")))
 
     first = next((stage for stage in stages if stage["status"] != "ok"), None)
+    # Setup previews refuse an invalid config or one selecting another vault, so
+    # surface that conflict instead of suggesting a preview that cannot run.
+    config_conflict = ("config-invalid" if config_error else
+                       "config-selects-other-vault" if configured is not None and configured != vault else None)
     actions: list[dict[str, Any]] = []
     for code in ([first["reason"]] if first else []) + package_problems:
-        for action in _next_actions(code, vault, config_file):
+        suggested = _next_actions(code, vault, config_file)
+        if config_conflict and any(action["code"] in {"preview-scaffold", "preview-configure"} for action in suggested):
+            suggested = _next_actions(config_conflict, vault, config_file)
+        for action in suggested:
             if all(action["code"] != existing["code"] for existing in actions):
                 actions.append(action)
     actions = actions[:3]
@@ -389,7 +397,7 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     elif not vault_ok:
         base = "vault-missing" if not vault.exists() else "vault-not-directory"
     elif not wiki_ok:
-        base = "wiki-missing"
+        base = "wiki-unsafe" if (vault / "wiki").is_symlink() else "wiki-missing"
     else:
         base = None
 
@@ -407,6 +415,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
                               "lexicalSearch")
     if base:
         semantic = _capability("unavailable", base, None, "semanticRerank")
+    elif retrieval_state != "ready":
+        semantic = _capability(retrieval_state, retrieval_reason, "hybrid search fuses with the BM25 index", "semanticRerank")
     elif _symlinked(vault / ".vault-meta", vault / ".vault-meta/retrieval", vault / SEMANTIC_CACHE):
         semantic = _capability("unavailable", "semantic-cache-unsafe", None, "semanticRerank")
     elif not (vault / SEMANTIC_CACHE).is_file():
@@ -421,8 +431,8 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
         "spanReads": gated("spanReads"),
         "sectionReads": gated("sectionReads", (markdown_it, "markdown-it-missing")),
         "evidenceReport": gated("evidenceReport", (deps["pyyaml"], "pyyaml-missing"), (markdown_it, "markdown-it-missing")),
-        "reviewedWrites": gated("reviewedWrites", (deps["pyyaml"], "pyyaml-missing")),
-        "sourceChecks": gated("sourceChecks", (deps["pyyaml"], "pyyaml-missing"),
+        "reviewedWrites": gated("reviewedWrites", (config_error is None, "config-invalid"), (deps["pyyaml"], "pyyaml-missing")),
+        "sourceChecks": gated("sourceChecks", (config_error is None, "config-invalid"), (deps["pyyaml"], "pyyaml-missing"),
                               detail=None if deps["git"] else "source-history needs git; source-check does not",
                               limitations=[] if deps["git"] else ["git-missing"]),
         "semanticRerank": semantic,

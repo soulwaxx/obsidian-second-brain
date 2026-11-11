@@ -186,15 +186,19 @@ still exits 0 with a valid config and supported Python.
 - `capabilities` lists only shipped features: `lexicalSearch`, `spanReads`,
   `sectionReads`, `evidenceReport`, `reviewedWrites`, `sourceChecks`, and
   `semanticRerank`. Each has a `state`, a bounded `reason` code, an optional
-  `detail`, and the CLI `commands` it covers. `ready` means every local
+  `detail`, and the CLI `commands` it covers; `sourceChecks` also lists
+  `limitations` (`git-missing`: `source-history` needs Git, `source-check`
+  does not). `ready` means every local
   prerequisite was verified now; `supported` means local prerequisites exist
   but readiness depends on a service doctor deliberately does not probe (the
   loopback embedding service for `semanticRerank`); `unavailable` names a
   missing or invalid local prerequisite; `unknown` means a check could not
   decide. A missing optional parser, semantic cache, or Ollama never marks
   local Markdown reads or BM25 search as broken; a stale or missing index
-  makes only `lexicalSearch` unavailable, and search still falls back to
-  generated navigation.
+  makes `lexicalSearch` (and the BM25-fused `semanticRerank`) unavailable,
+  and search still falls back to generated navigation. An invalid selected
+  config makes `reviewedWrites` and `sourceChecks` unavailable because those
+  commands refuse it; reads and `evidence-report` do not consult it.
 - `readiness.stages` is ordered: `package` (Python, required PyYAML, `jq`
   when a config exists; optional `markdownItPy`/`git`; installed root and
   version), `vaultSelected` (with `source`: `config` or `override`),
@@ -213,15 +217,19 @@ still exits 0 with a valid config and supported Python.
   `OBSIDIAN_AGENT_CONFIG` for setup previews. Commands use the running
   interpreter and this package's absolute root, never a bin on `PATH`.
   Suggestions are limited to scaffold/configuration previews, the explicit BM25
-  `build`, and a manual `requirements.txt` install. Doctor never runs them,
+  `build`, and a manual `requirements.txt` install. When the selected config
+  is invalid or selects another vault, setup previews would be refused, so the
+  config review/repair guidance is suggested instead. Doctor never runs them,
   never suggests `--apply` (that needs a reviewed plan hash), Git commands,
   plugin or model installs, semantic builds, config resets, or lifecycle
   finalization.
 
 Discovery reads the existing doctor facts plus a few static files (Obsidian Git
-manifest and enabled list, cache presence). It does not walk the vault, write
-vault/config/cache files, or contact the network or the Obsidian app. Caller
-cwd does not affect it: the vault comes from `--vault`, `OBSIDIAN_VAULT_PATH`,
+manifest and enabled list, cache presence). It adds no vault walk beyond the
+existing retrieval freshness check, and it does not write vault/config/cache
+files or contact the network or the Obsidian app. For absolute selections,
+caller cwd does not affect it (relative selections keep the existing resolver's
+caller-cwd behavior): the vault comes from `--vault`, `OBSIDIAN_VAULT_PATH`,
 or the selected config, and when the bin is not on `PATH` the
 [package-relative launcher](../skills/wiki/references/focused-workflows.md#run-the-package-cli)
 gives the same result.
