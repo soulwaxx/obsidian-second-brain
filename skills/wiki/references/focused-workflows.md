@@ -235,8 +235,8 @@ never as a prerequisite or fabricated retrofit. For repository changes, use
 [update mode](update-mode.md); for other user-selected material, use
 [research discipline](research-discipline.md) and
 [authoring standards](authoring-standards.md). Only when the selected source
-contains a contested fact, open question, or commitment, or was scanned within
-bounds, use the optional [authoring patterns](authoring-patterns.md). Ask before
+contains a contested fact, open question, or commitment, or was only partially
+read (content excluded, truncated, or unreadable), use the optional [authoring patterns](authoring-patterns.md). Ask before
 expanding beyond the selected source/topic or making destructive changes.
 
 ## Research
@@ -254,7 +254,8 @@ identities, support, contradictions, uncertainty, and actual review state using
 the shared evidence workflow. Do not mark unknown freshness as current or call
 linked claims verified. Follow [research discipline](research-discipline.md) and
 [authoring standards](authoring-standards.md). When filing and only when the
-findings include a contested fact, open question, commitment, or bounded scan,
+findings include a contested fact, open question, commitment, or partially
+read source,
 use the optional [authoring patterns](authoring-patterns.md).
 
 ## Health

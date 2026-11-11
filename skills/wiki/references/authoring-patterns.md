@@ -12,8 +12,9 @@ beyond them.
 ## When to use
 
 - Use a pattern only when the user-selected material actually contains a
-  contested fact, an open question, a commitment, or a bounded source scan.
-  Otherwise ignore this file.
+  contested fact, an open question, a commitment, or a source that was only
+  partially read (content excluded, truncated, or unreadable). Otherwise ignore
+  this file.
 - These patterns are optional. They are never a startup, query, or health step.
   They never create templates or pages on their own, migrate metadata, add
   mandatory fields, or backfill existing pages. Existing pages remain valid
@@ -43,15 +44,17 @@ Linked, hashed, captured, or saved material is not automatically confirmed;
 it identifies material, it does not support a claim by itself. Do not add
 confidence labels, scores, or percentages, and do not add a confidence field.
 Preserve an existing `confidence` extension unchanged; do not add or infer one.
-Unknown owner, date, access, or review remains unknown: write "unknown" rather
-than inventing IDs, citations, dates, or confidence.
+Unknown owner, date, access, or review remains unknown. Say so in prose
+rather than inventing IDs, citations, dates, or confidence; for a missing
+source access date, follow the [source date conventions](frontmatter.md#source-dates).
 
 ## Patterns
 
 Each pattern defines required content, not a required heading or file. The
 defaults use the package's optional `[!contradiction]` and `[!gap]` callouts
-(see [CSS snippets](css-snippets.md)); they render as plain blockquotes
-without the snippet. A vault without callouts can use a heading or a bullet.
+(see [CSS snippets](css-snippets.md)). Without the snippet, Obsidian shows its
+default callout styling and other Markdown renderers show blockquotes. A vault
+without callouts can use a heading or a bullet.
 
 ### Contested fact
 
@@ -60,19 +63,18 @@ limits (scope, environment, version). Mark the status as unresolved and call
 the fact contested wherever the page states it; do not present either side as
 settled.
 
-Resolve a contested fact only when evidence actually settles the conflict or
-shows that one source is stale or out of scope. A newer source alone does not
-resolve it; neither do recency, repetition, or a recorded hash. When it is
-resolved, keep a short resolution note with the resolution date, the deciding
-evidence, and the source of the superseded claim. Do not silently delete the
-superseded claim.
+Resolve a contested fact only when evidence actually decides between the
+claims, or demonstrates that one source is stale or out of scope. A newer source alone does not
+resolve it; neither do recency, repetition, or a recorded hash. When the
+conflict is settled, record when, which evidence decided it, and the source of
+the superseded claim. Do not silently delete the superseded claim.
 
 Default: a `> [!contradiction]` callout on the canonical page.
 
 ### Open question
 
-Record an open question only for an uncertainty that would impair future
-assistance or the wiki's accuracy: something the user owns or a gap in the
+Record an open question only for an uncertainty that would weaken later help
+or the wiki's accuracy: something the user owns or a gap in the
 wiki itself. A TODO, comment, or unresolved question inside a source document
 is source content; keep it with that source's summary unless the user owns it.
 
@@ -100,7 +102,8 @@ mark a commitment done without evidence; the wiki is not a task manager.
 
 Keep work commitments distinguishable from personal logistics using the
 vault's existing convention, such as separate canonical pages or a
-vault-defined field. Do not create dedicated global files for either.
+vault-defined field. Do not create dedicated global files for either unless
+the vault already has one or the user asks for it.
 
 Default: a `## Follow-ups` section on the canonical page.
 
@@ -156,8 +159,8 @@ Backup frequency is contested.
 **Task.** Ingest the selected deployment record C for the same backup job.
 
 **Evidence.** Record C is the configuration of the running backup job, read on
-2030-06-01. It schedules backups every six hours and notes the change from the
-nightly schedule.
+2030-06-01. It schedules backups every six hours and notes that the schedule
+changed from nightly on 2030-04-20.
 
 **Expected.** Resolve the contradiction with a note naming the resolution
 date, the deciding evidence (record C), and the superseded claim's source
@@ -170,12 +173,13 @@ type: runbook
 ---
 # Backup schedule
 
-Backups run every six hours.
+As of 2030-06-01, the running job's configuration schedules backups every six
+hours.
 
 > [!contradiction] Backup frequency (resolved 2030-06-01)
 > Deciding evidence: deployment record C, the running job's configuration,
-> schedules backups every six hours. Superseded: runbook A's nightly schedule
-> (2030-03-02), which predates the change.
+> schedules backups every six hours since a change on 2030-04-20. Superseded:
+> runbook A's nightly schedule (2030-03-02), written before that change.
 ```
 
 ### Open question lifecycle
@@ -185,7 +189,8 @@ selected meeting note and a selected design document.
 
 **Evidence.** The canonical restore-drills page has an active question: "Which
 team owns quarterly restore drills?" The meeting note (2030-07-03) says the
-storage team owns them. The design document contains "TODO: decide log
+storage team owns them. The page also has an active question about where
+drill results are recorded. The design document contains "TODO: decide log
 retention", which the user does not own.
 
 **Expected.** Mark the question answered with the date and a link to the
@@ -219,7 +224,8 @@ already follows the vault's convention for work pages.
 **Expected.** Add a follow-up to the existing page: owner is the user, as
 stated; status is open; the due date is unknown. Do not invent a date, ticket
 ID, or priority. Do not create a commitments file or a new page, and do not
-change the page's metadata as part of the save.
+add commitment fields or other new metadata; otherwise follow the vault's
+existing frontmatter conventions.
 
 ```markdown
 ---
@@ -238,8 +244,8 @@ type: project
 
 **Task.** Ingest a selected incident-channel export into the wiki.
 
-**Evidence.** Only the first 200 messages (2030-09-01 to 2030-09-03) are
-readable; attachments are not.
+**Evidence.** The export was read on 2030-09-05. Only the first 200 messages
+(2030-09-01 to 2030-09-03) are readable; attachments are not.
 
 **Expected.** Record the coverage on the source page. The incident page's
 synthesis states that it relies on a partial export and does not present a
@@ -255,7 +261,7 @@ type: source
 
 - Scanned: the selected export, first 200 messages (2030-09-01 to 2030-09-03).
 - Excluded: unreadable attachments and any later messages.
-- Scanned on: 2030-09-05.
+- Read on: 2030-09-05 (the access date).
 ```
 
 ### Existing page reused or no-op
@@ -266,24 +272,25 @@ type: source
 the same support. The vault has no open-questions file.
 
 **Expected.** Make no change and report that the insight is already covered.
-Had the selection raised a new question about drill results, the right move
+Had the selection raised a new open question about drills, the right move
 would be adding it to the existing page's open questions, not creating an
 open-questions file or a new page.
 
 ### Selected save
 
 **Task.** Save the selected decision from a 2030-10-02 conversation: "Keep
-six-hour backups until the restore test passes."
+six-hour backups until the restore test passes; see the vendor article I
+linked."
 
-**Evidence.** The conversation also linked a vendor article on backup
-intervals, and a capture recorded its content hash. The article was not
-inspected for this decision; neighboring turns are unrelated.
+**Evidence.** The selected text includes the article's link and the content
+hash the user supplied for it. The article was not inspected for this
+decision; neighboring turns are unrelated.
 
 **Expected.** Add only the decision to the existing backup-schedule page,
-attributed to the user. Record the article as a linked reference that is not
-automatically confirmed: its link and hash identify material but do not
-support the decision. Add no confidence label and do not ingest or capture
-the article.
+attributed to the user, and leave out the neighboring turns. Record the
+article as a linked reference that is not automatically confirmed: its link
+and hash identify material but are not evidence for the decision. Add no
+confidence label and do not ingest or capture the article.
 
 ```markdown
 ---
@@ -294,6 +301,6 @@ type: runbook
 ## Decisions
 
 - User decision (2030-10-02): keep six-hour backups until the restore test
-  passes. A vendor article on backup intervals was linked but not inspected;
-  it does not support this decision.
+  passes. The user linked a vendor article on backup intervals; it was not
+  inspected and is not cited as support for this decision.
 ```

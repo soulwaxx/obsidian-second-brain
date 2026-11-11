@@ -413,7 +413,7 @@ vault selection or write authorization. The user selects the intent; the skill
 executes only that bounded operation. Focused save, ingest, and research may use
 the optional [authoring patterns](references/authoring-patterns.md) only when
 the selected material contains a contested fact, open question, commitment, or
-bounded scan; they are never a startup, query, or health step.
+partially read source; they are never a startup, query, or health step.
 
 **Middleware order is mandatory.** Authorize the destination before a write,
 validate the result, then finalize generated navigation and lifecycle logging.

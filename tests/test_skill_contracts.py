@@ -188,8 +188,11 @@ for name in ('Explicit selected-conversation save', 'Ingest', 'Research'):
     assert '(authoring-patterns.md)' in workflow_sections[name], name
 for name in ('Query', 'Health'):
     assert 'authoring-patterns' not in workflow_sections[name], name
-assert '(references/authoring-patterns.md)' in entry
+entry_sections = dict(re.findall(r'^## ([^\n]+)\n(.*?)(?=^## |\Z)', entry_path.read_text(), re.S | re.M))
+assert [name for name, body in entry_sections.items() if 'authoring-patterns' in body] == ['Operations']
+assert '(references/authoring-patterns.md)' in entry_sections['Operations']
 for document in ('skills/wiki/references/init-mode.md', 'skills/wiki/references/auto-mode.md',
+                 'skills/wiki/references/trust-boundary-examples.md',
                  'skills/wiki-query/SKILL.md', 'skills/wiki-health/SKILL.md'):
     assert 'authoring-patterns' not in (ROOT / document).read_text(), document
 for boundary in ('patterns are optional', 'never a startup, query, or health step',
@@ -224,8 +227,8 @@ expected_pattern_cases = {
                                  'do not create a commitments file'),
     'Bounded ingest coverage': ('## coverage', 'excluded', 'does not present a complete timeline'),
     'Existing page reused or no-op': ('make no change', 'already covered', 'not creating an open-questions file'),
-    'Selected save': ('only the decision', 'not automatically confirmed', 'no confidence label',
-                      'do not ingest or capture'),
+    'Selected save': ('only the decision', 'leave out the neighboring turns', 'not automatically confirmed',
+                      'not evidence for the decision', 'no confidence label', 'do not ingest or capture'),
 }
 assert pattern_cases.keys() == expected_pattern_cases.keys(), pattern_cases.keys()
 for name, phrases in expected_pattern_cases.items():
