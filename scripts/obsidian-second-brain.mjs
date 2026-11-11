@@ -30,8 +30,19 @@ if (!native) {
   const stop = () => { if (!stopping) { stopping = true; terminate(child); } };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  child.on("error", (error) => { console.error(`obsidian-second-brain: ${error.message}`); process.exitCode = 1; });
-  child.on("close", (code) => { process.exitCode = code ?? 1; });
+  let startFailed = false;
+  child.on("error", (error) => {
+    if (child.pid === undefined) {
+      startFailed = true;
+      console.error(`obsidian-second-brain: cannot start Python interpreter ${JSON.stringify(python)} (${error.code ?? error.message}). `
+        + "Python 3.14+ with the package requirements is required: activate that environment so python3 resolves to it, "
+        + "or set PYTHON=/path/to/python3.14. See docs/setup.md (Prepare tools and select paths).");
+    } else {
+      console.error(`obsidian-second-brain: ${error.message}`);
+    }
+    process.exitCode = 1;
+  });
+  child.on("close", (code) => { if (!startFailed) process.exitCode = code ?? 1; });
 } else {
   let stdout = Buffer.alloc(0);
   let stderr = Buffer.alloc(0);

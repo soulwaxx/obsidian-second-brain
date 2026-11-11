@@ -3,10 +3,11 @@
 Build the wiki from scratch for a new repository or project.
 
 **Vault setup (optional).** For a new or existing vault, first preview the
-scaffold from the plugin checkout with
-`python3 scripts/bootstrap-vault.py --vault /absolute/path/to/vault`, review its
+scaffold through the active package's launcher
+([Run the package CLI](focused-workflows.md#run-the-package-cli)) with
+`obsidian-second-brain setup --vault /absolute/path/to/vault --json`, review its
 plan, then apply with `--apply --confirm <planHash>` using the printed hash.
-Bootstrap preserves existing notes/indexes/logs and does not initialize Git.
+Setup preserves existing notes/indexes/logs and does not initialize Git.
 Scaffolding is separate from the reviewed `--configure` step, which selects the
 vault and disables deprecated agent auto-commit after Obsidian Git is installed
 and enabled. Preserve unrelated existing configuration. If the active integration reports a config

@@ -25,8 +25,9 @@ preserves existing notes and unrelated settings, and refuses conflicts. See
   the configuration profile; it does not download plugin binaries.
 - Git for the vault repository and package installation. Repository creation,
   remote selection, identity, and authentication remain owner-controlled.
-- A repository checkout or installed package directory for setup commands.
-  Installing the package does not add a setup CLI to the shell path.
+- A repository checkout or installed package directory when the
+  `obsidian-second-brain` bin is not on the shell path. Installing the agent
+  package does not necessarily add that bin to the path.
 
 Ensure `python3 --version` reports Python 3.14 or newer. Install the Python runtime dependencies from the active package checkout (or unpacked package):
 
@@ -77,7 +78,13 @@ Restart Claude Code after updating. For unpublished local development, load the
 checkout with `claude --plugin-dir /absolute/path/to/obsidian-second-brain`;
 adding its marketplace still selects the published npm plugin.
 
-Use an existing checkout or create one for the following setup examples:
+Setup runs through the package CLI's `setup` command. The examples use the
+`obsidian-second-brain` bin. If it is not on `PATH`, run the same arguments as
+`node "$PLUGIN_DIR/scripts/obsidian-second-brain.mjs" setup …`, where
+`PLUGIN_DIR` is a checkout or the installed package directory; agents locate
+the active package with the
+[package-relative launcher procedure](skills/wiki/references/focused-workflows.md#run-the-package-cli).
+Later examples also use a checkout:
 
 ```sh
 git clone https://github.com/soulwaxx/obsidian-second-brain.git
@@ -91,13 +98,13 @@ VAULT="$HOME/Notes/MyVault" # Replace with the selected absolute vault path.
 First preview the minimal wiki scaffold:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT"
+obsidian-second-brain setup --vault "$VAULT"
 ```
 
 Review the plan, then use its exact hash:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT" --apply --confirm 'PASTE_SCAFFOLD_HASH_HERE'
+obsidian-second-brain setup --vault "$VAULT" --apply --confirm 'PASTE_SCAFFOLD_HASH_HERE'
 ```
 
 This creates missing `.obsidian/`, `wiki/quickstart.md`, and generated navigation.
@@ -110,14 +117,14 @@ repository, and install/enable Obsidian Git. Review
 preview the supported configuration profile:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT" --configure
+obsidian-second-brain setup --vault "$VAULT" --configure
 ```
 
 Review the selected configuration/plugin differences and ignore additions,
 then confirm this separate plan:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT" --configure --apply --confirm 'PASTE_CONFIGURE_HASH_HERE'
+obsidian-second-brain setup --vault "$VAULT" --configure --apply --confirm 'PASTE_CONFIGURE_HASH_HERE'
 ```
 
 The reviewed configuration selects the vault and sets the deprecated agent
@@ -128,8 +135,11 @@ settings/preimages are bound to the plan hash but not dumped in the preview.
 
 The default config is `~/.config/obsidian-second-brain/properties.json`.
 `OBSIDIAN_AGENT_CONFIG` selects another file; `OBSIDIAN_VAULT_PATH` selects a
-vault for an invocation. Setup never silently retargets a config pointing to a
-different vault. Re-preview when inspected files change. See
+vault for other invocations. Setup always uses its explicit `--vault`, selects
+the config only through `OBSIDIAN_AGENT_CONFIG`, and never silently retargets a
+config pointing to a different vault. Re-preview when inspected files change.
+Add `--json` for machine-readable plans; each result also reports the
+readiness stage and next safe step without running it. See
 [the setup guide](docs/setup.md) for migration and prerequisite diagnostics.
 
 ## Work from any folder

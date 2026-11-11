@@ -7,14 +7,32 @@ configures remotes/authentication, or synchronizes notes as an incidental step.
 
 ## 1. Prepare tools and select paths
 
-Install Claude Code or Pi, Python 3.14 or newer, `jq`, Git, and Obsidian. Install the package's Python dependencies (PyYAML and markdown-it-py) in the Python environment used by both clients; see the [README requirements](../README.md#requirements). Ensure `python3 --version` reports the supported version. Setup
-scripts ship with the package but are not added to the shell path; these
-examples use a repository checkout:
+Install Claude Code or Pi, Python 3.14 or newer, `jq`, Git, and Obsidian. Install the package's Python dependencies (PyYAML and markdown-it-py) in the Python environment used by both clients; see the [README requirements](../README.md#requirements). Ensure `python3 --version` reports the supported version. If the
+launcher cannot start that interpreter, activate the environment or set
+`PYTHON=/path/to/python3.14`.
+
+Setup runs through the package CLI's `setup` command. The examples use the
+`obsidian-second-brain` bin; plugin installation does not necessarily put it on
+the shell path. If it is missing, run the same arguments as
+`node "$PLUGIN_DIR/scripts/obsidian-second-brain.mjs" setup …`, where
+`PLUGIN_DIR` is a checkout or the installed package directory. Agents locate
+the active package with the
+[package-relative launcher procedure](../skills/wiki/references/focused-workflows.md#run-the-package-cli).
 
 ```sh
 PLUGIN_DIR="$(pwd -P)" # Run from the checkout root, or use its absolute path.
 VAULT="$HOME/Notes/MyVault" # Replace with the intended absolute vault path.
 ```
+
+`setup` previews by default and applies only with `--apply --confirm` and the
+exact hash of the reviewed plan. Add `--json` for machine-readable output: the
+redacted plan, its `planHash`, and doctor's readiness stage and next safe
+actions after the step (never executed). Failures report `stale-plan` or
+`setup-refused` with exit status 1; invalid arguments report
+`invalid-arguments` with exit status 2. Setup takes no `--config` or
+`OBSIDIAN_VAULT_PATH` selection. The lower-level
+`python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py"` with the same arguments
+remains supported and produces identical plans and hashes.
 
 Keep the variables in the same shell. Set `OBSIDIAN_AGENT_CONFIG` before preview
 if selecting a non-default integration config. Do not guess or retarget a
@@ -26,7 +44,7 @@ For an existing wiki, preserve its contract and entry point and skip to the
 configuration step. For a new directory or an empty vault, preview:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT"
+obsidian-second-brain setup --vault "$VAULT"
 ```
 
 Review the proposed directories, file writes, prerequisite diagnostics, and
@@ -38,7 +56,7 @@ exists; its absence is reported rather than preventing this first step.
 Apply only the reviewed plan:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT" --apply --confirm 'PASTE_SCAFFOLD_HASH_HERE'
+obsidian-second-brain setup --vault "$VAULT" --apply --confirm 'PASTE_SCAFFOLD_HASH_HERE'
 ```
 
 Scaffolding leaves existing notes alone and refuses incompatible indexes,
@@ -63,7 +81,7 @@ Use the explicit configuration option for a new integration or existing-vault
 migration:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT" --configure
+obsidian-second-brain setup --vault "$VAULT" --configure
 ```
 
 Review the selected settings differences and ignore additions. Unrelated
@@ -86,7 +104,7 @@ existing schedules or override an existing choice to disable pushing.
 Confirm with this plan's exact hash:
 
 ```sh
-python3 "$PLUGIN_DIR/scripts/bootstrap-vault.py" --vault "$VAULT" --configure --apply --confirm 'PASTE_CONFIGURE_HASH_HERE'
+obsidian-second-brain setup --vault "$VAULT" --configure --apply --confirm 'PASTE_CONFIGURE_HASH_HERE'
 ```
 
 Configuration apply refuses unmet plugin prerequisites and stale/concurrent
@@ -218,7 +236,8 @@ still exits 0 with a valid config and supported Python.
   `mutates`, `requiresReview`, `manual`, and an `env` binding the selected
   `OBSIDIAN_AGENT_CONFIG` for setup previews. Commands use the running
   interpreter and this package's absolute root, never a bin on `PATH`.
-  Suggestions are limited to scaffold/configuration previews, the explicit BM25
+  Suggestions are limited to scaffold/configuration previews (`setup` and
+  `setup --configure`), the explicit BM25
   `build`, and a manual `requirements.txt` install. When the selected config
   is invalid or selects another vault, or the config path, `wiki`, or `.obsidian`
   is a symlink or not a directory, or Git is not installed, setup previews

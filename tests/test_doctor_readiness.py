@@ -157,11 +157,14 @@ class DoctorReadinessTests(unittest.TestCase):
             self.assertTrue(action["manual"] and action["mutates"] and action["requiresReview"])
         else:
             self.assertTrue(Path(argv[1]).is_relative_to(ROOT / "scripts"), argv)
-            self.assertIn(Path(argv[1]).name, {"bootstrap-vault.py", "obsidian-second-brain.py"})
-            if Path(argv[1]).name == "obsidian-second-brain.py":
-                self.assertEqual(argv[2], "build")
+            self.assertEqual(Path(argv[1]).name, "obsidian-second-brain.py")
+            if argv[2] == "build":
                 self.assertTrue(action["mutates"] and action["requiresReview"])
             else:
+                # Setup suggestions are previews only: never --apply/--confirm.
+                self.assertEqual(argv[2:4], ["setup", "--vault"])
+                self.assertIn(argv[5:], ([], ["--configure"]))
+                self.assertEqual(action["code"], "preview-configure" if argv[5:] else "preview-scaffold")
                 self.assertFalse(action["mutates"])
                 self.assertEqual(action["env"], {"OBSIDIAN_AGENT_CONFIG": str(self.config)})
 
@@ -200,7 +203,7 @@ class DoctorReadinessTests(unittest.TestCase):
         report = self.doctor()
         self.assertEqual((report["readiness"]["stage"], report["readiness"]["reason"]), ("vaultSelected", "vault-missing"))
         self.assertEqual(self.codes(report), ["preview-scaffold"])
-        self.assertEqual(report["readiness"]["nextActions"][0]["argv"][2:], ["--vault", str(self.vault)])
+        self.assertEqual(report["readiness"]["nextActions"][0]["argv"][2:], ["setup", "--vault", str(self.vault)])
         self.assertEqual(set(self.states(report).values()), {("unavailable", "vault-missing")})
         self.vault.write_text("not a vault")
         report = self.doctor()
@@ -280,7 +283,8 @@ class DoctorReadinessTests(unittest.TestCase):
             before = tree_snapshot(self.root)
             result = subprocess.run(action["argv"], cwd=self.outside, env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("planHash", json.loads(result.stdout))
+            self.assertRegex(result.stdout, r"(?m)^Plan hash: [0-9a-f]{64}$")
+            self.assertNotIn("Applied", result.stdout)
             self.assertEqual(tree_snapshot(self.root), before)
         self.write_config({"vaultPath": str(self.vault)})
         run_suggestion(self.doctor(), "preview-scaffold")  # vault-missing
@@ -337,7 +341,7 @@ class DoctorReadinessTests(unittest.TestCase):
         report = self.doctor("--vault", str(self.vault))
         self.assertEqual((report["readiness"]["stage"], report["readiness"]["reason"]), ("workflow", "config-missing"))
         self.assertEqual(self.codes(report), ["preview-configure"])
-        self.assertEqual(report["readiness"]["nextActions"][0]["argv"][2:], ["--vault", str(self.vault), "--configure"])
+        self.assertEqual(report["readiness"]["nextActions"][0]["argv"][2:], ["setup", "--vault", str(self.vault), "--configure"])
         states = self.states(report)
         self.assertEqual(states["spanReads"], ("ready", None))
         self.assertEqual(states["lexicalSearch"], ("unavailable", "index-missing"))
