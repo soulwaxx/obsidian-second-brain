@@ -53,3 +53,17 @@ for hook in "$repo/hooks/obsidian-session.sh" "$installed/hooks/obsidian-session
   [[ "$before" == "$after" ]]
 done
 printf 'Cross-directory locator, no startup writes, and destination guard verified for source and installed Claude hooks.\n'
+
+# Installed setup route: preview writes nothing, only the confirmed plan applies,
+# and a repeat preview is a no-op. Uses an isolated config and disposable vault.
+setup_vault="$work/setup vault ü"
+setup_config="$work/setup-config.json"
+setup_cli=(node "$installed/scripts/obsidian-second-brain.mjs" setup --vault "$setup_vault" --json)
+preview=$(cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$setup_config" "${setup_cli[@]}")
+[[ ! -e "$setup_vault" && ! -e "$setup_config" ]]
+hash=$(printf '%s\n' "$preview" | jq -er '.planHash')
+(cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$setup_config" "${setup_cli[@]}" --apply --confirm "$hash") | jq -e '.applied == true' >/dev/null
+test -f "$setup_vault/wiki/quickstart.md"
+[[ ! -e "$setup_config" && ! -e "$setup_vault/.git" ]]
+(cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$setup_config" "${setup_cli[@]}") | jq -e '.plan.writes == [] and .plan.directories == []' >/dev/null
+printf 'Installed setup preview, confirmed apply, and no-op repeat verified.\n'

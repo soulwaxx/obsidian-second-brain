@@ -129,10 +129,44 @@ try {
     assert.equal(report.capabilities.spanReads.state, "ready");
     const [configure] = report.readiness.nextActions;
     assert.equal(configure.code, "preview-configure");
-    assert.deepEqual(configure.argv.slice(1), [path.join(installedRoot, "scripts/bootstrap-vault.py"), "--vault", fs.realpathSync(readinessVault), "--configure"]);
+    assert.deepEqual(configure.argv.slice(1), [path.join(installedRoot, "scripts/obsidian-second-brain.py"), "setup", "--vault", fs.realpathSync(readinessVault), "--configure"]);
     assert.ok(!configure.argv.includes("--apply"));
   }
   assert.deepEqual(fs.readdirSync(readinessVault, { recursive: true }).sort(), readinessFiles, "installed readiness discovery writes nothing");
+  // Installed setup through the bin and the package-relative launcher, from a cwd
+  // outside package and vault, with space/Unicode paths: hashes match direct
+  // bootstrap, previews write nothing, and only the confirmed plan is applied.
+  for (const [label, command] of [["bin", [cli]], ["launcher", [process.execPath, path.join(installed, "scripts/obsidian-second-brain.mjs")]]]) {
+    const setupVault = path.join(work, `setup vault ${label} ü`);
+    const setupConfig = path.join(work, `setup config ${label} ü`, "properties.json");
+    const setupEnv = { ...env, OBSIDIAN_AGENT_CONFIG: setupConfig };
+    const setup = (...args) => spawnSync(command[0], [...command.slice(1), "setup", "--vault", setupVault, ...args, "--json"], { cwd: readinessCwd, env: setupEnv, encoding: "utf8" });
+    const direct = (...args) => JSON.parse(execFileSync("python3", [path.join(installed, "scripts/bootstrap-vault.py"), "--vault", setupVault, ...args], { cwd: readinessCwd, env: setupEnv, encoding: "utf8" }));
+    const preview = setup();
+    assert.equal(preview.status, 0, `${label} setup preview: ${preview.stdout}${preview.stderr}`);
+    const scaffold = JSON.parse(preview.stdout);
+    const { planHash: directHash, ...directPlan } = direct();
+    assert.equal(scaffold.planHash, directHash, `${label} setup hash matches installed bootstrap`);
+    assert.deepEqual(scaffold.plan, directPlan);
+    assert.equal(scaffold.readiness.stages[0].root, installedRoot);
+    assert.ok(!fs.existsSync(setupVault) && !fs.existsSync(path.dirname(setupConfig)), `${label} setup preview writes nothing`);
+    const stale = setup("--apply", "--confirm", "0".repeat(64));
+    assert.equal(stale.status, 1);
+    assert.equal(JSON.parse(stale.stdout).code, "stale-plan");
+    assert.ok(!fs.existsSync(setupVault), `${label} stale approval writes nothing`);
+    const applied = setup("--apply", "--confirm", scaffold.planHash);
+    assert.equal(applied.status, 0, `${label} setup apply: ${applied.stdout}${applied.stderr}`);
+    assert.equal(JSON.parse(applied.stdout).applied, true);
+    assert.ok(fs.existsSync(path.join(setupVault, "wiki/quickstart.md")) && fs.existsSync(path.join(setupVault, "wiki/index.md")));
+    assert.ok(!fs.existsSync(setupConfig) && !fs.existsSync(path.join(setupVault, ".git")), `${label} scaffold creates no config or Git repository`);
+    const repeat = JSON.parse(setup().stdout);
+    assert.deepEqual([repeat.plan.directories, repeat.plan.writes], [[], []], `${label} repeat setup preview is a no-op`);
+    const configure = JSON.parse(setup("--configure").stdout);
+    assert.equal(configure.phase, "configure");
+    assert.equal(configure.plan.pluginReady, false);
+    assert.equal(configure.planHash, direct("--configure").planHash);
+    assert.ok(!fs.existsSync(setupConfig), `${label} configure preview writes nothing`);
+  }
   const binSearchPath = process.env.PATH.split(path.delimiter).filter((entry) => path.resolve(entry) !== path.resolve(path.join(prefix, "node_modules/.bin"))).join(path.delimiter);
   assert.ok(!binSearchPath.split(path.delimiter).some((entry) => path.resolve(entry) === path.resolve(path.join(prefix, "node_modules/.bin"))));
   const unrelatedCwd = path.join(work, "caller cwd ü space");

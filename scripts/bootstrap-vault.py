@@ -623,6 +623,22 @@ def apply_plan(plan: dict) -> None:
             os.close(pinned_fd)
 
 
+def public_preview(plan: dict, config: Path) -> dict:
+    """Return the reviewable preview body; private contents stay bound to the plan hash."""
+    public_plan = dict(plan)
+    safe_writes = []
+    for write in plan["writes"]:
+        shown = dict(write)
+        if (Path(write["path"]) == config or Path(write["path"]).name == "data.json"
+                or (Path(write["path"]) == Path(plan["vault"]) / ".gitignore" and "preimage" in write)):
+            shown.pop("content", None)
+            shown.pop("preimage", None)
+            shown["privateContentBoundToPlanHash"] = True
+        safe_writes.append(shown)
+    public_plan["writes"] = safe_writes
+    return public_plan
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True, type=Path, help="existing vault directory")
@@ -639,18 +655,7 @@ def main() -> int:
         return 1
     plan_hash = digest(plan)
     if not args.apply:
-        public_plan = dict(plan)
-        safe_writes = []
-        for write in plan["writes"]:
-            shown = dict(write)
-            if (Path(write["path"]) == config or Path(write["path"]).name == "data.json"
-                    or (Path(write["path"]) == Path(plan["vault"]) / ".gitignore" and "preimage" in write)):
-                shown.pop("content", None)
-                shown.pop("preimage", None)
-                shown["privateContentBoundToPlanHash"] = True
-            safe_writes.append(shown)
-        public_plan["writes"] = safe_writes
-        print(json.dumps({"planHash": plan_hash, **public_plan}, indent=2))
+        print(json.dumps({"planHash": plan_hash, **public_preview(plan, config)}, indent=2))
         return 0
     if args.confirm != plan_hash:
         print(f"bootstrap-vault: stale or unconfirmed plan; preview again (hash {plan_hash})", file=sys.stderr)

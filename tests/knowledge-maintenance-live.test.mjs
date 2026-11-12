@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "../experiments/knowledge-maintenance/live-support.mjs";
+import { REQUEST_CONTRACT_FIELDS, codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "../experiments/knowledge-maintenance/live-support.mjs";
 import { buildAnswerJudgePrompt, buildMaintenanceJudgePrompt, dryRun, recordPreflightFailure, runLive, validateRunMetadata } from "../experiments/knowledge-maintenance/run.mjs";
 import { installedPackage, resolveRuntimeDependencies } from "./pi-runtime-paths.mjs";
 import { createPiRunner } from "../experiments/knowledge-maintenance/pi-runner.mjs";
@@ -196,6 +196,57 @@ try {
   assert.equal(timeoutBudget.state.calls, 1);
   assert.equal(timeoutBudget.state.stopped, true);
 
+  // #41: a request-contract mismatch records only the sorted names of the differing guarded fields, never values.
+  const fixtureModel = { provider: "openai", api: "openai-responses", baseUrl: "https://api.openai.com/v1", id: "fixture-model" };
+  const mismatchCases = [
+    [{ model: "fixture-model", max_output_tokens: 4096, reasoning: { effort: "medium" }, store: false, stream: true }, null],
+    [{ model: "fixture-model", reasoning: { effort: "medium" }, store: false, stream: true }, ["max_output_tokens"]],
+    [{ model: "secret-model-value", max_output_tokens: 123456, reasoning: { effort: "secret-effort-value" }, store: true, stream: false }, [...REQUEST_CONTRACT_FIELDS]],
+  ];
+  for (const [body, expectedFields] of mismatchCases) {
+    let dispatched = 0;
+    const mismatchBudget = createBudget({ limits: { calls: 2, minutes: 1, outputTokens: 20 } });
+    const mismatchProvider = wrapOpenAIProvider({ streamSimple: (_model, _context, options) => ({ async *[Symbol.asyncIterator]() {
+      await options.fetch("https://api.openai.com/v1/responses", { method: "POST", body: JSON.stringify(body) });
+      yield { type: "done" };
+    } }) }, mismatchBudget, { fetchImpl: async () => { dispatched++; return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }); } });
+    const consume = async () => { for await (const _event of mismatchProvider.streamSimple(fixtureModel, { messages: [] }, {})) { /* consume */ } };
+    if (!expectedFields) {
+      await consume();
+      assert.equal(dispatched, 1);
+      assert.equal(mismatchBudget.state.requestMismatchFields, null, "a matching request records no mismatch fields");
+      continue;
+    }
+    await assert.rejects(consume, /request-contract-mismatch/);
+    assert.equal(dispatched, 0, "a mismatched request is never dispatched");
+    assert.equal(mismatchBudget.state.calls, 0);
+    assert.deepEqual(mismatchBudget.state.requestMismatchFields, expectedFields);
+    assert.doesNotMatch(JSON.stringify(mismatchBudget.state), /secret-|123456/, "mismatch diagnostics never retain request values");
+  }
+  const firstStopBudget = createBudget({ limits: { calls: 1, minutes: 1, outputTokens: 1 } });
+  assert.throws(() => firstStopBudget.stop("time-limit"), /time-limit/);
+  assert.throws(() => firstStopBudget.stop("request-contract-mismatch", ["model"]), /request-contract-mismatch/);
+  assert.equal(firstStopBudget.state.stopCode, "time-limit");
+  assert.equal(firstStopBudget.state.requestMismatchFields, null, "mismatch fields are recorded only with the winning stop code");
+
+  const hex = "a".repeat(64);
+  const roleRuntimeRecord = { id: "openai/fixture-model", api: "openai-responses", origin: null, effort: "medium" };
+  const baseMetadata = (stopCode) => ({ schemaVersion: 1,
+    identities: { sourceHash: hex, goldHash: hex, fixtureHash: hex, rubricHash: hex, settingsHash: hex, promptHash: hex, code: { revision: null, revisionStatus: "not-recorded", files: [], hash: hex } },
+    limits: { calls: 750, minutes: 90, outputTokens: 500000, maxOutputTokens: 4096 },
+    runtime: { node: "v0", python: "Python 3", piCodingAgent: "0.0.0", solver: { ...roleRuntimeRecord }, judge: { ...roleRuntimeRecord } },
+    backendRevision: null, backendRevisionStatus: "unknown", stopCode, attempts: [], sessions: [], stages: [],
+    timing: { startedAt: "2030-01-01T00:00:00.000Z", elapsedMs: null }, pricing: null });
+  validateRunMetadata(baseMetadata("request-contract-mismatch"));
+  validateRunMetadata({ ...baseMetadata("request-contract-mismatch"), requestMismatchFields: ["max_output_tokens"] });
+  validateRunMetadata({ ...baseMetadata("request-contract-mismatch"), requestMismatchFields: [...REQUEST_CONTRACT_FIELDS] });
+  for (const [stopCode, fields] of [["time-limit", ["model"]], [null, ["model"]], ["request-contract-mismatch", []],
+    ["request-contract-mismatch", ["model", "model"]], ["request-contract-mismatch", ["model", "max_output_tokens"]],
+    ["request-contract-mismatch", ["authorization"]], ["request-contract-mismatch", "model"], ["request-contract-mismatch", [4096]],
+    ["request-contract-mismatch", [, "model"]]]) {
+    assert.throws(() => validateRunMetadata({ ...baseMetadata(stopCode), requestMismatchFields: fields }), /metadata-request-mismatch-fields-invalid/, JSON.stringify({ stopCode, fields }));
+  }
+
   if (process.env.OSB_KM_TEST_SKIP_MISSING_SDK_CHILD === "1") console.log("NO-SDK-PURE-CHECKS-REACHED");
   const packageRoot = installedPackage();
   if (!packageRoot) {
@@ -337,6 +388,23 @@ try {
     assert.equal(requestBody.reasoning.effort, "medium", "the actual installed serializer must preserve native reasoning mapping");
     assert.equal(nativeBudget.state.calls, 1);
     assert.equal(nativeBudget.state.records[0].usage.outputTokens, 3);
+    assert.equal(nativeBudget.state.requestMismatchFields, null);
+
+    // #41: the installed serializer treats a non-sk- OpenAI credential as "Sign in with ChatGPT" and omits
+    // max_output_tokens, so the guard must stop before dispatch and name only that field.
+    let signInFetches = 0;
+    const signInBudget = createBudget({ limits: { calls: 2, minutes: 1, outputTokens: 100 } });
+    const signInWrapped = wrapOpenAIProvider(nativeProvider, signInBudget, { fetchImpl: async () => { signInFetches++; throw new Error("sign-in request must not be dispatched"); } });
+    let signInFailure = null;
+    try {
+      for await (const _event of signInWrapped.streamSimple(model, { messages: [{ role: "user", content: "Synthetic question." }] },
+        { apiKey: "synthetic-chatgpt-sign-in-token", reasoning: "medium", reasoningEffort: "medium", maxTokens: 4096 })) { /* consume */ }
+    } catch (error) { signInFailure = error.message; }
+    assert.equal(signInFailure, "request-contract-mismatch");
+    assert.equal(signInFetches, 0, "the sign-in request is stopped before the instrumented fetch");
+    assert.equal(signInBudget.state.calls, 0);
+    assert.deepEqual(signInBudget.state.requestMismatchFields, ["max_output_tokens"]);
+    assert.doesNotMatch(JSON.stringify(signInBudget.state), /synthetic-chatgpt-sign-in-token/);
 
     async function runLazyNativeCase({ outputTokens = 5, responseModel = model.id, includeUsage = true, delayedCapture = false, limit = 5 } = {}) {
       const lazyBudget = createBudget({ limits: { calls: 3, minutes: 1, outputTokens: limit } });
@@ -816,6 +884,7 @@ try {
     assert.equal(distinctModelEffort.metadata.runtime.solver.effort, "medium");
     assert.equal(distinctModelEffort.metadata.runtime.judge.effort, "high");
     assert.equal(distinctModelEffort.metadata.attempts.length, 1, "rejected judge request is not recorded as dispatched");
+    assert.deepEqual(distinctModelEffort.metadata.requestMismatchFields, ["reasoning.effort"], "persisted run metadata names only the mismatched field");
     assert.equal(distinctModelEffort.metadata.attempts[0].phase, "maintenance:2025-01-10");
 
     const checkUnsafeVaultEntries = (root) => {

@@ -88,16 +88,20 @@ convention):
 Invoke each with its absolute path under this skill's directory; pass the
 vault root and vault-relative paths as arguments (see Middleware Invocation).
 
-Vault setup is an explicit preview/apply workflow. From the plugin checkout,
+Vault setup is an explicit preview/apply workflow through the package CLI.
+Run it with the active package's launcher (see
+[Run the package CLI](references/focused-workflows.md#run-the-package-cli));
 preview the scaffold and review its output and `planHash`:
 
 ```sh
-python3 <plugin-dir>/scripts/bootstrap-vault.py --vault /absolute/path/to/vault
+obsidian-second-brain setup --vault /absolute/path/to/vault --json
 ```
 
 Apply the reviewed scaffold with `--apply --confirm 'HASH_FROM_PREVIEW'`, using
-the exact printed hash. Bootstrap preserves existing notes, indexes, and logs
-and does not initialize Git. After installing and enabling Obsidian Git, preview
+the exact printed hash; never apply a hash the user has not reviewed. Results
+also report doctor readiness and next safe actions; do not run them
+implicitly. Setup preserves existing notes, indexes, and logs and does not
+initialize Git. After installing and enabling Obsidian Git, preview
 integration settings with the same command plus `--configure`; review its
 selected differences before applying with its own hash. Configuration sets
 `features.autoCommit: false`, merges portable plugin defaults and ignore rules,
@@ -406,7 +410,10 @@ unmatched requests. Focused intents may use `wiki-query`, `wiki-save`,
 `wiki-ingest`, `wiki-research`, or `wiki-health`; the shared instructions are
 in [focused workflows](references/focused-workflows.md). Focus does not change
 vault selection or write authorization. The user selects the intent; the skill
-executes only that bounded operation.
+executes only that bounded operation. Focused save, ingest, and research may use
+the optional [authoring patterns](references/authoring-patterns.md) only when
+the selected material contains a contested fact, open question, commitment, or
+partially read source; they are never a startup, query, or health step.
 
 **Middleware order is mandatory.** Authorize the destination before a write,
 validate the result, then finalize generated navigation and lifecycle logging.

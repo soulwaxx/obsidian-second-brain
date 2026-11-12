@@ -201,12 +201,12 @@ def _action(code: str, summary: str, anchor: str, argv: list[str] | None = None,
 
 def _next_actions(reason: str, vault: Path | None, config_file: Path) -> list[dict[str, Any]]:
     python = sys.executable
-    bootstrap = str(PACKAGE_ROOT / "scripts/bootstrap-vault.py")
+    cli = str(PACKAGE_ROOT / "scripts/obsidian-second-brain.py")
     env = {"OBSIDIAN_AGENT_CONFIG": str(config_file)}
     scaffold = _action("preview-scaffold", "Preview the reviewed wiki scaffold for the selected vault; apply only its reviewed plan hash.",
-                       "2-scaffold-a-new-wiki", [python, bootstrap, "--vault", str(vault)], env=env)
+                       "2-scaffold-a-new-wiki", [python, cli, "setup", "--vault", str(vault)], env=env)
     configure = _action("preview-configure", "Preview the reviewed configuration plan for the selected vault; apply only its reviewed plan hash.",
-                        "4-preview-the-configuration-profile", [python, bootstrap, "--vault", str(vault), "--configure"], env=env)
+                        "4-preview-the-configuration-profile", [python, cli, "setup", "--vault", str(vault), "--configure"], env=env)
     build = _action("build-index", "Rebuild the derived BM25 cache after reviewing pending changes (explicit, derived-state write).",
                     "local-retrieval", [python, str(PACKAGE_ROOT / "scripts/obsidian-second-brain.py"), "build", "--vault", str(vault)],
                     mutates=True, review=True)
@@ -465,6 +465,87 @@ def format_action(action: dict[str, Any]) -> str:
     return f"see {action['doc']}"
 
 
+def print_next_actions(actions: list[dict[str, Any]]) -> None:
+    for action in actions:
+        flags = ", ".join(flag for flag, on in (("manual", action["manual"]), ("writes", action["mutates"]),
+                                                 ("review first", action["requiresReview"])) if on)
+        print(f"Next: {action['summary']}" + (f" [{flags}]" if flags else ""))
+        print(f"  {format_action(action)}")
+
+
+class SetupError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def setup(vault_arg: str, configure: bool, apply: bool, confirm: str | None) -> dict[str, Any]:
+    """Preview or apply one reviewed bootstrap phase, then report doctor readiness.
+
+    Plan generation, hashing and apply are bootstrap-vault.py's own functions, so
+    plan hashes agree with a direct bootstrap invocation for the same inputs.
+    Raises SetupError for refusals; never runs a suggested next action.
+    """
+    bootstrap = load_source("obsidian_cli_bootstrap", str(Path(__file__).with_name("bootstrap-vault.py")))
+    config_file = bootstrap.config_path()
+    vault = Path(vault_arg).expanduser().resolve()
+    try:
+        plan = bootstrap.plan_for(vault, config_file, configure=configure)
+    except (OSError, ValueError) as exc:
+        raise SetupError("setup-refused", str(exc)) from exc
+    plan_hash = bootstrap.digest(plan)
+    if apply:
+        if confirm != plan_hash:
+            raise SetupError("stale-plan", f"stale or unconfirmed plan; preview again (hash {plan_hash})")
+        try:
+            bootstrap.apply_plan(plan)
+        except (OSError, ValueError) as exc:
+            raise SetupError("setup-refused", str(exc)) from exc
+    config, error = load_config(config_file)
+    readiness = dict(doctor(config_file, config, error, vault)["readiness"])
+    next_actions = readiness.pop("nextActions")
+    return {"operation": "setup", "phase": "configure" if configure else "scaffold",
+            "mode": "apply" if apply else "preview", "planHash": plan_hash,
+            "plan": bootstrap.public_preview(plan, config_file), "applied": apply,
+            "readiness": readiness, "nextActions": next_actions}
+
+
+def print_setup(output: dict[str, Any]) -> None:
+    plan = output["plan"]
+    print(f"Setup {output['phase']} {output['mode']}: {plan['vault']}")
+    print(f"Plan hash: {output['planHash']}")
+    for directory in plan["directories"]:
+        print(f"Create directory: {directory}")
+    for write in plan["writes"]:
+        print(f"Write: {write['path']}" + (" (private content bound to the plan hash)" if write.get("privateContentBoundToPlanHash") else ""))
+    for label, differences in (("Config", plan["configDifferences"]), ("Obsidian Git setting", plan["profileDiffs"])):
+        for key, change in differences.items():
+            print(f"{label} {key}: {json.dumps(change['from'], ensure_ascii=False)} -> {json.dumps(change['to'], ensure_ascii=False)}")
+    for rule in plan["ignoreDiffs"]:
+        print(f"Ignore rule: {rule}")
+    for message in plan["ignoreDiagnostics"]:
+        print(f"Note: {message}")
+    print("Obsidian Git: " + ("installed and enabled" if plan["pluginReady"] else "not ready (" + "; ".join(plan["pluginDiagnostics"]) + ")"))
+    if not plan["directories"] and not plan["writes"]:
+        print("No changes planned.")
+    if output["applied"]:
+        print(f"Applied {output['phase']} plan {output['planHash']}")
+    elif output["phase"] == "configure" and not plan["pluginReady"]:
+        print("Configuration apply requires Obsidian Git installed and enabled; install/enable it, then preview again.")
+    elif plan["directories"] or plan["writes"]:
+        argv = ["obsidian-second-brain", "setup", "--vault", plan["vault"]] + (["--configure"] if output["phase"] == "configure" else [])
+        # The hash binds the selected config, so keep the same selection when applying.
+        # Print it absolute (as bootstrap resolves it) so the hint works from any cwd.
+        selected = os.environ.get("OBSIDIAN_AGENT_CONFIG")
+        if selected:
+            selected = str(Path(selected).expanduser().absolute())
+        prefix = f"OBSIDIAN_AGENT_CONFIG={shlex.quote(selected)} " if selected is not None else ""
+        print(f"Review, then apply exactly this plan: {prefix}{shlex.join(argv + ['--apply', '--confirm', output['planHash']])}")
+    readiness = output["readiness"]
+    print(f"Stage: {readiness['stage']}" + (f" ({readiness['reason']})" if readiness["reason"] else ""))
+    print_next_actions(output["nextActions"])
+
+
 def freshness(index: Path, pages: list[str], vault: Path) -> str:
     """Prefer source hashes; retain conservative mtime checks for old caches."""
     try:
@@ -663,7 +744,7 @@ def main() -> int:
             super().error(message)
 
     parser = CliParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history", "source-check"))
+    parser.add_argument("command", choices=("setup", "doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history", "source-check"))
     parser.add_argument("query", nargs="?", help="search terms (required for search)")
     parser.add_argument("--vault", help="explicit vault root; overrides OBSIDIAN_VAULT_PATH and config")
     parser.add_argument("--config", help="config JSON path (default: OBSIDIAN_AGENT_CONFIG or standard user config)")
@@ -694,6 +775,9 @@ def main() -> int:
     parser.add_argument("--root-id", help="portable root identifier for source-check")
     parser.add_argument("--observation-id", help="selected observation ID for source-history")
     parser.add_argument("--allow-move", action="store_true", help="explicitly approve review of a selected asset locator move")
+    parser.add_argument("--configure", action="store_true", help="setup: review the integration config and Obsidian Git settings phase")
+    parser.add_argument("--apply", action="store_true", help="setup: apply the plan confirmed by --confirm")
+    parser.add_argument("--confirm", help="setup: exact plan hash shown by the reviewed preview")
     args = parser.parse_args()
 
     def fail(message: str, code: str = "command-error") -> int:
@@ -703,6 +787,32 @@ def main() -> int:
             print(f"obsidian-second-brain: {message}", file=sys.stderr)
         return 1
 
+    setup_options = {"command", "vault", "configure", "apply", "confirm", "json"}
+    if args.command == "setup":
+        # Config selection mirrors bootstrap-vault.py exactly; no other selector applies.
+        if args.config is not None:
+            parser.error("setup does not accept --config; select the config with OBSIDIAN_AGENT_CONFIG")
+        if args.query is not None:
+            parser.error("setup does not accept query terms")
+        unsupported = sorted(dest for dest, value in vars(args).items()
+                             if dest not in setup_options and value != parser.get_default(dest))
+        if unsupported:
+            parser.error("unsupported option for setup: " + ", ".join("--" + dest.replace("_", "-") for dest in unsupported))
+        if not args.vault:
+            parser.error("setup requires --vault")
+        if args.confirm is not None and not args.apply:
+            parser.error("--confirm requires --apply")
+        try:
+            output = setup(args.vault, args.configure, args.apply, args.confirm)
+        except SetupError as exc:
+            return fail(str(exc), exc.code)
+        if args.json:
+            print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+        else:
+            print_setup(output)
+        return 0
+    if args.configure or args.apply or args.confirm is not None:
+        parser.error("--configure, --apply, and --confirm require setup")
     if args.command in {"read", "outline"}:
         try:
             if args.config is not None:
@@ -975,11 +1085,7 @@ def main() -> int:
             print(f"Stage: {readiness['stage']}" + (f" ({readiness['reason']})" if readiness["reason"] else ""))
             for name, capability in output["capabilities"].items():
                 print(f"Capability {name}: {capability['state']}" + (f" ({capability['reason']})" if capability["reason"] else ""))
-            for action in readiness["nextActions"]:
-                flags = ", ".join(flag for flag, on in (("manual", action["manual"]), ("writes", action["mutates"]),
-                                                         ("review first", action["requiresReview"])) if on)
-                print(f"Next: {action['summary']}" + (f" [{flags}]" if flags else ""))
-                print(f"  {format_action(action)}")
+            print_next_actions(readiness["nextActions"])
             if output['config']['error']:
                 print(output['config']['error'], file=sys.stderr)
             if output['dependencies']['pythonError']:

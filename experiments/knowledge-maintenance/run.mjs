@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { installedPackage } from "../../tests/pi-runtime-paths.mjs";
 import { assertSupportedGitMetadataLayout, createPiRunner } from "./pi-runner.mjs";
-import { codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "./live-support.mjs";
+import { REQUEST_CONTRACT_FIELDS, codeIdentity, createBudget, loadSelectedOpenAIAuth, resolveConfig, validateWorkdir, wrapOpenAIProvider } from "./live-support.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const EXP = path.dirname(fileURLToPath(import.meta.url));
@@ -134,7 +134,18 @@ function persistFile(directory, name, value) {
 
 export function validateRunMetadata(metadata) {
   const exact = (value, keys, label) => { if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key))) throw new Error(`${label}-schema-invalid`); };
-  exact(metadata, ["schemaVersion", "identities", "limits", "runtime", "backendRevision", "backendRevisionStatus", "stopCode", "attempts", "sessions", "stages", "timing", "pricing"], "metadata");
+  const hasMismatchFields = Object.hasOwn(metadata ?? {}, "requestMismatchFields");
+  exact(metadata, ["schemaVersion", "identities", "limits", "runtime", "backendRevision", "backendRevisionStatus", "stopCode", "attempts", "sessions", "stages", "timing", "pricing", ...(hasMismatchFields ? ["requestMismatchFields"] : [])], "metadata");
+  // Optional, names only: a sorted, duplicate-free, non-empty subset of the guarded request fields, only for that stop code.
+  if (hasMismatchFields) {
+    const fields = metadata.requestMismatchFields;
+    let valid = metadata.stopCode === "request-contract-mismatch" && Array.isArray(fields) && fields.length > 0;
+    // Index loop, not .some(), so sparse-array holes are checked too.
+    for (let index = 0; valid && index < fields.length; index++) {
+      valid = REQUEST_CONTRACT_FIELDS.includes(fields[index]) && (index === 0 || REQUEST_CONTRACT_FIELDS.indexOf(fields[index - 1]) < REQUEST_CONTRACT_FIELDS.indexOf(fields[index]));
+    }
+    if (!valid) throw new Error("metadata-request-mismatch-fields-invalid");
+  }
   if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "cancelled", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
   exact(metadata.limits, ["calls", "minutes", "outputTokens", "maxOutputTokens"], "limits");
   if (!Object.values(metadata.limits).every((value) => Number.isSafeInteger(value) && value > 0)) throw new Error("metadata-limits-invalid");
@@ -338,6 +349,8 @@ export async function runLive(config, initialManifest, fixture, ownerToken, deps
   const persistMetadata = () => {
     sidecar.attempts = budget.state.records.map(({ id, ...record }) => ({ id, ...record }));
     sidecar.stopCode = budget.state.stopCode ?? sidecar.stopCode;
+    if (sidecar.stopCode === "request-contract-mismatch" && budget.state.requestMismatchFields) sidecar.requestMismatchFields = [...budget.state.requestMismatchFields];
+    else delete sidecar.requestMismatchFields;
     sidecar.timing.elapsedMs = performance.now() - began;
     validateRunMetadata(sidecar);
     persistFile(workdir, "run-metadata.json", sidecar);
@@ -595,6 +608,7 @@ export function recordPreflightFailure(workdir, ownerToken) {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return;
     const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
     metadata.stopCode = "preflight-failed";
+    delete metadata.requestMismatchFields;
     persistFile(workdir, "run-metadata.json", validateRunMetadata(metadata));
     const artifactPath = path.join(workdir, "artifact-v2.json");
     const artifactStat = fs.lstatSync(artifactPath);
