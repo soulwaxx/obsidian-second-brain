@@ -30,6 +30,8 @@ const CODE_PATHS = [
   "hooks/hooks.json",
   "package.json",
 ];
+// Sorted names of the guarded OpenAI Responses request fields; only these names (never values) may be recorded.
+export const REQUEST_CONTRACT_FIELDS = Object.freeze(["max_output_tokens", "model", "reasoning.effort", "store", "stream"]);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const canonicalJson = (value) => Array.isArray(value) ? `[${value.map(canonicalJson).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}` : JSON.stringify(value);
 const canonicalHash = (value) => sha256(canonicalJson(value));
@@ -191,9 +193,14 @@ export function codeIdentity({ root = ROOT, files } = {}) {
 
 export function createBudget({ limits = DEFAULTS.limits, now = () => performance.now(), onStop = () => {} } = {}) {
   const started = now();
-  const state = { calls: 0, outputTokens: 0, stopped: false, stopCode: null, records: [] };
-  const stop = (code) => {
-    if (!state.stopped) { state.stopped = true; state.stopCode = code; onStop(code); }
+  const state = { calls: 0, outputTokens: 0, stopped: false, stopCode: null, requestMismatchFields: null, records: [] };
+  const stop = (code, mismatchedFields) => {
+    if (!state.stopped) {
+      state.stopped = true;
+      state.stopCode = code;
+      if (code === "request-contract-mismatch" && mismatchedFields?.length) state.requestMismatchFields = [...mismatchedFields];
+      onStop(code);
+    }
     fail(code);
   };
   return {
@@ -280,9 +287,12 @@ export function wrapOpenAIProvider(provider, budget, { maxOutputTokens = 4096, e
         if (rawBody === undefined && typeof Request !== "undefined" && input instanceof Request) rawBody = await input.clone().text();
         const body = inspectResponsesBody(rawBody);
         if (!body) { requestViolation = "request-body-unavailable"; budget.stop(requestViolation); }
-        if (body.max_output_tokens !== responseLimit || body.reasoning?.effort !== requestEffort || body.model !== model.id || body.store !== false || body.stream !== true) {
+        const expected = { max_output_tokens: responseLimit, model: model.id, "reasoning.effort": requestEffort, store: false, stream: true };
+        const actual = { max_output_tokens: body.max_output_tokens, model: body.model, "reasoning.effort": body.reasoning?.effort, store: body.store, stream: body.stream };
+        const mismatchedFields = REQUEST_CONTRACT_FIELDS.filter((field) => actual[field] !== expected[field]);
+        if (mismatchedFields.length) {
           requestViolation = "request-contract-mismatch";
-          budget.stop(requestViolation);
+          budget.stop(requestViolation, mismatchedFields);
         }
         const request = input instanceof Request ? input : null;
         const requestUrl = new URL(request ? request.url : String(input));
