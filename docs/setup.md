@@ -371,7 +371,8 @@ model-augmented indexing.
 
 The packaged specialist resolves the same vault from any caller cwd. Claude
 Code supports `@agent-obsidian-second-brain:wiki-vault`. Pi users can optionally
-install `pi-subagents` and run
+install `@tintinweb/pi-subagents` and use the `wiki-vault` agent type, or install
+nicobailon's `pi-subagents` and run
 `/run obsidian-second-brain.wiki-vault "your task"`. omp exposes the same
 specialist as the `wiki-vault` task agent. The runner is not required
 for the skill or lifecycle. Neither specialist pins a model or effort.
@@ -443,6 +444,44 @@ or that a paid provider accepts the requested level. Subscription-backed checks
 remain tracked in [issue #1](https://github.com/soulwaxx/obsidian-second-brain/issues/1).
 
 ### Pi
+
+Both Pi runners read the package's `pi.subagents.agents` directory, so it holds
+one definition per runner with the same instructions:
+
+| File | Runner | Registered as |
+| --- | --- | --- |
+| `agents/pi/wiki-vault.md` | `@tintinweb/pi-subagents` | `wiki-vault` |
+| `agents/pi/nicobailon/wiki-vault.md` | nicobailon `pi-subagents` | `obsidian-second-brain.wiki-vault` |
+
+Each runner loads only its own file: tintinweb does not scan subdirectories,
+and nicobailon skips the tintinweb file because it has no `name:`. Both
+specialists get the package `wiki` skill as an available skill and read it before
+vault work.
+
+#### @tintinweb/pi-subagents
+
+The definition limits built-in tools to `read`, `grep`, `find`, `bash`, `edit`,
+and `write`, and its `ext:obsidian-second-brain` entry limits extension tools to
+this package's `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`.
+Tools from other extensions, such as codemode, MCP, todo, or question tools,
+are not exposed to the specialist. Other extensions still load, so provider
+extensions remain available for model resolution. Package agents must not be
+disabled: `packageAgents` in `~/.pi/agent/subagents.json` must be `true`,
+absent, or a list that includes `obsidian-second-brain`.
+
+The runner has no per-agent settings override. To choose a model or thinking level:
+
+- For one run, ask the parent to pass the `Agent` tool's `model` or `thinking`
+  parameter. The packaged definition sets neither, so the call value applies.
+- To keep a choice, open `/agents`, select `wiki-vault`, and choose **Eject**
+  for personal scope, or create `~/.pi/agent/agents/wiki-vault.md`. Then
+  add `model:` or `thinking:` to that copy's frontmatter. The copy replaces the
+  packaged definition and does not receive later package updates to its
+  instructions or tools. After upgrading this package, compare the copy with
+  `agents/pi/wiki-vault.md` or eject it again. Delete the copy to restore the
+  packaged definition.
+
+#### nicobailon pi-subagents
 
 Merge an override into user settings without replacing existing fields:
 

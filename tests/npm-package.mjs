@@ -21,7 +21,7 @@ try {
     "package.json", "requirements.txt", "README.md", "LICENSE", "NOTICE.md", "properties.example.json",
     ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
     "extensions/obsidian.ts", "hooks/obsidian-session.sh", "hooks/hooks.json",
-    "agents/pi/wiki-vault.md", "agents/wiki-vault.md",
+    "agents/pi/wiki-vault.md", "agents/pi/nicobailon/wiki-vault.md", "agents/wiki-vault.md",
     "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
     "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/evidence_ledger.py", "scripts/wiki_batch.py", "scripts/source_baselines.py", "scripts/source_drift.py", "scripts/retrieval_reads.py",

@@ -297,11 +297,15 @@ prefer matching dated notes/relevant dated sections. See
 
 ## Optional specialist
 
-Claude Code supports `@agent-obsidian-second-brain:wiki-vault`. For Pi, optionally
-install `pi-subagents` with `pi install npm:pi-subagents`, then ask the parent to
-run `obsidian-second-brain.wiki-vault`, or use
-`/run obsidian-second-brain.wiki-vault "your task"`. omp lists it as the
-`wiki-vault` task agent. The specialist resolves the
+Claude Code supports `@agent-obsidian-second-brain:wiki-vault`. Pi needs an
+optional subagent runner; the package ships a definition for each supported one:
+
+| Pi runner | Install | Agent name |
+| --- | --- | --- |
+| [`@tintinweb/pi-subagents`](https://github.com/tintinweb/pi-subagents) | `pi install npm:@tintinweb/pi-subagents` | `wiki-vault` (`Agent` tool `subagent_type`) |
+| [`pi-subagents`](https://github.com/nicobailon/pi-subagents) (nicobailon) | `pi install npm:pi-subagents` | `obsidian-second-brain.wiki-vault`, or `/run obsidian-second-brain.wiki-vault "your task"` |
+
+omp lists it as the `wiki-vault` task agent. The specialist resolves the
 same configured vault; it does not require the parent to start there.
 
 Neither packaged specialist pins a model or effort. Claude Code 2.1.292+ adds
@@ -309,7 +313,11 @@ Neither packaged specialist pins a model or effort. Claude Code 2.1.292+ adds
 in the plugin's `/config` settings to request `low` for that explicit delegation
 without changing parent effort. The default is `inherit`; direct agent mentions
 bypass the preference. The plugin's option picker requires Claude Code 2.1.271+.
-Pi uses its existing per-agent `thinking` override instead of a package setting.
+Pi runners use their own controls instead of a package setting: with tintinweb,
+pass the `Agent` tool's `model` or `thinking` for one run, or add them to an
+ejected personal copy of `wiki-vault`; with nicobailon, set
+`subagents.agentOverrides` for `obsidian-second-brain.wiki-vault`. See
+[Pi agent configuration](docs/setup.md#pi).
 See [agent configuration](docs/setup.md#configure-the-vault-agent) for precedence,
 model restrictions, and unverified live-client checks. Pi without the subagent
 runner still supports the skill and lifecycle.

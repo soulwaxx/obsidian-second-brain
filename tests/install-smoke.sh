@@ -27,7 +27,7 @@ assert len(packages) == 1, f"unexpected Pi package declarations: {packages!r}"
 # before applying ../ components incorrectly redirects an otherwise valid path.
 package = pathlib.Path(__import__("os").path.abspath(agent_dir / packages[0]))
 assert package == repo, f"Pi package resolved to {package}, expected {repo}"
-for resource in ("extensions/obsidian.ts", "hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "agents/pi/wiki-vault.md"):
+for resource in ("extensions/obsidian.ts", "hooks/obsidian-session.sh", "scripts/wiki_lifecycle.py", "agents/pi/wiki-vault.md", "agents/pi/nicobailon/wiki-vault.md"):
     assert (package / resource).is_file(), f"missing Pi-installed resource: {resource}"
 for skill in ("wiki", "wiki-query", "wiki-save", "wiki-ingest", "wiki-research", "wiki-health"):
     assert (package / "skills" / skill / "SKILL.md").is_file(), f"missing Pi-discovered skill: {skill}"
