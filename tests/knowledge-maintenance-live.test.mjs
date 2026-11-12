@@ -242,7 +242,8 @@ try {
   validateRunMetadata({ ...baseMetadata("request-contract-mismatch"), requestMismatchFields: [...REQUEST_CONTRACT_FIELDS] });
   for (const [stopCode, fields] of [["time-limit", ["model"]], [null, ["model"]], ["request-contract-mismatch", []],
     ["request-contract-mismatch", ["model", "model"]], ["request-contract-mismatch", ["model", "max_output_tokens"]],
-    ["request-contract-mismatch", ["authorization"]], ["request-contract-mismatch", "model"], ["request-contract-mismatch", [4096]]]) {
+    ["request-contract-mismatch", ["authorization"]], ["request-contract-mismatch", "model"], ["request-contract-mismatch", [4096]],
+    ["request-contract-mismatch", [, "model"]]]) {
     assert.throws(() => validateRunMetadata({ ...baseMetadata(stopCode), requestMismatchFields: fields }), /metadata-request-mismatch-fields-invalid/, JSON.stringify({ stopCode, fields }));
   }
 

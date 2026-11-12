@@ -139,8 +139,12 @@ export function validateRunMetadata(metadata) {
   // Optional, names only: a sorted, duplicate-free, non-empty subset of the guarded request fields, only for that stop code.
   if (hasMismatchFields) {
     const fields = metadata.requestMismatchFields;
-    if (metadata.stopCode !== "request-contract-mismatch" || !Array.isArray(fields) || fields.length === 0 ||
-      fields.some((field, index) => !REQUEST_CONTRACT_FIELDS.includes(field) || (index > 0 && REQUEST_CONTRACT_FIELDS.indexOf(fields[index - 1]) >= REQUEST_CONTRACT_FIELDS.indexOf(field)))) throw new Error("metadata-request-mismatch-fields-invalid");
+    let valid = metadata.stopCode === "request-contract-mismatch" && Array.isArray(fields) && fields.length > 0;
+    // Index loop, not .some(), so sparse-array holes are checked too.
+    for (let index = 0; valid && index < fields.length; index++) {
+      valid = REQUEST_CONTRACT_FIELDS.includes(fields[index]) && (index === 0 || REQUEST_CONTRACT_FIELDS.indexOf(fields[index - 1]) < REQUEST_CONTRACT_FIELDS.indexOf(fields[index]));
+    }
+    if (!valid) throw new Error("metadata-request-mismatch-fields-invalid");
   }
   if (metadata.schemaVersion !== 1 || !Array.isArray(metadata.attempts) || !Array.isArray(metadata.sessions) || !Array.isArray(metadata.stages) || metadata.backendRevision !== null || metadata.backendRevisionStatus !== "unknown" || metadata.pricing !== null || !(metadata.stopCode === null || ["preflight-incomplete", "preflight-failed", "run-stopped", "request-body-unavailable", "request-contract-mismatch", "code-identity-drift", "time-limit", "call-limit", "output-token-limit", "usage-unavailable", "transport-error", "provider-error", "response-model-drift", "unsupported-openai-route", "judge-session-failed", "maintenance-failed", "answer-failed", "budget-stopped", "cancelled", "artifact-validation-failed", "score-generation-failed"].includes(metadata.stopCode))) throw new Error("metadata-schema-invalid");
   exact(metadata.limits, ["calls", "minutes", "outputTokens", "maxOutputTokens"], "limits");
