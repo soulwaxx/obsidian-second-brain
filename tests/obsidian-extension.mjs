@@ -845,12 +845,12 @@ try {
   const recallCtx = freshSession();
   assert.equal((await recallHandlers.get("before_agent_start")({}, recallCtx)).message.customType, "obsidian-toc", "no prompt means no recall");
   assert.equal(await recallHandlers.get("before_agent_start")({ prompt: "completely unrelated astronomy question" }, recallCtx), undefined, "below-threshold results inject nothing");
+  assert.equal(recallSnapshot(), recallBefore, "recall performed no vault, cache, or lifecycle writes");
   fs.rmSync(path.join(recallVault, ".vault-meta"), { recursive: true });
   const noIndex = await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, freshSession());
   assert.doesNotMatch(noIndex.message.content, /wiki reference data/, "missing index injects nothing");
   assert.equal(fs.existsSync(path.join(recallVault, ".vault-meta")), false, "recall never builds the index");
   execFileSync("python3", [path.join(scriptsDir, "bm25-index.py"), "build", "--vault", recallVault], { stdio: "ignore" });
-  assert.equal(recallSnapshot(), recallBefore, "recall performed no vault, cache, or lifecycle writes");
   writeRecallConfig({ autoRecall: { enabled: true, maxResults: 99 } });
   assert.doesNotMatch((await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, freshSession())).message.content, /wiki reference data/);
   assert.equal(await recallHandlers.get("tool_call")({ toolName: "write", toolCallId: "recall-invalid-write", input: { path: path.join(recallVault, "wiki/after-invalid.md") } }, ctx), undefined,

@@ -149,6 +149,34 @@ class AutoRecallTests(unittest.TestCase):
         self.assertEqual(len(set(outputs.values())), 1, "other lifecycle output must not depend on autoRecall")
         self.assertIn("Configured Obsidian wiki", outputs["absent"])
 
+    def test_disabled_recall_never_starts_python(self):
+        bin_dir = self.root / "shim-bin"
+        bin_dir.mkdir()
+        log = self.root / "python-calls.log"
+        real = shutil.which("python3")
+        shim = bin_dir / "python3"
+        shim.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexec "{real}" "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        for tool in ("jq", "dirname", "cat"):
+            os.symlink(shutil.which(tool), bin_dir / tool)
+        env = {**self.env, "PATH": str(bin_dir)}
+
+        def recall(prompt=QUERY):
+            return subprocess.run([shutil.which("bash"), str(HOOK), "recall"], input=json.dumps({"prompt": prompt}),
+                                  env=env, text=True, capture_output=True)
+
+        for name, value in (("absent", "absent"), ("off", {"enabled": False}), ("null", None),
+                            ("string true", {"enabled": "true"}), ("empty", {})):
+            self.write_config(value)
+            result = recall()
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""), name)
+        self.config.unlink()
+        self.assertEqual(recall().returncode, 0)
+        self.assertFalse(log.exists(), "disabled recall must not start python")
+        self.write_config({"enabled": True, "maxResults": 5})
+        self.assertIn("readRef:", self.context(recall()))
+        self.assertTrue(log.exists(), "premise: the shim records python when recall is enabled")
+
     def test_missing_config_and_invocation_vault_override_do_not_enable_recall(self):
         self.config.unlink()
         env = {**self.env, "OBSIDIAN_VAULT_PATH": str(self.vault)}

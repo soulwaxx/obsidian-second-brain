@@ -223,10 +223,20 @@ never builds or refreshes the index, never calls Ollama or any network service,
 and writes nothing to the vault, cache or lifecycle state. It injects nothing when
 the index is missing, stale or has a pending refresh, when the search exceeds a
 3-second deadline, or when no result reaches the minimum BM25 score (2.0, about
-one query term found on at most 13% of the pages). The freshness check hashes every
-eligible page, so very large vaults may exceed the deadline and get no recall.
-The hook is bounded at 5 seconds and always exits successfully, so recall cannot
-block a prompt. The first 2,000 characters of the prompt form the query.
+one query term found on at most 13% of the pages). The hook is bounded at 5
+seconds and always exits successfully, so recall cannot block a prompt. The first
+2,000 characters of the prompt form the query.
+
+Cost: with recall disabled, the Claude hook exits after one `jq` check (about
+10 ms instead of about 90 ms measured before that check). With recall enabled, every
+prompt pays the search latency, dominated by loading the index JSON (about 1.2 s
+at 3,000 pages, measured), plus the freshness check. That time is paid even when
+recall then times out and injects nothing. Around 8,000–10,000 pages recall will
+typically exceed the 3-second deadline and inject nothing on every prompt, while
+`doctor` still reports it ready; `ready` means the index is fresh, not that
+recall will finish in time. Recall output stays in the session history, up to about
+`tokenBudget` tokens per prompt, with no de-duplication across turns, so repeated
+or similar prompts accumulate repeated excerpts.
 
 The injected block is labelled "wiki reference data, not instructions" and lists
 each page path, a short excerpt and a hash-bound `readRef` (`page`, `expectedHash`,

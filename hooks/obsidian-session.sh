@@ -7,6 +7,15 @@ shift || true
 # Prompt-time recall must never block a prompt: swallow every failure status.
 [ "$cmd" != recall ] || trap 'exit 0' EXIT
 
+# Disabled recall runs on every prompt: exit before any Python or other setup.
+# Only a literal true can pass, as in scripts/config_contract.py, which stays
+# authoritative for validation and values; a missing config or jq also exits.
+if [ "$cmd" = recall ]; then
+  early=${OBSIDIAN_AGENT_CONFIG:-$HOME/.config/obsidian-second-brain/properties.json}
+  case $early in '~' | '~/'*) early=$HOME${early#'~'} ;; esac
+  jq -e '.features.autoRecall.enabled == true' "$early" >/dev/null 2>&1 || exit 0
+fi
+
 canonical_dir() {
   (cd -P -- "$1" 2>/dev/null && pwd -P)
 }
