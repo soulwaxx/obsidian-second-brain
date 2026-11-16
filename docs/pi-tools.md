@@ -15,7 +15,11 @@ Native calls have a 30-second deadline, 256 KiB transport-output cap, 8 KiB stde
 
 ## Equivalent access in Claude Code
 
-Claude Code has no native wiki tools; this is by design, and no MCP server is shipped. Claude skills and the vault specialist run the same operations through the loaded package's CLI launcher (`doctor --json`, `search ... --json`, `outline`, `read`). Both routes call the same Python implementation: in live validation, CLI and `--pi-tool` payloads for search, outline, read, and doctor on the same synthetic vault were byte-identical. Differences are in transport only: Pi tool results add the `operation`/`ok` envelope and the limits above, while CLI output is the bare payload.
+Claude Code has no native wiki tools; this is by design. Claude skills and the vault specialist run the same operations through the loaded package's CLI launcher (`doctor --json`, `search ... --json`, `outline`, `read`). Both routes call the same Python implementation: in live validation, CLI and `--pi-tool` payloads for search, outline, read, and doctor on the same synthetic vault were byte-identical. Differences are in transport only: Pi tool results add the `operation`/`ok` envelope and the limits above, while CLI output is the bare payload.
+
+## The same tools over MCP
+
+Agents without native Pi tools can use the identical four tools through the package's stdio MCP server, `obsidian-second-brain mcp`, documented in [the MCP server guide](mcp.md). It runs every call through this bridge, so the envelope, limits, vault selection, and read-only behavior described here apply unchanged; the tool result's `structuredContent` equals the `--pi-tool` result. Pi and omp keep the native tools and do not use MCP.
 
 ## Optional live provider check (not part of deterministic tests)
 

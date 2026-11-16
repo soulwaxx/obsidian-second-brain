@@ -1,0 +1,51 @@
+# Stdio MCP server for the read-only wiki tools
+
+`obsidian-second-brain mcp` starts a stdio [Model Context Protocol](https://modelcontextprotocol.io) server that gives any MCP-capable agent the same four read-only tools that Pi registers natively: `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`. Tool names, titles, descriptions, input schemas, and read-only annotations match the Pi registrations (a test compares them). The server is a subcommand of the package's Node launcher, `scripts/obsidian-second-brain.mjs`; it has no extra dependency, daemon, port, or network listener, and it never writes to the vault, configuration, caches, or lifecycle state.
+
+Each `tools/call` runs the existing bounded `--pi-tool` bridge, so validation, the 30-second deadline, and the 256 KiB transport / 64 KiB result caps are the ones described in [the Pi tool contract](pi-tools.md). The call result's `structuredContent` is the bridge's result object, byte-for-byte the `--pi-tool` JSON (`operation`, `ok`, `payload`, and on failure `code`/`message`, plus `processStatus`); the same JSON is the single `text` content item. `ok: false` results set `isError: true` and keep their diagnostics. Hybrid search may contact only the bounded loopback Ollama endpoint described there, and only when requested.
+
+## Configure a client
+
+Use an absolute path to the installed package and pin the Python interpreter that has [`requirements.txt`](../requirements.txt) installed (Python 3.14 or newer):
+
+```json
+{
+  "mcpServers": {
+    "obsidian-wiki": {
+      "command": "node",
+      "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp"],
+      "env": { "PYTHON": "/path/to/python3.14" }
+    }
+  }
+}
+```
+
+`<package root>` is the directory that contains `package.json`, for example `…/node_modules/@soulwaxx/obsidian-second-brain` for an npm install, or the Claude plugin/Pi package checkout. The key names above are the common `mcpServers` shape; consult your client's documentation for its own file location and schema.
+
+A version-pinned `npx` form works when no local install exists:
+
+```json
+{ "command": "npx", "args": ["-y", "@soulwaxx/obsidian-second-brain@<version>", "mcp"], "env": { "PYTHON": "/path/to/python3.14" } }
+```
+
+Do not use an unpinned `npx -y @soulwaxx/obsidian-second-brain mcp`: it contacts npm every time the agent starts and may run a version you have not reviewed. The absolute-path form makes no network call and runs exactly the installed, reviewed version.
+
+## Vault selection and working directory
+
+The server resolves the vault exactly as the CLI and Pi tools do: an optional absolute `vault` tool input, then `OBSIDIAN_VAULT_PATH`, then the selected configuration's `vaultPath`; `OBSIDIAN_AGENT_CONFIG` selects the configuration file, otherwise `~/.config/obsidian-second-brain/properties.json`. Put these in the server's `env` when the client does not pass your shell environment. MCP clients may start the server in any working directory, and relative `OBSIDIAN_AGENT_CONFIG`, `OBSIDIAN_VAULT_PATH`, or config `vaultPath` values resolve against that directory, so use absolute values. Call `wiki_doctor` to see which vault, config, and readiness state the server selected.
+
+## Tool profiles
+
+`--tools read` is the default and the only profile shipped: exactly the four tools above. `--tools all` is reserved for the batch write tools and is refused with an error (exit status 2, nothing on stdout) until they ship. Any other value is refused too.
+
+## Protocol behavior
+
+- Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout; stdout carries protocol messages only. Messages over 64 KiB, malformed JSON (`-32700`), JSON-RPC batches, and invalid requests (`-32600`), unknown methods (`-32601`), and invalid or unknown tool parameters (`-32602`) get standard errors.
+- `initialize` echoes the requested `protocolVersion` when it is one of `2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05`; otherwise it answers with `2025-11-25` and the client decides whether to continue. The result advertises only the `tools` capability and includes `instructions`: use these tools for the wiki, never edit vault files with your own file or shell tools, and call `wiki_doctor` to learn which vault is selected. The instructions name no vault path because resolving one needs the Python process; the handshake does not start Python.
+- Also handled: `notifications/initialized`, `ping`, `tools/list` (one page, no cursor), `tools/call`, and `notifications/cancelled` for a running call (the call is terminated and not answered). `outputSchema` and `structuredContent` are part of the newer protocol versions; the text content item carries the same JSON for clients that negotiate `2024-11-05`. Resources, prompts, HTTP/SSE transports, and write tools are not provided.
+- Calls may overlap; each runs in its own process tree.
+- On stdin EOF, `SIGINT`, or `SIGTERM` the server terminates every running call (the launcher kills its Python process group, with a forced kill after 1.5 s) and exits. Process-group termination is verified on macOS/Linux only; Windows is unverified.
+
+## Verification status
+
+Fixture-tested with a scripted stdio client (`tests/mcp-server.mjs`, also exercised from an archive-installed package by `npm run test:package`) against a synthetic vault. No live MCP client has been validated.

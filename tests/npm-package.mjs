@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { startMcp } from "./mcp-client.mjs";
 import { parseNpmArchive } from "./npm-pack.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,7 +34,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/source-baselines.md", "docs/source-drift.md",
+    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/mcp.md", "docs/source-baselines.md", "docs/source-drift.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -109,6 +110,21 @@ try {
   assert.equal(nativeDoctor.operation, "doctor");
   assert.equal(nativeDoctor.payload.vault, fs.realpathSync(cliVault), "packed native tool uses explicit vault without npm bin lookup");
   assert.equal(nativeDoctor.payload.schemaVersion, 1, "packed native doctor passes readiness through");
+  // The installed MCP server runs from a cwd outside package and vault with the same payloads as the bridge.
+  const mcpClient = startMcp({ launcher: path.join(installed, "scripts/obsidian-second-brain.mjs"), cwd: work, env });
+  try {
+    const mcpInit = await mcpClient.initialize();
+    assert.match(mcpInit.result.instructions, /never edit vault files/);
+    assert.equal(mcpInit.result.serverInfo.version, manifest.version);
+    const mcpTools = (await mcpClient.request("tools/list")).result.tools;
+    assert.deepEqual(mcpTools.map((tool) => tool.name), ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"]);
+    assert.ok(mcpTools.every((tool) => tool.annotations.readOnlyHint === true));
+    const mcpDoctor = await mcpClient.callTool("wiki_doctor", { vault: cliVault });
+    assert.equal(mcpDoctor.result.isError, false);
+    assert.deepEqual(mcpDoctor.result.structuredContent, nativeDoctor, "installed MCP doctor equals the installed --pi-tool result");
+  } finally {
+    assert.equal((await mcpClient.close()).code, 0, "installed MCP server exits on stdin EOF");
+  }
   // Installed readiness discovery from a cwd outside both package and vault,
   // with space/Unicode paths: suggestions are anchored at the installed root.
   const installedRoot = fs.realpathSync(installed);
