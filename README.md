@@ -167,7 +167,9 @@ does not provide web/media extraction or authorize wiki filing. See the
 [baseline contract](docs/source-baselines.md) for approval and recovery details.
 
 Startup supplies a small vault locator rather than injecting the entire
-personal index into unrelated work. The skill searches and reads relevant
+personal index into unrelated work. Automatic recall that adds a few relevant
+wiki excerpts before each prompt is available for Claude Code and Pi/omp but is
+off by default; see [Automatic recall](docs/setup.md#automatic-recall-opt-in). The skill searches and reads relevant
 pages when a task needs them. An approved ingest or research pass may update
 relevant canonical pages; ordinary questions remain read-only unless filing
 was requested. Keep one wiki writer at a time.
@@ -195,7 +197,8 @@ Git handles version control independently, including for legacy configs with
 Pi also registers four direct, read-only `wiki_search`, `wiki_outline`,
 `wiki_read`, and `wiki_doctor` tools. They invoke the currently installed
 package's Python retrieval/read operations and do not inject wiki content into
-prompts; see [the Pi tool contract](docs/pi-tools.md).
+prompts unless the opt-in automatic recall setting is enabled; see
+[the Pi tool contract](docs/pi-tools.md).
 
 When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
 for read-only structured search and doctor commands from any folder:

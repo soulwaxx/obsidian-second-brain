@@ -25,7 +25,7 @@ CLI_MODULE = load_source("doctor_readiness_cli", str(CLI))
 
 LEGACY_KEYS = {"config", "dependencies", "vault", "cacheExclusions", "lifecycle", "retrieval"}
 VAULT_KEYS = {"vaultExists", "wikiExists"}
-NEW_KEYS = {"schemaVersion", "capabilities", "readiness"}
+NEW_KEYS = {"schemaVersion", "capabilities", "readiness", "autoRecall"}
 DEPENDENCY_KEYS = {"python", "pythonMinimum", "pythonSupported", "pythonError", "retrieval", "pyyaml", "git", "jq"}
 CAPABILITIES = ["lexicalSearch", "spanReads", "sectionReads", "evidenceReport", "reviewedWrites", "sourceChecks", "semanticRerank"]
 STAGES = ["package", "vaultSelected", "scaffold", "workflow", "pendingContent", "pendingRetrieval"]

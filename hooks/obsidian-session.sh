@@ -4,6 +4,8 @@ set -uo pipefail
 
 cmd="${1:-}"
 shift || true
+# Prompt-time recall must never block a prompt: swallow every failure status.
+[ "$cmd" != recall ] || trap 'exit 0' EXIT
 
 canonical_dir() {
   (cd -P -- "$1" 2>/dev/null && pwd -P)
@@ -15,12 +17,14 @@ properties=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.ar
 script_root=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 config_data='{}'
 config_error=
+auto_recall='{}'
 explicit_override=${OBSIDIAN_VAULT_PATH:-}
 if [ -f "$properties" ]; then
   command -v jq >/dev/null 2>&1 || exit 2
   contract=$(python3 "$script_root/scripts/config_contract.py" "$properties") || exit 2
   config_data=$(printf '%s' "$contract" | jq -c '.config // {}')
   config_error=$(printf '%s' "$contract" | jq -r '.error // empty')
+  auto_recall=$(printf '%s' "$contract" | jq -c '.autoRecall // {}')
   if [ -z "$explicit_override" ]; then
     OBSIDIAN_VAULT_PATH=$(printf '%s' "$contract" | jq -r 'if (.config.vaultPath | type) == "string" then .config.vaultPath else empty end')
   fi
@@ -163,6 +167,19 @@ start)
   printf 'Configured Obsidian wiki: %s/wiki (OKF v0.2; writes are guarded and validated; sync is Obsidian Git-owned).\n' "$vault"
   printf 'Selected Obsidian integration config: %s (OBSIDIAN_AGENT_CONFIG selects this file; OBSIDIAN_VAULT_PATH overrides vaultPath).\n' "$properties"
   python3 "$script_root/scripts/wiki_lifecycle.py" diagnose --vault "$vault"
+  ;;
+
+recall)
+  # Opt-in (features.autoRecall) read-only BM25 recall for Claude UserPromptSubmit
+  # and Pi before_agent_start. Emits nothing unless enabled with fresh results.
+  [ -z "$config_error" ] || exit 0
+  [ "$(printf '%s' "$auto_recall" | jq -r '.enabled // false')" = true ] || exit 0
+  prompt=$(jq -r 'if (.prompt | type) == "string" then .prompt else empty end') || exit 0
+  [ -n "$prompt" ] || exit 0
+  context=$(printf '%s' "$prompt" | PYTHONDONTWRITEBYTECODE=1 python3 "$script_root/scripts/auto_recall.py" --vault "$vault" \
+    --max-results "$(printf '%s' "$auto_recall" | jq -r '.maxResults')" --token-budget "$(printf '%s' "$auto_recall" | jq -r '.tokenBudget')" 2>/dev/null) || exit 0
+  [ -n "$context" ] || exit 0
+  jq -n --arg context "$context" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$context}}'
   ;;
 
 prewrite-capture)
@@ -390,7 +407,7 @@ stop)
   ;;
 
 *)
-  echo "usage: obsidian-session.sh {start|postwrite|finalize|stop} [touched-page ...]" >&2
+  echo "usage: obsidian-session.sh {start|recall|postwrite|finalize|stop} [touched-page ...]" >&2
   exit 2
   ;;
 esac

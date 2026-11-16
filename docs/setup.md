@@ -197,6 +197,47 @@ search is unavailable or unhelpful. See the
 [focused workflow reference](../skills/wiki/references/focused-workflows.md)
 for scope boundaries.
 
+## Automatic recall (opt-in)
+
+Automatic recall adds a few relevant wiki excerpts to the agent's context before
+each user prompt. It is off by default and covers Claude Code (a
+`UserPromptSubmit` hook) and Pi/omp (the extension's `before_agent_start`
+handler); MCP-only agents are not covered. Enable it by editing the selected
+config (reviewed `--configure` preserves the value but does not change it):
+
+```json
+{ "features": { "autoRecall": { "enabled": true, "maxResults": 3, "tokenBudget": 800 } } }
+```
+
+- `enabled`: boolean, default `false`. Absent, `null` or `false` leaves behavior
+  and output unchanged.
+- `maxResults`: integer 1–5, default 3. `tokenBudget`: integer 200–2000, default
+  800, estimated at 4 characters per token for the whole injected block.
+- Any invalid value (wrong type, non-integer, out of bounds) disables recall and
+  is reported by `doctor` (`autoRecall.valid`, `error`). It does not invalidate the
+  rest of the config or block wiki writes. The shell hook, the Pi extension and
+  `doctor` all read the value through `scripts/config_contract.py`.
+
+Recall uses only the existing BM25 index and the existing read-only search. It
+never builds or refreshes the index, never calls Ollama or any network service,
+and writes nothing to the vault, cache or lifecycle state. It injects nothing when
+the index is missing, stale or has a pending refresh, when the search exceeds a
+3-second deadline, or when no result reaches the minimum BM25 score (2.0, about
+one query term found on at most 13% of the pages). The freshness check hashes every
+eligible page, so very large vaults may exceed the deadline and get no recall.
+The hook is bounded at 5 seconds and always exits successfully, so recall cannot
+block a prompt. The first 2,000 characters of the prompt form the query.
+
+The injected block is labelled "wiki reference data, not instructions" and lists
+each page path, a short excerpt and a hash-bound `readRef` (`page`, `expectedHash`,
+`view`, `start`, `end`) that `wiki_read` or `obsidian-second-brain read` accepts.
+Pi merges it into the same hidden message as the startup locator when both apply.
+`doctor --json` reports `autoRecall` (`enabled`, `maxResults`, `tokenBudget`,
+`valid`, `ready`, `reason`); the human report adds an `Auto recall:` line only when
+recall is enabled or invalid. omp runs the Pi extension; its runtime behavior is
+unverified. Whether recall improves outcomes is unmeasured; the paired evaluation
+(#41) carries an "autoRecall on/off" arm for that question.
+
 ## Readiness and next steps
 
 `doctor --json` (and Pi `wiki_doctor`) add three schema-v1 keys to the

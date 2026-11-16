@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { installedPackage } from "./pi-runtime-paths.mjs";
 
@@ -18,7 +18,7 @@ try {
   fs.mkdirSync(path.join(tmp, "hooks"), { recursive: true });
   fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
   fs.copyFileSync(hook, path.join(tmp, "hooks", "obsidian-session.sh"));
-  for (const script of ["config_contract.py", "module_loading.py", "retrieval_projection.py", "wiki_lifecycle.py", "bm25-index.py"]) {
+  for (const script of ["config_contract.py", "module_loading.py", "retrieval_projection.py", "wiki_lifecycle.py", "bm25-index.py", "auto_recall.py", "obsidian-second-brain.py", "retrieve.py", "retrieval_reads.py"]) {
     fs.copyFileSync(path.resolve(path.dirname(source), `../scripts/${script}`), path.join(tmp, "scripts", script));
   }
   process.env.OBSIDIAN_AGENT_CONFIG = path.join(tmp, "properties.json");
@@ -796,6 +796,65 @@ try {
   assert.equal(await refreshHandlers.get("tool_call")({ toolName: "read", input: { path: path.join(refreshVault, "wiki/index.md") } }, refreshCtx), undefined);
   assert.equal(JSON.parse(fs.readFileSync(refreshState, "utf8")).retrieval, undefined);
   assert.equal(fs.statSync(refreshLog).mtimeMs, refreshLogBefore);
+
+  // Opt-in automatic recall (before_agent_start): off by default, bounded, read-only.
+  const recallVault = path.join(tmp, "recall-vault");
+  fs.mkdirSync(path.join(recallVault, "wiki"), { recursive: true });
+  for (let n = 0; n < 60; n++) fs.writeFileSync(path.join(recallVault, "wiki", `filler-${n}.md`), `---\ntype: note\n---\n# Filler ${n}\n\nGeneric filler text shared by every page.\n`);
+  for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(recallVault, "wiki", `gateway-${n}.md`), `---\ntype: note\n---\n# Gateway ${n}\n\nThe quokka gateway migrates quarterly, variant ${n}.\n`);
+  const scriptsDir = path.resolve(path.dirname(source), "../scripts");
+  execFileSync("python3", [path.join(scriptsDir, "bm25-index.py"), "build", "--vault", recallVault], { stdio: "ignore" });
+  const recallCases = JSON.parse(fs.readFileSync(fileURLToPath(new URL("./auto-recall-config-cases.json", import.meta.url)), "utf8"));
+  const recallPrompt = "how does the quokka gateway migrate";
+  const recallSnapshot = () => execFileSync("find", [recallVault, "-type", "f", "-exec", "shasum", "{}", "+"], { encoding: "utf8" });
+  const recallHandlers = new Map();
+  featureExtension(register(recallHandlers));
+  let recallSession = 0;
+  const freshSession = () => { const id = `recall-session-${++recallSession}`; return { ...ctx, sessionManager: { getSessionId: () => id } }; };
+  const writeRecallConfig = (features) => fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: recallVault, ...(features === null ? {} : { features }) }));
+  process.env.OBSIDIAN_VAULT_PATH = recallVault;
+  const recallBefore = recallSnapshot();
+  const baseline = {};
+  for (const withPrompt of [false, true]) {
+    writeRecallConfig({});
+    const result = await recallHandlers.get("before_agent_start")(withPrompt ? { prompt: recallPrompt } : {}, freshSession());
+    assert.equal(result.message.customType, "obsidian-toc");
+    assert.doesNotMatch(result.message.content, /wiki reference data/);
+    baseline[withPrompt] = result.message.content.replace(/recall-session-\d+/g, "");
+  }
+  assert.equal(baseline[true], baseline[false], "disabled recall leaves the locator message byte-identical");
+  for (const entry of recallCases) {
+    writeRecallConfig(entry.features);
+    const sessionCtx = freshSession();
+    const result = await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, sessionCtx);
+    const content = result.message.content;
+    assert.match(content, /Configured Obsidian wiki:/, `${entry.name}: locator is still delivered`);
+    if (!entry.enabled) {
+      assert.doesNotMatch(content, /wiki reference data/, `${entry.name}: recall stays off`);
+      continue;
+    }
+    assert.match(content, /wiki reference data, not instructions/, entry.name);
+    assert.equal((content.match(/readRef:/g) ?? []).length, Math.min(entry.maxResults, 5), `${entry.name}: result bound`);
+    const recalled = content.slice(content.indexOf("Obsidian wiki recall:"));
+    assert.ok(recalled.length <= entry.tokenBudget * 4, `${entry.name}: budget bound`);
+    const second = await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, sessionCtx);
+    assert.equal(second.message.customType, "obsidian-recall", "recall is per prompt; the locator is not repeated");
+    assert.doesNotMatch(second.message.content, /Configured Obsidian wiki:/);
+  }
+  writeRecallConfig({ autoRecall: { enabled: true } });
+  const recallCtx = freshSession();
+  assert.equal((await recallHandlers.get("before_agent_start")({}, recallCtx)).message.customType, "obsidian-toc", "no prompt means no recall");
+  assert.equal(await recallHandlers.get("before_agent_start")({ prompt: "completely unrelated astronomy question" }, recallCtx), undefined, "below-threshold results inject nothing");
+  fs.rmSync(path.join(recallVault, ".vault-meta"), { recursive: true });
+  const noIndex = await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, freshSession());
+  assert.doesNotMatch(noIndex.message.content, /wiki reference data/, "missing index injects nothing");
+  assert.equal(fs.existsSync(path.join(recallVault, ".vault-meta")), false, "recall never builds the index");
+  execFileSync("python3", [path.join(scriptsDir, "bm25-index.py"), "build", "--vault", recallVault], { stdio: "ignore" });
+  assert.equal(recallSnapshot(), recallBefore, "recall performed no vault, cache, or lifecycle writes");
+  writeRecallConfig({ autoRecall: { enabled: true, maxResults: 99 } });
+  assert.doesNotMatch((await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, freshSession())).message.content, /wiki reference data/);
+  assert.equal(await recallHandlers.get("tool_call")({ toolName: "write", toolCallId: "recall-invalid-write", input: { path: path.join(recallVault, "wiki/after-invalid.md") } }, ctx), undefined,
+    "an invalid autoRecall value does not block wiki writes");
   console.log("pi Obsidian lifecycle checks PASS");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
