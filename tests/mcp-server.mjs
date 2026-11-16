@@ -120,6 +120,21 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   assert.equal(init.result.serverInfo.version, JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version);
   assert.match(init.result.instructions, /never edit vault files with your own file or shell tools/);
   assert.match(init.result.instructions, /wiki_doctor/);
+  assert.ok(init.result.instructions.includes(`Configured Obsidian wiki: ${fs.realpathSync(vault)}/wiki (OKF v0.2; selected integration config: ${config})`), "instructions carry the resolved wiki locator");
+  assert.match(init.result.instructions, /WIKI\.md/);
+  const overridden = open({ env: { OBSIDIAN_VAULT_PATH: path.join(vault, "wiki") } });
+  assert.ok((await overridden.initialize()).result.instructions.includes(`Configured Obsidian wiki: ${fs.realpathSync(path.join(vault, "wiki"))}/wiki`), "OBSIDIAN_VAULT_PATH overrides the config vaultPath");
+  await overridden.close();
+  const brokenConfig = path.join(tmp, "broken.json");
+  fs.writeFileSync(brokenConfig, "{broken");
+  for (const [label, env] of [["invalid config", { OBSIDIAN_AGENT_CONFIG: brokenConfig }], ["missing config", { OBSIDIAN_AGENT_CONFIG: path.join(tmp, "absent.json") }]]) {
+    const unresolved = open({ env });
+    const fallback = (await unresolved.initialize()).result.instructions;
+    assert.doesNotMatch(fallback, /Configured Obsidian wiki/, `${label}: no locator`);
+    assert.match(fallback, /call wiki_doctor to see which vault and readiness state apply/, `${label}: falls back to wiki_doctor`);
+    assert.match(fallback, /never edit vault files with your own file or shell tools/);
+    await unresolved.close();
+  }
   for (const version of ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]) {
     const negotiating = open();
     assert.equal((await negotiating.request("initialize", { protocolVersion: version })).result.protocolVersion, version, `supported version ${version} is echoed`);
@@ -227,7 +242,12 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   assert.equal((await client.waitFor((message) => message.error?.code === -32700)).id, null);
   client.send(JSON.stringify([{ jsonrpc: "2.0", id: 900, method: "ping" }]));
   assert.equal((await client.waitFor((message) => message.error?.code === -32600 && /batches/.test(message.error.message))).id, null);
+  client.send(JSON.stringify({ jsonrpc: "1.0", id: 8, method: "ping" }));
+  assert.equal((await client.waitFor((message) => message.error?.code === -32600 && message.id === 8)).id, 8, "invalid requests echo a string or number id");
+  client.send(JSON.stringify({ jsonrpc: "1.0", id: "req-8", method: "ping" }));
+  await client.waitFor((message) => message.error?.code === -32600 && message.id === "req-8");
   client.send(JSON.stringify({ id: 901, method: "ping" }));
+  await client.waitFor((message) => message.error?.code === -32600 && message.id === 901);
   client.send(JSON.stringify({ jsonrpc: "2.0", id: { nested: 1 }, method: "ping" }));
   client.send(JSON.stringify({ jsonrpc: "2.0", id: 902 }));
   client.send(JSON.stringify("string"));
@@ -237,7 +257,8 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   assert.deepEqual((await client.request("ping")).result, {}, "server keeps serving after malformed input");
   client.send(JSON.stringify({ jsonrpc: "2.0", id: 904, result: {} })); // a client response: ignored, never answered
   assert.deepEqual((await client.request("ping")).result, {});
-  assert.ok(!client.messages.some((message) => message.id === 904 || message.id === 901), "no response to ignored messages");
+  assert.ok(!client.messages.some((message) => message.id === 904), "no response to ignored messages");
+  assert.ok(client.messages.some((message) => message.error?.code === -32600 && message.id === null && /id must be a string or number/.test(message.error.message)), "a non-scalar id is answered with id null");
   assert.deepEqual((await client.close()), { code: 0, signal: null }, "clean exit on stdin EOF");
   assert.ok(client.rawLines.every((line) => { try { return JSON.parse(line).jsonrpc === "2.0"; } catch { return false; } }), "stdout carries only JSON-RPC messages");
   assert.equal(client.stderr(), "", "no stderr noise during a normal session");
@@ -248,12 +269,39 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   };
   unchanged("read profile leaves vault, cache, lifecycle state, config, HOME and cwd untouched");
   assert.ok(!fs.existsSync(netLog), "default read calls make no network request");
+  // Hybrid search needs a semantic cache, or it falls back to BM25 before it reads ollamaUrl.
+  // Use a copy of the vault so the watched vault stays byte-identical.
+  const hybridVault = path.join(tmp, "hybrid vault");
+  fs.cpSync(vault, hybridVault, { recursive: true });
+  const hybridPage = fs.readFileSync(path.join(hybridVault, pageRel), "utf8");
+  const chunksModule = path.join(root, "scripts/semantic-chunks.py");
+  const settings = JSON.parse(execFileSync(python, ["-B", "-c", `import importlib.util, json
+spec = importlib.util.spec_from_file_location("chunks", ${JSON.stringify(chunksModule)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(json.dumps({"algorithm": module.ALGORITHM, "inputScheme": module.INPUT_SCHEME}))`], { encoding: "utf8", env: { ...process.env, PYTHONPATH: path.join(root, "scripts") } }));
+  const sha = (text) => createHash("sha256").update(text).digest("hex");
+  fs.mkdirSync(path.join(hybridVault, ".vault-meta/retrieval"), { recursive: true });
+  fs.writeFileSync(path.join(hybridVault, ".vault-meta/retrieval/chunks.json"), JSON.stringify({ version: 1, pages: { [pageRel]: {
+    contentHash: sha(hybridPage), model: "fixture", modelDigest: "digest", inputScheme: settings.inputScheme,
+    settings: { algorithm: settings.algorithm, maxChars: 1800, targetChars: 1000 },
+    chunks: [{ text: `Title: Coffee\n${hybridPage}`, start: 0, end: hybridPage.length, sourceHash: sha(hybridPage), vector: [0, 1], strategy: settings.algorithm }] } } }));
   const hybrid = open();
   await hybrid.initialize();
-  const remote = await hybrid.callTool("wiki_search", { query: "espresso", hybrid: true, ollamaUrl: "http://203.0.113.9:11434", timeout: 1 });
+  const hybridInput = { query: "espresso", vault: hybridVault, hybrid: true, ollamaModel: "fixture", timeout: 1 };
+  const remote = await hybrid.callTool("wiki_search", { ...hybridInput, ollamaUrl: "http://203.0.113.9:11434" });
   assert.equal(remote.result.structuredContent.ok, true, JSON.stringify(remote.result));
-  assert.ok(!fs.existsSync(netLog), "hybrid search never contacts a non-loopback endpoint");
+  assert.equal(remote.result.structuredContent.payload.fallback, "bm25", "a refused endpoint keeps BM25 results");
+  assert.match(remote.result.structuredContent.payload.semanticError, /unverified installed model identity/, "the refusal is reported");
+  assert.ok(remote.result.structuredContent.payload.results.length > 0);
+  assert.ok(!fs.existsSync(netLog), "hybrid search never contacts a non-loopback endpoint (not even a name lookup)");
+  const loopback = await hybrid.callTool("wiki_search", { ...hybridInput, ollamaUrl: "http://127.0.0.1:9" });
+  assert.equal(loopback.result.structuredContent.ok, true);
+  assert.equal(loopback.result.structuredContent.payload.fallback, "bm25", "an unreachable loopback endpoint keeps BM25 results");
+  const attempts = fs.readFileSync(netLog, "utf8").trim().split("\n");
+  assert.ok(attempts.length > 0 && attempts.every((line) => /127\.0\.0\.1/.test(line)), `only loopback attempts are recorded: ${attempts}`);
   await hybrid.close();
+  fs.rmSync(netLog);
   unchanged("hybrid attempt writes nothing");
 
   // Relative config vault values resolve against the server's cwd.
@@ -283,7 +331,7 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   // Deadline overrun, cancellation and EOF with an unresponsive Python process.
   const shim = path.join(tmp, "python shim");
   const pidFile = path.join(tmp, "descendant.pid");
-  fs.writeFileSync(shim, `#!/bin/sh\ncase "$MODE" in\nhang) sh -c 'trap "" TERM; echo $$ > "${pidFile}"; while :; do sleep 1; done' & wait ;;\nlarge) head -c 300000 /dev/zero | tr '\\000' x ;;\nesac\n`);
+  fs.writeFileSync(shim, `#!/bin/sh\ncase "$MODE" in\nstall) exec sleep 30 ;;\nesac\ncase "$2" in\n*config_contract.py) exec "${python}" "$@" ;; # the handshake's locator lookup runs the real helper\nesac\ncase "$MODE" in\nhang) sh -c 'trap "" TERM; echo $$ > "${pidFile}"; while :; do sleep 1; done' & wait ;;\nlarge) head -c 300000 /dev/zero | tr '\\000' x ;;\nesac\n`);
   fs.chmodSync(shim, 0o755);
   const hang = (extra = {}) => ({ PYTHON: shim, MODE: "hang", ...extra });
 
@@ -298,6 +346,15 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   assert.equal((await slow.request("ping")).result !== undefined, true, "server survives a deadline overrun");
   await slow.close();
   fs.rmSync(pidFile);
+
+  // A stalled config helper cannot delay or break the handshake beyond the 3 s locator deadline.
+  const stalled = open({ env: { PYTHON: shim, MODE: "stall" } });
+  const started = Date.now();
+  const stalledInit = await stalled.initialize();
+  assert.ok(Date.now() - started < 6000, "the locator lookup is bounded");
+  assert.doesNotMatch(stalledInit.result.instructions, /Configured Obsidian wiki/);
+  assert.match(stalledInit.result.instructions, /call wiki_doctor to see which vault and readiness state apply/);
+  await stalled.close();
 
   const oversized = open({ env: hang({ MODE: "large" }) });
   await oversized.initialize();
