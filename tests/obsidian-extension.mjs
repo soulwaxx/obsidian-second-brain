@@ -251,6 +251,8 @@ try {
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
   assert.equal((await featureHandlers.get("tool_call")({ toolCallId: "guard-off-secret", toolName: "write", input: { path: secretPage, content: `key ${fakeToken}` } }, ctx))?.block, true,
     "the secret check does not depend on the guard feature");
+  assert.equal((await featureHandlers.get("tool_call")({ toolCallId: "guard-off-alias", toolName: "write", input: { path: path.join(vault, "WIKI/topic/alias.md"), content: `key ${fakeToken}` } }, ctx))?.block, true,
+    "a case-different wiki/ spelling is scanned with the guard feature off");
   const simulateWrite = async (event, context) => {
     const result = await featureHandlers.get("tool_call")(event, context);
     if (!result?.block && typeof event.input.path === "string") {

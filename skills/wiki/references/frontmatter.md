@@ -112,7 +112,8 @@ drop a key just because the spec does not name it:
 
 - `secretScan: allow` — opts this one page out of the write-path secret check
   (see SKILL.md, Security & Privacy). Use it only on pages that document token
-  formats, and never to store a real credential. Writes to other pages are
+  formats, and never to store a real credential. Edits read it from the page
+  already on disk, so add it in its own earlier edit. Writes to other pages are
   unaffected; there is no global switch.
 
 ### Source dates

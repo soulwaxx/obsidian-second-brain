@@ -552,7 +552,11 @@ checked when it was not.
   When refused, remove the value and reference an environment variable or
   secret manager; do not retry with an encoded or split value. Only a page that
   documents token formats may carry `secretScan: allow` in its frontmatter, and
-  only when the user asked for such a page. Source captures under
+  only when the user asked for such a page. An edit reads the opt-out from the
+  page already on disk, so add it in a separate, earlier edit (accepted
+  limitation of the per-page design). Only findings new relative to the page's
+  current text are refused, so a legacy page that already matches stays
+  editable, but replacing a placeholder with a real value is refused. Source captures under
   `.raw/agent-captures/` get an advisory warning, not a refusal. Pattern
   matching misses unknown formats and shell writes are unguarded, so it does not
   replace not pasting secrets.

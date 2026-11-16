@@ -393,6 +393,18 @@ SECRET_CONFIG=$work/secret-guard-off.json
 printf '{"vaultPath":"%s","features":{"guard":false}}\n' "$secret_vault" >"$SECRET_CONFIG"
 result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}')
 printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+# A case-different wiki/ spelling is still the wiki, even without the guard feature.
+result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}' "$secret_vault/WIKI/topic/alias.md")
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("GitHub token"))' >/dev/null
+result=$(secret_prewrite Edit '{"old_string":"x","new_string":"key '"$secret_token"'"}' "$secret_vault/Wiki/alias.md")
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
 unset SECRET_CONFIG
+# Replacing a placeholder value in place is judged against the page's current text.
+printf '%s\n' '---' 'type: note' '---' 'api_key = <your-key>' >"$secret_page"
+secret_before=$(cat "$secret_page")
+result=$(secret_prewrite Edit '{"old_string":"<your-key>","new_string":"abc123def456ghi789"}')
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("credential assignment"))' >/dev/null
+case "$result" in *abc123def456ghi789*) echo "secret value echoed" >&2; exit 1 ;; esac
+[ "$(cat "$secret_page")" = "$secret_before" ]
 
 printf 'vault lifecycle checks PASS\n'

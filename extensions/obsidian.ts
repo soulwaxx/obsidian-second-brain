@@ -443,7 +443,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Refuse likely secrets before any bytes change. This is separate from the
 		// guard feature: pages and ledger JSON under wiki/ are scanned either way.
-		if (!configError && canonicalPotentialPath(path.resolve(ctx.cwd, rawPath)).startsWith(path.join(knownVault, "wiki") + path.sep)) {
+		// The hook decides wiki membership case-insensitively; a case-exact check
+		// here would let a case-different wiki/ spelling skip the scan.
+		if (!configError) {
 			const scanned = await runHook("secret-check", ctx.cwd, [rawPath], eventVault, JSON.stringify(event.input));
 			if (scanned.error) {
 				if (pendingId) pendingWikiWrites.delete(pendingId);

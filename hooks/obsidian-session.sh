@@ -79,10 +79,11 @@ PY
 
 # Refuse likely secrets in text an agent file tool adds under the selected wiki/.
 # Reads the tool input JSON on stdin; prints the reason on stderr and fails to refuse.
+# secret_scan.py decides wiki membership (case-insensitively, like the guard), so no
+# case-exact pre-filter here can let a case-different wiki/ spelling skip the scan.
 secret_check() {
   local target=${1:?path required} mw
   [[ "$target" = /* ]] || target="$invocation_cwd/$target"
-  is_selected_wiki_target "$target" || return 0
   mw=$(middleware_dir)
   [ -n "$mw" ] && [ -f "$mw/secret_scan.py" ] || {
     echo "obsidian lifecycle: wiki secret check is unavailable" >&2

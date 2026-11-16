@@ -5,7 +5,7 @@ This repository packages an Open Knowledge Format (OKF) v0.2 wiki skill for Clau
 ## Architecture and ownership
 
 - `hooks/hooks.json` registers Claude lifecycle events. `extensions/obsidian.ts` registers Pi events; both call `hooks/obsidian-session.sh`. The hook resolves the selected vault independently of caller cwd and protects file-tool destinations. Ordinary relative coding paths retain caller-cwd semantics. Startup and unrelated read-only shutdown perform no vault writes; explicit cross-directory wiki changes receive lifecycle maintenance.
-- `skills/wiki/SKILL.md` defines agent behavior. `skills/wiki/references/` holds its operating guides. `skills/wiki/scripts/okf_mw/` owns path guarding, frontmatter validation, index generation, and link linting.
+- `skills/wiki/SKILL.md` defines agent behavior. `skills/wiki/references/` holds its operating guides. `skills/wiki/scripts/okf_mw/` owns path guarding, frontmatter validation, index generation, link linting, and write-path secret scanning.
 - `scripts/bootstrap-vault.py` separates a reviewed minimal scaffold from explicit `--configure` settings/profile migration. Retrieval uses package-owned scripts with an explicit vault root; vault-local helper copying is no longer supported. Derived cache and lifecycle state belong under `<vault>/.vault-meta/retrieval/` and `<vault>/.vault-meta/lifecycle/`. Setup never initializes Git or configures remotes/authentication.
 - `tests/` owns lifecycle, middleware, bootstrap, retrieval, Pi extension, and isolated install checks. `.claude-plugin/` owns Claude manifests; `.github/workflows/test.yml` defines the macOS/Linux CI checks. Keep user instructions in `README.md` and `docs/` aligned with behavior.
 

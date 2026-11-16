@@ -189,7 +189,12 @@ assignments with a non-placeholder value (placeholders such as `<your-key>`,
 path, so every client that uses them inherits it. It reports file, line, and
 pattern type, never the value, and never redacts. A page that documents token
 formats can opt out with `secretScan: allow` in its frontmatter; there is no
-global switch. Source captures under `.raw/agent-captures/` are verbatim, so
+global switch. An edit reads the opt-out from the page already on disk, so add it
+in a separate, earlier edit (an accepted limitation of the per-page design). Only
+findings new relative to the page's current text are refused: edits are applied to
+the current text first, so replacing a placeholder with a real value is refused,
+while a legacy page that already contains a match can still be edited or
+re-baselined. Source captures under `.raw/agent-captures/` are verbatim, so
 `capture-inspect` and batch inspect only return a `warnings` entry. Existing
 untouched pages are never blocked. Pattern matching misses unknown formats and
 shell writes are unguarded; it is not a substitute for keeping secrets out of
