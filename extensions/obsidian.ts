@@ -12,6 +12,8 @@ const configPath = path.resolve(resolveHome(process.env.OBSIDIAN_AGENT_CONFIG?.t
 type Config = { vaultPath?: string | null; features?: { guard?: boolean | null; autoCommit?: boolean | null; toc?: boolean | null; retrievalRefresh?: boolean | null } };
 let config: Config = {};
 let configError: string | null = null;
+// features.autoRecall as normalized by scripts/config_contract.py (the one shared reader).
+let autoRecallEnabled = false;
 let knownVault: string | null = null;
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_HELPER = path.join(REPO, "scripts/config_contract.py");
@@ -138,7 +140,8 @@ async function refreshConfig(): Promise<void> {
 	const invocationOverride = process.env.OBSIDIAN_VAULT_PATH?.trim() || null;
 	try {
 		const { stdout } = await execFileAsync("python3", [CONFIG_HELPER, configPath], { encoding: "utf8" });
-		const result = JSON.parse(stdout) as { config: Config | null; error: string | null };
+		const result = JSON.parse(stdout) as { config: Config | null; error: string | null; autoRecall?: { enabled?: boolean } };
+		autoRecallEnabled = !result.error && result.autoRecall?.enabled === true;
 		if (!result.error) {
 			config = result.config ?? {};
 			const selected = invocationOverride ?? resolveHome(config.vaultPath);
@@ -150,6 +153,7 @@ async function refreshConfig(): Promise<void> {
 			knownVault = canonicalDirectory(invocationOverride ?? resolveHome(possible) ?? knownVault);
 		}
 	} catch (err) {
+		autoRecallEnabled = false;
 		configError = `cannot load ${configPath}: ${(err as Error).message}`;
 		knownVault = canonicalDirectory(invocationOverride ?? knownVault);
 	}
@@ -280,6 +284,30 @@ async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverr
 	}
 }
 
+const RECALL_TIMEOUT_MS = 5000;
+
+// Opt-in recall: the hook reads the existing BM25 index only. Any failure or
+// timeout yields no recall, so it can never block or delay the prompt beyond the bound.
+async function runRecall(prompt: string, cwd: string, vault: string): Promise<string> {
+	if (!fs.existsSync(HOOK)) return "";
+	try {
+		const pending = execFileAsync("bash", [HOOK, "recall"], {
+			cwd,
+			env: { ...process.env, OBSIDIAN_VAULT_PATH: vault },
+			encoding: "utf8",
+			timeout: RECALL_TIMEOUT_MS,
+			maxBuffer: 64 * 1024,
+		});
+		pending.child.stdin?.on("error", () => { /* hook exited before reading the prompt */ });
+		pending.child.stdin?.end(JSON.stringify({ prompt }));
+		const { stdout } = await pending;
+		const context = (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: unknown } }).hookSpecificOutput?.additionalContext;
+		return typeof context === "string" ? context : "";
+	} catch {
+		return "";
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	const common = { namespace: { name: "obsidian-wiki", description: "Read-only tools for locating and inspecting pages in the selected Obsidian wiki." }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, outputSchema: TOOL_OUTPUT };
 	const vaultSchema = Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }));
@@ -337,7 +365,7 @@ export default function (pi: ExtensionAPI) {
 		if (result.error) ctx.ui.notify(`obsidian start hook failed: ${result.error}`, "warning");
 	});
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		await refreshConfig();
 		if (configError && knownVault) {
 			const diagnostic = configDiagnosticKey();
@@ -354,10 +382,15 @@ export default function (pi: ExtensionAPI) {
 			if (result.error) ctx.ui.notify(`obsidian start hook failed: ${result.error}`, "warning");
 		}
 		const owner = sessionIdentity(ctx);
-		if (!owner || toc.length === 0) return;
-		if (injectedLocators.get(owner) === knownVault) return;
-		injectedLocators.set(owner, knownVault);
-		return { message: { customType: "obsidian-toc", content: "Obsidian wiki locator (load wiki/WIKI.md and relevant wiki/index.md only when this task needs the wiki):\n\n" + toc, display: false } };
+		let locator = "";
+		if (owner && toc.length > 0 && injectedLocators.get(owner) !== knownVault) {
+			injectedLocators.set(owner, knownVault);
+			locator = "Obsidian wiki locator (load wiki/WIKI.md and relevant wiki/index.md only when this task needs the wiki):\n\n" + toc;
+		}
+		const prompt = "prompt" in event ? event.prompt : undefined;
+		const recall = autoRecallEnabled && typeof prompt === "string" && prompt.trim() ? await runRecall(prompt, ctx.cwd, knownVault) : "";
+		if (!locator && !recall) return;
+		return { message: { customType: locator ? "obsidian-toc" : "obsidian-recall", content: [locator, recall].filter(Boolean).join("\n\n"), display: false } };
 	});
 
 	pi.on("session_compact", (_event, ctx) => {

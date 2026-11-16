@@ -13,7 +13,7 @@ import sys
 import shutil
 from typing import Any
 
-from config_contract import load_config, obsidian_git_diagnostics, symlinked_config_component
+from config_contract import auto_recall_settings, load_config, obsidian_git_diagnostics, symlinked_config_component
 from module_loading import load_source
 
 INDEX_MODULE = load_source("obsidian_cli_bm25", str(Path(__file__).with_name("bm25-index.py")))
@@ -454,6 +454,13 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     }
     checks["readiness"] = {"stage": first["name"] if first else "ready", "reason": first["reason"] if first else None,
                            "stages": stages, "nextActions": actions}
+    # Opt-in prompt-time recall only reads the existing BM25 index, so it is ready
+    # exactly when search is; an invalid value disables it without invalidating config.
+    recall = auto_recall_settings(config if config_error is None else None)
+    recall["ready"] = recall["enabled"] and bool(retrieval["ready"])
+    recall["reason"] = (recall["error"] if not recall["valid"] else
+                        None if not recall["enabled"] or recall["ready"] else retrieval["reason"])
+    checks["autoRecall"] = recall
     return checks
 
 
@@ -1080,6 +1087,13 @@ def main() -> int:
             print(f"Config: {'valid' if output['config']['valid'] else 'invalid'} ({output['config']['path']})")
             print(f"Retrieval: {'ready' if output['retrieval']['ready'] else output['retrieval']['reason']}")
             print(f"Lifecycle: {output['lifecycle']['state']}")
+            recall = output["autoRecall"]
+            # Off by default: the human report is unchanged until recall is enabled or invalid.
+            if recall["enabled"] or not recall["valid"]:
+                print("Auto recall: " + ("invalid, disabled" if not recall["valid"] else
+                                         f"on, {recall['maxResults']} results, {recall['tokenBudget']} tokens" + ("" if recall["ready"] else f" (not ready: {recall['reason']})")))
+            if recall["error"]:
+                print(recall["error"], file=sys.stderr)
             print(f"Cache exclusions: {output['cacheExclusions']['detail']}")
             readiness = output["readiness"]
             print(f"Stage: {readiness['stage']}" + (f" ({readiness['reason']})" if readiness["reason"] else ""))

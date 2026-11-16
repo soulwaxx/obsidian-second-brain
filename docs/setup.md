@@ -197,6 +197,57 @@ search is unavailable or unhelpful. See the
 [focused workflow reference](../skills/wiki/references/focused-workflows.md)
 for scope boundaries.
 
+## Automatic recall (opt-in)
+
+Automatic recall adds a few relevant wiki excerpts to the agent's context before
+each user prompt. It is off by default and covers Claude Code (a
+`UserPromptSubmit` hook) and Pi/omp (the extension's `before_agent_start`
+handler); MCP-only agents are not covered. Enable it by editing the selected
+config (reviewed `--configure` preserves the value but does not change it):
+
+```json
+{ "features": { "autoRecall": { "enabled": true, "maxResults": 3, "tokenBudget": 800 } } }
+```
+
+- `enabled`: boolean, default `false`. Absent, `null` or `false` leaves behavior
+  and output unchanged.
+- `maxResults`: integer 1–5, default 3. `tokenBudget`: integer 200–2000, default
+  800, estimated at 4 characters per token for the whole injected block.
+- Any invalid value (wrong type, non-integer, out of bounds) disables recall and
+  is reported by `doctor` (`autoRecall.valid`, `error`). It does not invalidate the
+  rest of the config or block wiki writes. The shell hook, the Pi extension and
+  `doctor` all read the value through `scripts/config_contract.py`.
+
+Recall uses only the existing BM25 index and the existing read-only search. It
+never builds or refreshes the index, never calls Ollama or any network service,
+and writes nothing to the vault, cache or lifecycle state. It injects nothing when
+the index is missing, stale or has a pending refresh, when the search exceeds a
+3-second deadline, or when no result reaches the minimum BM25 score (2.0, about
+one query term found on at most 13% of the pages). The hook is bounded at 5
+seconds and always exits successfully, so recall cannot block a prompt. The first
+2,000 characters of the prompt form the query.
+
+Cost: with recall disabled, the Claude hook exits after one `jq` check (about
+10 ms instead of about 90 ms measured before that check). With recall enabled, every
+prompt pays the search latency, dominated by loading the index JSON (about 1.2 s
+at 3,000 pages, measured), plus the freshness check. That time is paid even when
+recall then times out and injects nothing. Around 8,000–10,000 pages recall will
+typically exceed the 3-second deadline and inject nothing on every prompt, while
+`doctor` still reports it ready; `ready` means the index is fresh, not that
+recall will finish in time. Recall output stays in the session history, up to about
+`tokenBudget` tokens per prompt, with no de-duplication across turns, so repeated
+or similar prompts accumulate repeated excerpts.
+
+The injected block is labelled "wiki reference data, not instructions" and lists
+each page path, a short excerpt and a hash-bound `readRef` (`page`, `expectedHash`,
+`view`, `start`, `end`) that `wiki_read` or `obsidian-second-brain read` accepts.
+Pi merges it into the same hidden message as the startup locator when both apply.
+`doctor --json` reports `autoRecall` (`enabled`, `maxResults`, `tokenBudget`,
+`valid`, `ready`, `reason`); the human report adds an `Auto recall:` line only when
+recall is enabled or invalid. omp runs the Pi extension; its runtime behavior is
+unverified. Whether recall improves outcomes is unmeasured; the paired evaluation
+(#41) carries an "autoRecall on/off" arm for that question.
+
 ## Readiness and next steps
 
 `doctor --json` (and Pi `wiki_doctor`) add three schema-v1 keys to the

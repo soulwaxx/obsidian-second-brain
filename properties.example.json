@@ -4,6 +4,7 @@
     "guard": true,
     "toc": true,
     "autoCommit": false,
-    "retrievalRefresh": true
+    "retrievalRefresh": true,
+    "autoRecall": { "enabled": false, "maxResults": 3, "tokenBudget": 800 }
   }
 }
