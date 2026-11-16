@@ -61,6 +61,24 @@ try {
   for (const p of ["wiki/index.md", "wiki/topic/index.md", "wiki/log.md", "wiki/.raw/secret.env"]) {
     assert.equal((await call(p))?.block, true, `expected block: ${p}`);
   }
+  // Likely secrets are refused before the tool runs; values are assembled at runtime and never echoed.
+  const fakeToken = "gh" + "p_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jK5";
+  const secretPage = path.join(vault, "wiki/topic/secret-page.md");
+  const secretCalls = [
+    { toolCallId: "secret-write", toolName: "write", input: { path: secretPage, content: `---\ntype: note\n---\nkey ${fakeToken}\n` } },
+    { toolCallId: "secret-edit", toolName: "edit", input: { path: secretPage, edits: [{ oldText: "a", newText: `key ${fakeToken}` }] } },
+    { toolCallId: "secret-legacy-edit", toolName: "edit", input: { path: secretPage, oldText: "a", newText: `key ${fakeToken}` } },
+    { toolCallId: "secret-ledger", toolName: "write", input: { path: path.join(vault, "wiki/meta/evidence/asset.json"), content: JSON.stringify({ note: fakeToken }) } },
+  ];
+  for (const event of secretCalls) {
+    const refusal = await handlers.get("tool_call")(event, ctx);
+    assert.equal(refusal?.block, true, `secret write must be refused: ${event.toolCallId}`);
+    assert.match(refusal.reason, /GitHub token/);
+    assert.ok(!refusal.reason.includes(fakeToken), "refusal must not echo the secret");
+  }
+  assert.equal(fs.existsSync(secretPage), false, "refused write must not create bytes");
+  assert.equal(await handlers.get("tool_call")({ toolCallId: "clean-ledger", toolName: "write", input: { path: path.join(vault, "wiki/meta/evidence/asset.json"), content: JSON.stringify({ note: "api_key=<your-key>" }) } }, ctx), undefined);
+  assert.equal(await handlers.get("tool_call")({ toolCallId: "outside-secret", toolName: "write", input: { path: path.join(tmp, "outside-secret.txt"), content: fakeToken } }, ctx), undefined, "non-wiki writes are not scanned");
   const savedHome = process.env.HOME;
   const initialConfig = fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8");
   process.env.HOME = tmp;
@@ -231,6 +249,8 @@ try {
   const { default: featureExtension } = await import(pathToFileURL(featureCopy));
   featureExtension(register(featureHandlers));
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
+  assert.equal((await featureHandlers.get("tool_call")({ toolCallId: "guard-off-secret", toolName: "write", input: { path: secretPage, content: `key ${fakeToken}` } }, ctx))?.block, true,
+    "the secret check does not depend on the guard feature");
   const simulateWrite = async (event, context) => {
     const result = await featureHandlers.get("tool_call")(event, context);
     if (!result?.block && typeof event.input.path === "string") {

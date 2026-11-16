@@ -83,6 +83,8 @@ convention):
 - `scripts/okf_mw/sync.py` — deterministic index.md generation
 - `scripts/okf_mw/lint.py` — read-only link-graph lint (vendored from
   claude-obsidian v2.0.0; see Link-Graph Lint)
+- `scripts/okf_mw/secret_scan.py` — write-path secret check (file-tool guard
+  and batch apply)
 - `scripts/okf_mw/okf_paths.py` — shared reserved-path set for the above
 
 Invoke each with its absolute path under this skill's directory; pass the
@@ -540,6 +542,20 @@ checked when it was not.
   `.raw/` sources and vault settings as read-only during wiki work. An approved
   setup/configuration repair is a separate, narrowly scoped operation. These
   wiki rules do not prevent an agent's unrelated source-repository work.
+- The write-path secret check (`secret_scan.py`) refuses agent writes under
+  `wiki/` whose added text contains a likely secret: private key blocks,
+  well-known token formats (`sk-`, `sk-ant-`, `ghp_`, `github_pat_`, `xox*`,
+  `AKIA`, `AIza`, `glpat-`, `npm_`), JWTs, credentials in URLs, and
+  `api_key`/`password`/`token`-style assignments with real-looking values. It
+  applies to file tools and to batch inspect/apply, for pages and evidence
+  ledger JSON. It reports file, line, and pattern type, never the value.
+  When refused, remove the value and reference an environment variable or
+  secret manager; do not retry with an encoded or split value. Only a page that
+  documents token formats may carry `secretScan: allow` in its frontmatter, and
+  only when the user asked for such a page. Source captures under
+  `.raw/agent-captures/` get an advisory warning, not a refusal. Pattern
+  matching misses unknown formats and shell writes are unguarded, so it does not
+  replace not pasting secrets.
 - The middleware guard.py enforces path bounds and blocks reserved `index.md`
   and `log.md` at any wiki depth. Do not attempt to bypass it.
 

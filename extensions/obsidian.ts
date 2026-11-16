@@ -256,16 +256,21 @@ function touchedWikiPath(rawPath: unknown, cwd: string): string | null {
 	return target;
 }
 
-async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverride = knownVault): Promise<{ output: string; error?: string; retrievalPending?: boolean }> {
+async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverride = knownVault, stdin?: string): Promise<{ output: string; error?: string; retrievalPending?: boolean }> {
 	if (!HOOK) return { output: "", error: "hook is not configured" };
 	if (!fs.existsSync(HOOK)) return { output: "", error: `hook is missing at ${HOOK}` };
 	try {
-		const { stdout } = await execFileAsync("bash", [HOOK, sub, ...args], {
+		const running = execFileAsync("bash", [HOOK, sub, ...args], {
 			cwd,
 			env: { ...process.env, OBSIDIAN_VAULT_PATH: vaultOverride ?? "" },
 			encoding: "utf8",
 			timeout: 15000,
 		});
+		if (stdin !== undefined) {
+			running.child.stdin?.on("error", () => { /* the hook exited without reading; its status reports the result */ });
+			running.child.stdin?.end(stdin);
+		}
+		const { stdout } = await running;
 		const output = stdout.trim();
 		return output === "synced-retrieval-pending"
 			? { output: "synced", retrievalPending: true }
@@ -434,6 +439,15 @@ export default function (pi: ExtensionAPI) {
 				&& !(await selectedConfigRepairTarget(rawPath, ctx.cwd))) {
 				if (pendingId) pendingWikiWrites.delete(pendingId);
 				return { block: true, reason: `Obsidian configuration needs repair: ${configError}` };
+			}
+		}
+		// Refuse likely secrets before any bytes change. This is separate from the
+		// guard feature: pages and ledger JSON under wiki/ are scanned either way.
+		if (!configError && canonicalPotentialPath(path.resolve(ctx.cwd, rawPath)).startsWith(path.join(knownVault, "wiki") + path.sep)) {
+			const scanned = await runHook("secret-check", ctx.cwd, [rawPath], eventVault, JSON.stringify(event.input));
+			if (scanned.error) {
+				if (pendingId) pendingWikiWrites.delete(pendingId);
+				return { block: true, reason: scanned.error };
 			}
 		}
 		if (!configError && config.features?.guard === false) {

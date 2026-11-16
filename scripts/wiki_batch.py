@@ -23,6 +23,7 @@ LIFECYCLE = load_source("wiki_batch_lifecycle", str(Path(__file__).with_name("wi
 CONFIG = load_source("wiki_batch_config", str(Path(__file__).with_name("config_contract.py")))
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MIDDLEWARE = PACKAGE_ROOT / "skills/wiki/scripts/okf_mw"
+SECRETS = load_source("wiki_batch_secret_scan", str(MIDDLEWARE / "secret_scan.py"))
 BM25_SCRIPT = PACKAGE_ROOT / "scripts/bm25-index.py"
 AUTHORITIES = {"wiki-page", "source-capture", "wiki-ledger"}
 
@@ -199,6 +200,12 @@ def _read_at(parent: int, name: str) -> bytes | None:
 
 def _validate_draft(vault: Path, op: dict, authority: str) -> None:
     content = op["content"]
+    if authority in {"wiki-page", "wiki-ledger"}:
+        # Refuse before approval and again before publication/recovery; apply,
+        # recover, and every client wrapper reach this function.
+        refusal = SECRETS.refusal_for_content(op["path"], content, page=authority == "wiki-page")
+        if refusal:
+            raise BatchError(refusal)
     if authority == "wiki-page":
         if not (vault / "wiki").is_dir() or (vault / "wiki").is_symlink():
             raise BatchError("wiki directory is missing or symlinked")
@@ -746,9 +753,17 @@ def _plan(vault: Path, bundle: dict, config: Path, authority: str) -> dict:
 
 def inspect(vault: Path, bundle: dict, config: Path, authority: str = "wiki-page") -> dict:
     planned = _plan(vault, bundle, config, authority)
-    return {"plan": planned["plan"], "planHash": planned["planHash"],
-            "targets": [op["path"] for op in planned["plan"]["bundle"]["operations"]],
-            "authority": authority}
+    result = {"plan": planned["plan"], "planHash": planned["planHash"],
+              "targets": [op["path"] for op in planned["plan"]["bundle"]["operations"]],
+              "authority": authority}
+    if authority == "source-capture":
+        # Captures are verbatim, user-selected sources: warn, never refuse. The
+        # warnings are review output only and are not part of the plan hash.
+        warnings = [message for op in planned["plan"]["bundle"]["operations"]
+                    if (message := SECRETS.advisory_for_content(op["path"], op["content"]))]
+        if warnings:
+            result["warnings"] = warnings
+    return result
 
 
 def _require_approved_config(journal: dict, selected: Path | None = None) -> Path:
