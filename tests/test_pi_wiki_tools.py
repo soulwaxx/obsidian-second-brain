@@ -216,6 +216,71 @@ class PiWikiToolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge.validate("search", {"query": "espresso", "vault": "relative"})
 
+    def test_batch_parameters_are_validated_and_bounded(self):
+        op = {"path": "wiki/a.md", "expectedHash": None, "content": "x"}
+        bridge.validate("batch-inspect", {"operations": [op]})
+        bridge.validate("batch-apply", {"operations": [op], "planHash": "a" * 64})
+        bridge.validate("batch-recover", {"planHash": "a" * 64})
+        bridge.validate("batch-recover", {"batchId": "11111111-1111-4111-8111-111111111111"})
+        too_big = {**op, "content": "x" * bridge.MAX_BATCH_BYTES}
+        for operation, params in (("batch-inspect", {"operations": [op], "vault": str(self.vault)}),
+                                  ("batch-inspect", {"operations": []}),
+                                  ("batch-inspect", {"operations": [op] * (bridge.MAX_BATCH_OPERATIONS + 1)}),
+                                  ("batch-inspect", {"operations": [too_big]}),
+                                  ("batch-inspect", {"operations": [{**op, "expectedHash": "ABC"}]}),
+                                  ("batch-inspect", {"operations": [{**op, "extra": 1}]}),
+                                  ("batch-inspect", {"operations": [{"path": "wiki/a.md", "content": "x"}]}),
+                                  ("batch-apply", {"operations": [op]}),
+                                  ("batch-apply", {"operations": [op], "planHash": "A" * 64}),
+                                  ("batch-recover", {}),
+                                  ("batch-recover", {"planHash": "a" * 64, "batchId": "11111111-1111-4111-8111-111111111111"}),
+                                  ("batch-recover", {"batchId": "not-a-uuid"})):
+            with self.subTest(operation=operation, params=str(params)[:80]), self.assertRaises(ValueError):
+                bridge.validate(operation, params)
+        exactly = {**op, "content": "x" * (bridge.MAX_BATCH_BYTES - len(json.dumps([{**op, "content": ""}], separators=(",", ":"))))}
+        self.assertEqual(len(json.dumps([exactly], separators=(",", ":")).encode()), bridge.MAX_BATCH_BYTES)
+        bridge.validate("batch-inspect", {"operations": [exactly]})
+
+    def test_batch_operations_read_stdin_only_and_report_review_state(self):
+        saved_argv = sys.argv
+        try:
+            for argv in (["pi_wiki_tools.py", "batch-inspect", "{}"], ["pi_wiki_tools.py", "batch-apply", "{}"]):
+                output = io.StringIO()
+                sys.argv = argv
+                with contextlib.redirect_stdout(output):
+                    bridge.main()
+                self.assertEqual(json.loads(output.getvalue())["code"], "invalid-request", "batch parameters are never argv")
+            operations = [{"path": "wiki/topic/tea.md", "expectedHash": None, "content": "---\ntype: note\n---\n# Tea\n"}]
+            output = io.StringIO()
+            sys.argv = ["pi_wiki_tools.py", "batch-inspect"]
+            with patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps({"operations": operations}).encode()))), contextlib.redirect_stdout(output):
+                bridge.main()
+            result = json.loads(output.getvalue())
+            self.assertTrue(result["ok"], result)
+            expected = cli.load_source("pi_wiki_batch_check", str(SCRIPTS / "wiki_batch.py")).inspect(
+                self.vault.resolve(), {"version": 1, "operations": operations}, self.config)
+            self.assertEqual(result["payload"]["planHash"], expected["planHash"], "same plan hash as batch inspect")
+            output = io.StringIO()
+            with patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"x" * (bridge.MAX_BATCH_STDIN + 1)))), contextlib.redirect_stdout(output):
+                bridge.main()
+            self.assertIn("64 KiB", json.loads(output.getvalue())["message"])
+        finally:
+            sys.argv = saved_argv
+        self.assertFalse((self.vault / "wiki/topic/tea.md").exists())
+
+    def test_review_summary_drops_diffs_to_fit_the_result_budget(self):
+        review = {"planHash": "a" * 64, "operations": [{"path": f"wiki/p{n}.md", "diff": "+" + "\u0001" * 1500, "diffTruncated": True} for n in range(20)]}
+        fitted = bridge.fit_review(review)
+        self.assertLessEqual(len(json.dumps(fitted, ensure_ascii=False).encode()), bridge.MAX_REVIEW_BYTES)
+        self.assertEqual(fitted["operations"][0]["diff"][:1], "+", "earlier pages keep their excerpt")
+        self.assertEqual(fitted["operations"][-1]["diff"], "", "the last pages lose theirs first")
+
+    def test_doctor_reports_unfinished_batches_without_writing(self):
+        before = self.snapshot()
+        batches = bridge.run("doctor", {})["payload"]["batches"]
+        self.assertEqual(batches, {"unfinished": [], "unfinishedCount": 0, "unreadable": 0})
+        self.assertEqual(self.snapshot(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

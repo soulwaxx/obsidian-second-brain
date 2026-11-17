@@ -24,7 +24,7 @@ from module_loading import load_source  # noqa: E402
 CLI_MODULE = load_source("doctor_readiness_cli", str(CLI))
 
 LEGACY_KEYS = {"config", "dependencies", "vault", "cacheExclusions", "lifecycle", "retrieval"}
-VAULT_KEYS = {"vaultExists", "wikiExists"}
+VAULT_KEYS = {"vaultExists", "wikiExists", "batches"}
 NEW_KEYS = {"schemaVersion", "capabilities", "readiness", "autoRecall"}
 DEPENDENCY_KEYS = {"python", "pythonMinimum", "pythonSupported", "pythonError", "retrieval", "pyyaml", "git", "jq"}
 CAPABILITIES = ["lexicalSearch", "spanReads", "sectionReads", "evidenceReport", "reviewedWrites", "sourceChecks", "semanticRerank"]
@@ -124,6 +124,8 @@ class DoctorReadinessTests(unittest.TestCase):
     def assert_contract(self, report):
         expected = LEGACY_KEYS | NEW_KEYS | (VAULT_KEYS if report["vault"] else set())
         self.assertEqual(set(report), expected)
+        if report["vault"]:
+            self.assertEqual({"unfinished", "unfinishedCount", "unreadable"} - set(report["batches"]), set())
         self.assertEqual(set(report["dependencies"]), DEPENDENCY_KEYS)
         self.assertEqual(report["schemaVersion"], 1)
         self.assertEqual(sorted(report["capabilities"]), sorted(CAPABILITIES))

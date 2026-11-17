@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import fcntl
 import hashlib
 import json
@@ -26,6 +27,7 @@ MIDDLEWARE = PACKAGE_ROOT / "skills/wiki/scripts/okf_mw"
 SECRETS = load_source("wiki_batch_secret_scan", str(MIDDLEWARE / "secret_scan.py"))
 BM25_SCRIPT = PACKAGE_ROOT / "scripts/bm25-index.py"
 AUTHORITIES = {"wiki-page", "source-capture", "wiki-ledger"}
+REVIEW_DIFF_CHARS = 1500  # per-path excerpt in review(); keeps the MCP inspect summary far below the 64 KiB result cap
 
 
 class BatchError(RuntimeError):
@@ -786,6 +788,80 @@ def inspect(vault: Path, bundle: dict, config: Path, authority: str = "wiki-page
     return result
 
 
+def review(vault: Path, bundle: dict, config: Path, authority: str = "wiki-page") -> dict:
+    """Bounded review summary for the MCP inspect tool: the same plan hash as inspect(), without echoing the bundle."""
+    planned = _plan(vault, bundle, config, authority)
+    operations = []
+    for op, before in zip(planned["plan"]["bundle"]["operations"], planned["preimages"]):
+        after = op["content"].encode("utf-8")
+        old = before.decode("utf-8", errors="replace").splitlines(keepends=True) if before is not None else []
+        diff = "".join(difflib.unified_diff(old, op["content"].splitlines(keepends=True),
+                                            f"a/{op['path']}" if before is not None else "/dev/null", f"b/{op['path']}", n=2))
+        operations.append({
+            "path": op["path"],
+            "operation": "create" if before is None else "no-change" if before == after else "update",
+            "beforeBytes": len(before) if before is not None else None, "afterBytes": len(after),
+            "beforeHash": op["expectedHash"], "afterHash": sha(after),
+            "validation": "passed",  # _plan refuses (raises) on a failed path, OKF or secret check
+            "diff": diff[:REVIEW_DIFF_CHARS], "diffTruncated": len(diff) > REVIEW_DIFF_CHARS})
+    return {"planHash": planned["planHash"], "authority": authority,
+            "targets": [item["path"] for item in operations], "operations": operations}
+
+
+def batch_status(vault: Path, limit: int = 20) -> dict:
+    """Read-only list of unfinished journals for doctor; never creates state or takes the writer lock."""
+    vault = Path(vault).resolve(strict=True)
+    try:
+        dir_fd = LIFECYCLE.secure_dir(vault / ".vault-meta/lifecycle/batches", create=False)
+    except FileNotFoundError:
+        return {"unfinished": [], "unfinishedCount": 0, "unreadable": 0}
+    try:
+        unfinished, unreadable = [], 0
+        for name in sorted(os.listdir(dir_fd)):
+            if name == "writer.lock":
+                continue
+            try:
+                journal = _load_journal(vault, name[:-5]) if name.endswith(".json") else None
+            except (OSError, ValueError, TypeError, BatchError):
+                journal = None
+            if journal is None:
+                unreadable += 1
+            elif journal["phase"] not in {"complete", "rolled-back"}:
+                unfinished.append({"batchId": journal["batchId"], "planHash": journal["planHash"], "phase": journal["phase"],
+                                   "authority": journal["authority"], "paths": [e["path"] for e in journal["entries"]][:limit]})
+        return {"unfinished": unfinished[:limit], "unfinishedCount": len(unfinished), "unreadable": unreadable}
+    finally:
+        os.close(dir_fd)
+
+
+def batch_for_plan(vault: Path, plan_hash: str) -> str:
+    """Batch ID of the unique unfinished wiki-page journal for an approved plan hash (else its completed one), for MCP recovery."""
+    vault = Path(vault).resolve(strict=True)
+    try:
+        dir_fd = LIFECYCLE.secure_dir(vault / ".vault-meta/lifecycle/batches", create=False)
+    except OSError as exc:
+        raise BatchError("no batch journal exists for this plan hash") from exc
+    try:
+        names = sorted(name for name in os.listdir(dir_fd) if name.endswith(".json"))
+    finally:
+        os.close(dir_fd)
+    matches = []
+    for name in names:
+        try:
+            journal = _load_journal(vault, name[:-5])
+        except (OSError, ValueError, TypeError, BatchError):
+            continue
+        if journal["planHash"] == plan_hash and journal["authority"] == "wiki-page":
+            matches.append(journal)
+    unfinished = [item for item in matches if item["phase"] not in {"complete", "rolled-back"}]
+    if len(unfinished) > 1:
+        raise BatchError("several unfinished batches share this plan hash; recover one by batchId")
+    chosen = unfinished or [item for item in matches if item["phase"] == "complete"][:1]
+    if not chosen:
+        raise BatchError("no recoverable batch journal exists for this plan hash")
+    return chosen[0]["batchId"]
+
+
 def _require_approved_config(journal: dict, selected: Path | None = None) -> Path:
     approved = journal.get("config")
     if not isinstance(approved, dict) or not isinstance(approved.get("path"), str):
@@ -1009,7 +1085,7 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
 
 
 def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: str = "wiki-page",
-          *, cli_binding: dict | None = None, cli_plan_hash: str | None = None) -> dict:
+          *, cli_binding: dict | None = None, cli_plan_hash: str | None = None, on_persisted=None) -> dict:
     vault = Path(vault).resolve(strict=True)
     bundle = validate_bundle(bundle)
     # Bind identity/content before locking; inspect target preconditions after
@@ -1062,6 +1138,8 @@ def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: st
             journal["cliPlanHash"] = cli_plan_hash
         _require_approved_config(journal, config)
         _save_journal(vault, journal)
+        if on_persisted is not None:
+            on_persisted()  # the journal exists: the MCP bridge lifts its deadline, and recover() can resume from here
         _publish(vault, journal, selected_config=config)
         return {"batchId": batch_id, "planHash": plan_hash, "phase": journal["phase"], "noop": False}
 
