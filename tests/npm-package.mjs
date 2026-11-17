@@ -117,7 +117,7 @@ try {
   const mcpClient = startMcp({ launcher: path.join(installed, "scripts/obsidian-second-brain.mjs"), cwd: work, env });
   try {
     const mcpInit = await mcpClient.initialize();
-    assert.match(mcpInit.result.instructions, /never edit vault files/);
+    assert.match(mcpInit.result.instructions, /wiki changes follow the client's own wiki skill/);
     assert.equal(mcpInit.result.serverInfo.version, manifest.version);
     const mcpTools = (await mcpClient.request("tools/list")).result.tools;
     assert.deepEqual(mcpTools.map((tool) => tool.name), ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"]);

@@ -118,7 +118,8 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
   assert.equal(init.result.serverInfo.name, "obsidian-second-brain");
   assert.equal(init.result.serverInfo.version, JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version);
-  assert.match(init.result.instructions, /never edit vault files with your own file or shell tools/);
+  assert.match(init.result.instructions, /These tools never change the vault; wiki changes follow the client's own wiki skill and its reviewed write path/);
+  assert.doesNotMatch(init.result.instructions, /never edit|file or shell tools/, "the read profile does not forbid the client's own file tools");
   assert.match(init.result.instructions, /wiki_doctor/);
   assert.ok(init.result.instructions.includes(`Configured Obsidian wiki: ${JSON.stringify(`${fs.realpathSync(vault)}/wiki`)} (OKF v0.2; selected integration config: ${JSON.stringify(config)})`), "instructions carry the resolved wiki locator");
   assert.match(init.result.instructions, /WIKI\.md/);
@@ -132,7 +133,7 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
     const fallback = (await unresolved.initialize()).result.instructions;
     assert.doesNotMatch(fallback, /Configured Obsidian wiki/, `${label}: no locator`);
     assert.match(fallback, /call wiki_doctor to see which vault and readiness state apply/, `${label}: falls back to wiki_doctor`);
-    assert.match(fallback, /never edit vault files with your own file or shell tools/);
+    assert.match(fallback, /wiki changes follow the client's own wiki skill/);
     await unresolved.close();
   }
   // Newlines in the vault directory name or config path stay inside quoted, single-line strings.

@@ -102,6 +102,15 @@ override = next(json.loads(block)['subagents']['agentOverrides']['obsidian-secon
 assert override == {'thinking': 'low'}
 assert '/obsidian-second-brain:wiki-agent' in setup
 assert {'Read', 'Edit', 'Write'}.issubset(set(claude['tools'].split(', ')))
+# omp loads this same file. Its parseAgentFields lowercases built-in names (Read -> read) and its
+# createTools filter keeps only names in its own registry, so the `mcp__...` entry (Claude's plugin MCP
+# naming; omp names MCP tools `mcp__<server>_<tool>` and does not use this server) is silently dropped
+# (can1357/oh-my-pi packages/coding-agent/src/discovery/helpers.ts and tools/index.ts; open request
+# #7061 asks for unknown-name warnings). Keep every other entry a Claude built-in that omp also has, so
+# a stricter omp validator can only object to the MCP wildcard; recheck this when omp validates `tools:`.
+claude_tools = csv(claude['tools'])
+assert [tool for tool in claude_tools if tool.startswith('mcp__')] == ['mcp__plugin_obsidian-second-brain_obsidian-wiki__*']
+assert {tool.lower() for tool in claude_tools if not tool.startswith('mcp__')} <= {'read', 'glob', 'grep', 'edit', 'write', 'bash'}
 assert {'read', 'edit', 'write'}.issubset(set(csv(nicobailon['tools'])))
 skill_names = ('wiki', 'wiki-query', 'wiki-save', 'wiki-ingest', 'wiki-research', 'wiki-health')
 assert (root / 'skills/wiki/SKILL.md').is_file()
@@ -136,6 +145,7 @@ assert '`skill://wiki`' in claude_body
 for boundary in ('Before any vault read or write', 'doctor --json',
                  'OBSIDIAN_AGENT_CONFIG', 'OBSIDIAN_VAULT_PATH', 'config.path',
                  'never substitute the default config path by hand',
+                 "do not set the MCP tools' `vault` input",
                  'Prefer Edit/Write file tools', 'do not duplicate',
                  'report logging or finalization as unverified'):
     assert boundary in claude_body, boundary

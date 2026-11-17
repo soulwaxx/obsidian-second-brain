@@ -578,7 +578,10 @@ with `omp plugin install @soulwaxx/obsidian-second-brain`, or link an
 existing Pi copy with `omp plugin link <pi-agent-dir>/npm/node_modules/@soulwaxx/obsidian-second-brain`.
 A linked copy follows Pi updates (`pi update --extensions`). omp does not expand
 `${CLAUDE_PLUGIN_ROOT}` in agent bodies; the specialist reads `skill://wiki`
-there instead. Choose its model or thinking level with omp's
+there instead. The agent's `tools` allowlist also names the Claude-only plugin MCP
+wildcard; omp drops tool names outside its own registry without failing (checked
+in omp's source, not live), and `tests/test_agents.py` pins that this is the only
+non-built-in entry. Choose its model or thinking level with omp's
 `task.agentModelOverrides.wiki-vault`. Live validation with omp 18.18.6 covered
 a read-only doctor run from an unrelated cwd; omp writes through the Pi
 lifecycle extension remain unverified.
