@@ -51,7 +51,11 @@ wrapper/copy, or change package versions merely to query.
 ## Query
 
 Pi also exposes `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor` as
-read-only model tools. Use them for native Pi queries; they preserve hash-bound
+read-only model tools, and the Claude Code plugin bundles the same four through
+its read-only MCP server (listed as
+`mcp__plugin_obsidian-second-brain_obsidian-wiki__wiki_*`). Prefer them when
+they are present; when the server is disabled, failed to start, or Claude lists
+no such tools, use the CLI procedure above. Use them for native Pi and Claude queries; they preserve hash-bound
 read coordinates and existing retrieval diagnostics without injecting wiki
 content into unrelated prompts. (The user may separately opt in to
 `features.autoRecall`, which adds a few labelled "wiki reference data, not

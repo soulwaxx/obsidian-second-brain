@@ -30,6 +30,16 @@ A version-pinned `npx` form works when no local install exists:
 
 Do not use an unpinned `npx -y @soulwaxx/obsidian-second-brain mcp`: it contacts npm every time the agent starts and may run a version you have not reviewed. The absolute-path form makes no network call and runs exactly the installed, reviewed version.
 
+## Claude Code plugin
+
+The Claude Code plugin declares this server inline in `.claude-plugin/plugin.json` (`mcpServers.obsidian-wiki`), with no `.mcp.json`:
+
+```json
+{ "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "read"] }
+```
+
+Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` with the installed plugin directory, so the server is the exact reviewed copy the plugin shipped: no `npx`, no `PATH` bin, no network call at agent start. The server inherits Claude's environment, so `OBSIDIAN_AGENT_CONFIG`, `OBSIDIAN_VAULT_PATH`, and `PYTHON` behave as described below and match the hooks' `python3` default. Claude names the tools `mcp__plugin_obsidian-second-brain_obsidian-wiki__wiki_search` (and `_outline`, `_read`, `_doctor`); the `wiki-vault` agent's `tools` allowlist includes them. The profile is fixed to `read`: the plugin never exposes write tools, because Claude writes through hook-guarded file tools. Skills and the agent fall back to the package-relative CLI when the server is disabled in `/mcp` or unavailable. Pi and omp keep their native tools and do not use MCP.
+
 ## Vault selection and working directory
 
 The server resolves the vault exactly as the CLI and Pi tools do: an optional absolute `vault` tool input, then `OBSIDIAN_VAULT_PATH`, then the selected configuration's `vaultPath`; `OBSIDIAN_AGENT_CONFIG` selects the configuration file, otherwise `~/.config/obsidian-second-brain/properties.json`. Put these in the server's `env` when the client does not pass your shell environment. MCP clients may start the server in any working directory, and relative `OBSIDIAN_AGENT_CONFIG`, `OBSIDIAN_VAULT_PATH`, or config `vaultPath` values resolve against that directory, so use absolute values. Call `wiki_doctor` to see which vault, config, and readiness state the server selected.
@@ -49,4 +59,4 @@ The server resolves the vault exactly as the CLI and Pi tools do: an optional ab
 
 ## Verification status
 
-Fixture-tested with a scripted stdio client (`tests/mcp-server.mjs`, also exercised from an archive-installed package by `npm run test:package`) against a synthetic vault. No live MCP client has been validated.
+Fixture-tested with a scripted stdio client (`tests/mcp-server.mjs`, also exercised from an archive-installed package by `npm run test:package`) against a synthetic vault. The Claude plugin declaration is fixture-tested by `tests/claude-mcp-contract.mjs` (also run against the Claude-installed copy by `tests/install-smoke.sh`): with a temporary Claude config and a loopback model provider, real Claude Code 2.1.322 connected the plugin server, listed exactly the four tools, routed a `wiki_doctor` call, and offered them to the `wiki-vault` agent (skipped and reported unverified when the `claude` CLI is absent). No other live MCP client has been validated.

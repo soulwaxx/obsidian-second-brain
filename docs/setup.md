@@ -430,6 +430,17 @@ for the skill or lifecycle. Neither specialist pins a model or effort.
 
 ### Claude Code
 
+The plugin also starts the read-only MCP server from its own install root
+(`node ${CLAUDE_PLUGIN_ROOT}/scripts/obsidian-second-brain.mjs mcp --tools read`),
+so Claude lists `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`
+(as `mcp__plugin_obsidian-second-brain_obsidian-wiki__*`) without configuration,
+and the wiki skills and `wiki-vault` agent prefer them. It reads the same
+`OBSIDIAN_AGENT_CONFIG`/`OBSIDIAN_VAULT_PATH` selection and `PYTHON` (default
+`python3`) as the rest of the package, so no extra setting is needed. Toggle the
+server off in `/mcp` if you do not want it; the skills then use the CLI procedure
+above. It adds no write tools: page changes still use Claude's file tools with
+the lifecycle hooks.
+
 On Claude Code **2.1.292+**, select **Vault agent effort** in the plugin's
 `/config` settings, then invoke the explicit delegation entry point:
 
