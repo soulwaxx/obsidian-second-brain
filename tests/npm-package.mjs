@@ -85,6 +85,9 @@ try {
   assert.equal(claudePlugin.name, "obsidian-second-brain");
   assert.equal(claudePlugin.userConfig.vault_agent_effort.default, "inherit");
   assert.deepEqual(claudePlugin.userConfig.vault_agent_effort.options, ["inherit", "low", "medium", "high", "xhigh", "max"]);
+  // The archive's plugin manifest declares the read-only MCP server from the plugin root; the
+  // installed server started below is that same launcher (tests/claude-mcp-contract.mjs runs it against Claude).
+  assert.deepEqual(claudePlugin.mcpServers, { "obsidian-wiki": { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "read"] } });
   for (const name of [...expectedSkills, "wiki-agent"]) {
     const skill = fs.readFileSync(path.join(installed, `skills/${name}/SKILL.md`), "utf8");
     assert.match(skill, new RegExp(`^name: ${name}$`, "m"), `Claude skill metadata: ${name}`);
@@ -114,7 +117,7 @@ try {
   const mcpClient = startMcp({ launcher: path.join(installed, "scripts/obsidian-second-brain.mjs"), cwd: work, env });
   try {
     const mcpInit = await mcpClient.initialize();
-    assert.match(mcpInit.result.instructions, /never edit vault files/);
+    assert.match(mcpInit.result.instructions, /wiki changes follow the client's own wiki skill/);
     assert.equal(mcpInit.result.serverInfo.version, manifest.version);
     const mcpTools = (await mcpClient.request("tools/list")).result.tools;
     assert.deepEqual(mcpTools.map((tool) => tool.name), ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"]);

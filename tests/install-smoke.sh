@@ -39,6 +39,10 @@ PY
 node "$repo/tests/npm-plugin.mjs" "$work"
 IFS= read -r installed < "$work/claude-installed-path"
 
+# The Claude-installed plugin declares its read-only MCP server from its own root;
+# real Claude (when present) connects it and lists the four tools.
+node "$repo/tests/claude-mcp-contract.mjs" "$installed"
+
 # Startup from another cwd supplies a locator without touching the temporary vault.
 config="$work/agent-config.json"
 printf '{"vaultPath":"%s"}\n' "$work/vault" >"$config"

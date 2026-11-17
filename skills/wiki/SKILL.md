@@ -133,7 +133,10 @@ ambiguous, ask; do not guess.
 The package-owned `obsidian-second-brain` CLI provides read-only diagnostics
 (`doctor --json`) and structured search (`search "query terms" --json`). Pi also
 registers native read-only `wiki_search`, `wiki_outline`, `wiki_read`, and
-`wiki_doctor` tools, documented in [the Pi tool reference](../../docs/pi-tools.md).
+`wiki_doctor` tools, documented in [the Pi tool reference](../../docs/pi-tools.md);
+the Claude Code plugin bundles the same four read-only tools as an MCP server
+(see [the MCP guide](../../docs/mcp.md)). Prefer the native tools when present
+and fall back to the CLI when they are not.
 Both CLI operations
 use the selected vault, or accept an explicit `--vault <vault-root>`; search
 does not build an index. An `obsidian-second-brain` bin on shell `PATH` may

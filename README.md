@@ -222,7 +222,10 @@ package's Python retrieval/read operations and do not inject wiki content into
 prompts unless the opt-in automatic recall setting is enabled; see
 [the Pi tool contract](docs/pi-tools.md). Any MCP-capable agent can
 use the same four read-only tools through `obsidian-second-brain mcp`, a stdio
-server with no extra dependency; see [the MCP server guide](docs/mcp.md).
+server with no extra dependency; see [the MCP server guide](docs/mcp.md). The
+Claude Code plugin declares that server itself (read-only profile, launched from
+the plugin's own root with no `npx` or `PATH` lookup), so Claude lists the four
+tools with no extra setup; Pi and omp keep their native tools.
 
 When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
 for read-only structured search and doctor commands from any folder:

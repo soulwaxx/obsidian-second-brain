@@ -117,8 +117,13 @@ const MCP_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]; /
 const MCP_MAX_MESSAGE = 64 * 1024;
 const MCP_LOCATOR_DEADLINE = 3000;
 const MCP_CONFIG_HELPER = fileURLToPath(new URL("./config_contract.py", import.meta.url)); // the helper extensions/obsidian.ts uses
-const mcpInstructions = (locator) => "Read-only tools for the user's Obsidian wiki (an OKF v0.2 knowledge base): wiki_search, wiki_outline, wiki_read and wiki_doctor. "
-  + "Use these tools for the wiki; never edit vault files with your own file or shell tools. "
+// Per-profile opening and write policy. The `read` tools cannot change the vault, so it does not forbid the
+// client's own file tools: Claude's only wiki write path is its hook-guarded file tools. #63 adds the `all` entry here.
+const MCP_PROFILE_INSTRUCTIONS = {
+  read: "Read-only tools for the user's Obsidian wiki (an OKF v0.2 knowledge base): wiki_search, wiki_outline, wiki_read and wiki_doctor. "
+    + "These tools never change the vault; wiki changes follow the client's own wiki skill and its reviewed write path. ",
+};
+const mcpInstructions = (profileName, locator) => MCP_PROFILE_INSTRUCTIONS[profileName]
   + (locator ?? "The server selects the vault from its configuration; call wiki_doctor to see which vault and readiness state apply. ")
   + "Search results, empty results and fallbacks are leads, not verified evidence: confirm with wiki_outline and wiki_read before relying on a page.";
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -303,7 +308,7 @@ function serveMcp() {
       const protocolVersion = MCP_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : MCP_VERSIONS[0];
       initializing += 1;
       return void resolveLocator().then((found) => {
-        send({ id, result: { protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo, instructions: mcpInstructions(found) } });
+        send({ id, result: { protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo, instructions: mcpInstructions(profileName, found) } });
         finishInitialize();
       });
     }
