@@ -198,7 +198,9 @@ Pi also registers four direct, read-only `wiki_search`, `wiki_outline`,
 `wiki_read`, and `wiki_doctor` tools. They invoke the currently installed
 package's Python retrieval/read operations and do not inject wiki content into
 prompts unless the opt-in automatic recall setting is enabled; see
-[the Pi tool contract](docs/pi-tools.md).
+[the Pi tool contract](docs/pi-tools.md). Any MCP-capable agent can
+use the same four read-only tools through `obsidian-second-brain mcp`, a stdio
+server with no extra dependency; see [the MCP server guide](docs/mcp.md).
 
 When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
 for read-only structured search and doctor commands from any folder:
