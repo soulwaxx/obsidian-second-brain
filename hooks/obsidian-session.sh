@@ -90,6 +90,21 @@ raise SystemExit(0 if inside else 1)
 PY
 }
 
+# Refuse likely secrets in text an agent file tool adds under the selected wiki/.
+# Reads the tool input JSON on stdin; prints the reason on stderr and fails to refuse.
+# secret_scan.py decides wiki membership (case-insensitively, like the guard), so no
+# case-exact pre-filter here can let a case-different wiki/ spelling skip the scan.
+secret_check() {
+  local target=${1:?path required} mw
+  [[ "$target" = /* ]] || target="$invocation_cwd/$target"
+  mw=$(middleware_dir)
+  [ -n "$mw" ] && [ -f "$mw/secret_scan.py" ] || {
+    echo "obsidian lifecycle: wiki secret check is unavailable" >&2
+    return 1
+  }
+  python3 "$mw/secret_scan.py" tool-input --vault "$vault" --path "$target"
+}
+
 claude_owner() {
   jq -r 'if (.session_id // "") == "" then "" else ("claude:" + .session_id + (if (.agent_id // "") != "" then ":" + .agent_id else "" end)) end'
 }
@@ -123,6 +138,10 @@ guard)
   guard_path "${1:-}"
   ;;
 
+secret-check)
+  secret_check "${1:-}"
+  ;;
+
 prewrite)
   guard_enabled=1
   if [ -z "$config_error" ] && ! feature_enabled guard; then guard_enabled=0; fi
@@ -152,6 +171,8 @@ PY
   if [ "$guard_enabled" = 1 ] && ! reason=$(guard_path "$raw" 2>&1); then
     jq -n --arg reason "$reason" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
+  elif ! reason=$(printf '%s' "$input" | jq -c '.tool_input' | secret_check "$raw" 2>&1); then
+    deny_prewrite "$reason"
   else
     if [ -z "$owner" ] || [ -z "$tool_id" ]; then
       if is_selected_wiki_target "$raw"; then

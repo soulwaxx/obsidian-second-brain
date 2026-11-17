@@ -61,6 +61,39 @@ try {
   for (const p of ["wiki/index.md", "wiki/topic/index.md", "wiki/log.md", "wiki/.raw/secret.env"]) {
     assert.equal((await call(p))?.block, true, `expected block: ${p}`);
   }
+  // Likely secrets are refused before the tool runs; values are assembled at runtime and never echoed.
+  const fakeToken = "gh" + "p_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jK5";
+  const secretPage = path.join(vault, "wiki/topic/secret-page.md");
+  const secretCalls = [
+    { toolCallId: "secret-write", toolName: "write", input: { path: secretPage, content: `---\ntype: note\n---\nkey ${fakeToken}\n` } },
+    { toolCallId: "secret-edit", toolName: "edit", input: { path: secretPage, edits: [{ oldText: "a", newText: `key ${fakeToken}` }] } },
+    { toolCallId: "secret-legacy-edit", toolName: "edit", input: { path: secretPage, oldText: "a", newText: `key ${fakeToken}` } },
+    { toolCallId: "secret-ledger", toolName: "write", input: { path: path.join(vault, "wiki/meta/evidence/asset.json"), content: JSON.stringify({ note: fakeToken }) } },
+  ];
+  for (const event of secretCalls) {
+    const refusal = await handlers.get("tool_call")(event, ctx);
+    assert.equal(refusal?.block, true, `secret write must be refused: ${event.toolCallId}`);
+    assert.match(refusal.reason, /GitHub token/);
+    assert.ok(!refusal.reason.includes(fakeToken), "refusal must not echo the secret");
+  }
+  assert.equal(fs.existsSync(secretPage), false, "refused write must not create bytes");
+  assert.equal(await handlers.get("tool_call")({ toolCallId: "clean-ledger", toolName: "write", input: { path: path.join(vault, "wiki/meta/evidence/asset.json"), content: JSON.stringify({ note: "api_key=<your-key>" }) } }, ctx), undefined);
+  assert.equal(await handlers.get("tool_call")({ toolCallId: "outside-secret", toolName: "write", input: { path: path.join(tmp, "outside-secret.txt"), content: fakeToken } }, ctx), undefined, "non-wiki writes are not scanned");
+  // Pi matches every oldText against the original file and falls back to normalized matching, so the
+  // scanner must too: neither a later edit that rewrites the new value nor a lookalike hyphen hides it.
+  const piRealValue = "Q7abcdefgh12345";
+  const piPage = path.join(vault, "wiki/topic/pi-edit-page.md");
+  for (const [stored, edits] of [
+    ["api_key = <your-key>\nsee Q7 report\n", [{ oldText: "<your-key>", newText: piRealValue }, { oldText: "Q7", newText: "<" }]],
+    ["api_key = <your\u2011key>\n", [{ oldText: "<your-key>", newText: piRealValue }]],
+  ]) {
+    fs.writeFileSync(piPage, `---\ntype: note\n---\n${stored}`);
+    const refusal = await handlers.get("tool_call")({ toolCallId: "pi-edit-semantics", toolName: "edit", input: { path: piPage, edits } }, ctx);
+    assert.equal(refusal?.block, true, "Pi edit semantics must not hide a new credential value");
+    assert.match(refusal.reason, /credential assignment/);
+    assert.ok(!refusal.reason.includes(piRealValue));
+  }
+  fs.rmSync(piPage);
   const savedHome = process.env.HOME;
   const initialConfig = fs.readFileSync(process.env.OBSIDIAN_AGENT_CONFIG, "utf8");
   process.env.HOME = tmp;
@@ -231,6 +264,10 @@ try {
   const { default: featureExtension } = await import(pathToFileURL(featureCopy));
   featureExtension(register(featureHandlers));
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
+  assert.equal((await featureHandlers.get("tool_call")({ toolCallId: "guard-off-secret", toolName: "write", input: { path: secretPage, content: `key ${fakeToken}` } }, ctx))?.block, true,
+    "the secret check does not depend on the guard feature");
+  assert.equal((await featureHandlers.get("tool_call")({ toolCallId: "guard-off-alias", toolName: "write", input: { path: path.join(vault, "WIKI/topic/alias.md"), content: `key ${fakeToken}` } }, ctx))?.block, true,
+    "a case-different wiki/ spelling is scanned with the guard feature off");
   const simulateWrite = async (event, context) => {
     const result = await featureHandlers.get("tool_call")(event, context);
     if (!result?.block && typeof event.input.path === "string") {
@@ -855,6 +892,50 @@ try {
   assert.doesNotMatch((await recallHandlers.get("before_agent_start")({ prompt: recallPrompt }, freshSession())).message.content, /wiki reference data/);
   assert.equal(await recallHandlers.get("tool_call")({ toolName: "write", toolCallId: "recall-invalid-write", input: { path: path.join(recallVault, "wiki/after-invalid.md") } }, ctx), undefined,
     "an invalid autoRecall value does not block wiki writes");
+  // Only destinations that may be under wiki/ spawn the secret-check hook. The decision uses filesystem
+  // identity of the wiki directory, so aliases (case, Unicode normalization, symlinks) and files that do
+  // not exist yet still reach the hook, while ordinary coding writes do not pay for a Python start.
+  const spyRoot = path.join(tmp, "spy");
+  const spyLog = path.join(spyRoot, "calls.log");
+  fs.mkdirSync(path.join(spyRoot, "extensions"), { recursive: true });
+  fs.mkdirSync(path.join(spyRoot, "hooks"), { recursive: true });
+  fs.mkdirSync(path.join(spyRoot, "scripts"), { recursive: true });
+  fs.copyFileSync(path.resolve(path.dirname(source), "../scripts/config_contract.py"), path.join(spyRoot, "scripts/config_contract.py"));
+  fs.writeFileSync(path.join(spyRoot, "hooks/obsidian-session.sh"), `#!/usr/bin/env bash\nprintf '%s %s\\n' "$1" "$2" >> ${JSON.stringify(spyLog)}\n`);
+  fs.writeFileSync(path.join(spyRoot, "extensions/obsidian.ts"), fixtureSource);
+  const spyName = "Caf\u00e9";
+  const spyVault = path.join(spyRoot, spyName);
+  fs.mkdirSync(path.join(spyVault, "wiki/topic"), { recursive: true });
+  fs.mkdirSync(path.join(spyVault, "wiki2"));
+  fs.mkdirSync(path.join(spyVault, "notes"));
+  fs.symlinkSync(path.join(spyVault, "wiki/topic"), path.join(spyRoot, "link-to-topic"));
+  fs.symlinkSync(path.join(spyVault, "wiki/topic/not-yet.md"), path.join(spyVault, "notes/dangling.md"));
+  fs.writeFileSync(path.join(spyRoot, "properties.json"), JSON.stringify({ vaultPath: spyVault, features: { guard: false } }));
+  process.env.OBSIDIAN_AGENT_CONFIG = path.join(spyRoot, "properties.json");
+  process.env.OBSIDIAN_VAULT_PATH = spyVault;
+  const spyHandlers = new Map();
+  const { default: spyExtension } = await import(pathToFileURL(path.join(spyRoot, "extensions/obsidian.ts")));
+  spyExtension(register(spyHandlers));
+  const spyCtx = { ...ctx, cwd: path.join(spyVault, "wiki/topic") };
+  const spied = async (target, id) => {
+    fs.rmSync(spyLog, { force: true });
+    const result = await spyHandlers.get("tool_call")({ toolCallId: id, toolName: "write", input: { path: target, content: "x" } }, spyCtx);
+    assert.equal(result?.block ?? false, false, `spy hook allows ${target}`);
+    return fs.existsSync(spyLog) && fs.readFileSync(spyLog, "utf8").includes("secret-check");
+  };
+  const nfdVault = path.join(spyRoot, spyName.normalize("NFD"));
+  const nonWiki = [path.join(tmp, "outside.txt"), path.join(spyVault, "notes/a.txt"), path.join(spyVault, "wiki2/a.md"),
+    path.join(spyVault, "deep/er/new/file.ts"), path.join(spyVault, "notes/sub/../a.md"), "../../notes/rel.txt"];
+  for (const [i, target] of nonWiki.entries()) assert.equal(await spied(target, `spy-non-${i}`), false, `non-wiki write must not spawn the hook: ${target}`);
+  const wikiLike = [path.join(spyVault, "wiki/topic/new.md"), path.join(spyVault, "wiki/not/yet/created/new.md"), path.join(spyVault, "wiki/topic/.hidden"),
+    path.join(spyVault, "WIKI/topic/alias.md"), path.join(spyRoot, "link-to-topic/new.md"), path.join(spyVault, "notes/dangling.md"),
+    path.join(spyVault, "notes/../wiki/topic/dotdot.md"), "new-relative.md", "../topic/rel.md"];
+  for (const [i, target] of wikiLike.entries()) assert.equal(await spied(target, `spy-wiki-${i}`), true, `wiki destination must reach the hook: ${target}`);
+  if (fs.existsSync(nfdVault)) {
+    // Normalization-insensitive filesystems (APFS): the NFD spelling of the vault is the same directory.
+    assert.equal(await spied(path.join(nfdVault, "wiki/topic/nfd.md"), "spy-nfd"), true, "NFD alias of the wiki path must reach the hook");
+    assert.equal(await spied(path.join(nfdVault, "notes/nfd.txt"), "spy-nfd-non"), false, "NFD alias of a non-wiki path is skipped");
+  }
   console.log("pi Obsidian lifecycle checks PASS");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -23,6 +23,7 @@ LIFECYCLE = load_source("wiki_batch_lifecycle", str(Path(__file__).with_name("wi
 CONFIG = load_source("wiki_batch_config", str(Path(__file__).with_name("config_contract.py")))
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MIDDLEWARE = PACKAGE_ROOT / "skills/wiki/scripts/okf_mw"
+SECRETS = load_source("wiki_batch_secret_scan", str(MIDDLEWARE / "secret_scan.py"))
 BM25_SCRIPT = PACKAGE_ROOT / "scripts/bm25-index.py"
 AUTHORITIES = {"wiki-page", "source-capture", "wiki-ledger"}
 
@@ -197,8 +198,34 @@ def _read_at(parent: int, name: str) -> bytes | None:
             os.close(fd)
 
 
-def _validate_draft(vault: Path, op: dict, authority: str) -> None:
+_CURRENT = object()  # _validate_draft: read the destination's current bytes on demand
+
+
+def _current_bytes(vault: Path, op: dict, authority: str) -> bytes | None:
+    _, parent, name = _target(vault, op["path"], authority, allow_missing=True)
+    try:
+        return _read_at(parent, name) if parent is not None else None
+    finally:
+        if parent is not None:
+            os.close(parent)
+
+
+def _validate_draft(vault: Path, op: dict, authority: str, preimage: bytes | None | object = _CURRENT) -> None:
+    """Validate a draft. `preimage` is the destination's text before the batch (default: read it now)."""
     content = op["content"]
+    if authority in {"wiki-page", "wiki-ledger"}:
+        # Refuse before approval and again before publication/recovery; apply,
+        # recover, and every client wrapper reach this function. Only findings new
+        # relative to the current destination are refused, so migrating or
+        # re-baselining a legacy page that already matches is not blocked.
+        page = authority == "wiki-page"
+        if SECRETS.refusal_for_content(op["path"], content, page=page):
+            if preimage is _CURRENT:
+                preimage = _current_bytes(vault, op, authority)
+            baseline = preimage.decode("utf-8", errors="replace") if preimage is not None else None
+            refusal = SECRETS.refusal_for_content(op["path"], content, page=page, baseline=baseline)
+            if refusal:
+                raise BatchError(refusal)
     if authority == "wiki-page":
         if not (vault / "wiki").is_dir() or (vault / "wiki").is_symlink():
             raise BatchError("wiki directory is missing or symlinked")
@@ -746,9 +773,17 @@ def _plan(vault: Path, bundle: dict, config: Path, authority: str) -> dict:
 
 def inspect(vault: Path, bundle: dict, config: Path, authority: str = "wiki-page") -> dict:
     planned = _plan(vault, bundle, config, authority)
-    return {"plan": planned["plan"], "planHash": planned["planHash"],
-            "targets": [op["path"] for op in planned["plan"]["bundle"]["operations"]],
-            "authority": authority}
+    result = {"plan": planned["plan"], "planHash": planned["planHash"],
+              "targets": [op["path"] for op in planned["plan"]["bundle"]["operations"]],
+              "authority": authority}
+    if authority == "source-capture":
+        # Captures are verbatim, user-selected sources: warn, never refuse. The
+        # warnings are review output only and are not part of the plan hash.
+        warnings = [message for op in planned["plan"]["bundle"]["operations"]
+                    if (message := SECRETS.advisory_for_content(op["path"], op["content"]))]
+        if warnings:
+            result["warnings"] = warnings
+    return result
 
 
 def _require_approved_config(journal: dict, selected: Path | None = None) -> Path:
@@ -1054,8 +1089,9 @@ def recover(vault: Path, batch_id: str, config: Path | None = None) -> dict:
             _validate_ledger_operations(vault, journal["bundle"]["operations"], publication=True,
                                         original_preimages=_journal_preimages(journal),
                                         current_batch_id=journal["batchId"])
+        preimages = _journal_preimages(journal)
         for op in journal["bundle"]["operations"]:
-            _validate_draft(vault, op, journal["authority"])
+            _validate_draft(vault, op, journal["authority"], preimages.get(op["path"]))
         _publish(vault, journal, selected_config=approved_config)
         return {"batchId": batch_id, "phase": journal["phase"], "applied": True, "noop": False}
 

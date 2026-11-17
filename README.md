@@ -180,6 +180,28 @@ depth, curated sources, settings, and unsafe paths. Shell writes are not
 sandboxed; follow the skill's explicit guard/validation workflow if the file
 tool lifecycle is unavailable.
 
+Agent writes under `wiki/` (pages and evidence-ledger JSON) are refused before
+they happen when the added text contains a likely secret: private key blocks,
+well-known token formats (`sk-`, `sk-ant-`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`,
+`github_pat_`, `xox*`, `AKIA`/`ASIA`, `AIza`, `glpat-`, `npm_`, Stripe live keys),
+JWTs, credentials in URLs, and `api_key`/`secret`/`password`/`token`-style
+assignments with a non-placeholder value (placeholders such as `<your-key>`,
+`${VAR}`, or `your-api-key` pass). The check runs in the file-tool guard (Claude
+`PreToolUse`, Pi `tool_call`) and in the reviewed batch inspect/apply/recover
+path, so every client that uses them inherits it. It reports file, line, and
+pattern type, never the value, and never redacts. A page that documents token
+formats can opt out with `secretScan: allow` in its frontmatter; there is no
+global switch. An edit reads the opt-out from the page already on disk, so add it
+in a separate, earlier edit (an accepted limitation of the per-page design). Only
+findings new relative to the page's current text are refused: edits are applied to
+the current text first, so replacing a placeholder with a real value is refused,
+while a legacy page that already contains a match can still be edited or
+re-baselined. Source captures under `.raw/agent-captures/` are verbatim, so
+`capture-inspect` and batch inspect only return a `warnings` entry. Existing
+untouched pages are never blocked. Pattern matching misses unknown formats and
+shell writes are unguarded; it is not a substitute for keeping secrets out of
+prompts and notes.
+
 The lifecycle validates changed pages and finalizes writing batches with
 navigation, logging, and one optional BM25 refresh per validated changed batch.
 A failed refresh leaves a durable retrieval-only retry; content/navigation/log

@@ -152,6 +152,16 @@ agent-authored. Curated sources and settings remain outside normal wiki-write
 permissions. Shell writes bypass pre-tool protection, so follow the manual
 middleware order in the skill when needed.
 
+File-tool writes and reviewed batches under `wiki/` are refused when the added
+text contains a likely secret (see `skills/wiki/scripts/okf_mw/secret_scan.py`
+for the exact patterns). Refusals name the file, line, and pattern type but
+never the value. Add `secretScan: allow` to a page's frontmatter only when the
+page documents token formats; an edit reads the opt-out from the page on disk,
+so add it in a separate, earlier edit. Only findings new relative to the page's
+current text are refused. Source captures are verbatim and produce an
+advisory `warnings` entry in the inspect output instead. The check cannot find
+unknown formats; do not paste secrets into prompts or notes.
+
 The lifecycle validates changed pages and finalizes a writing batch with
 navigation, logging, and optional retrieval refresh. An invalid changed page
 keeps its batch pending for repair; unrelated historical defects are reported
