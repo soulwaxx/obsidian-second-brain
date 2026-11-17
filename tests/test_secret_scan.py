@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,26 @@ class PatternTests(unittest.TestCase):
                 slowest = max(slowest, elapsed)
                 self.assertLess(elapsed, 0.5, f"{unit!r}+{suffix!r} took {elapsed:.2f}s")
         self.assertLess(slowest, 0.5)
+
+    def test_private_key_headers_without_footers_scan_in_linear_time(self):
+        # One header per ~30 bytes over 1 MB: hashing the rest of the text per header took 16.8 s.
+        header = "-----BEGIN " + "RSA PRIVATE KEY-----\n"
+        for name, text in {
+            "headers only": header * (1_000_000 // len(header)),
+            "headers with body": (header + "A" * 40 + "\n") * (1_000_000 // (len(header) + 41)),
+            "one header, long body": header + "A" * 1_000_000,
+            "footer past the cap": header + "A" * 1_000_000 + "-----END " + "RSA PRIVATE KEY-----",
+        }.items():
+            with self.subTest(name):
+                started = time.perf_counter()
+                findings = SCAN.scan_text(text)
+                elapsed = time.perf_counter() - started
+                self.assertTrue(findings)
+                self.assertLess(elapsed, 1.0, f"{name} took {elapsed:.2f}s")
+        # A key whose footer is inside the cap is still identified as a whole block.
+        key = SECRETS["private key block"]
+        self.assertEqual(SCAN.new_findings("x\n" + key, key), [])
+        self.assertEqual(len(SCAN.new_findings(key.replace(RANDOM, RANDOM[::-1]), key)), 1)
 
     def test_slack_token_still_needs_a_digit(self):
         self.assertEqual(SCAN.scan_text("xox" + "b-" + "abcdefghijklmnopqrstuvwx"), [])
@@ -207,6 +228,77 @@ class ToolInputTests(unittest.TestCase):
                                       {"old_string": "abc123", "new_string": real}]})
         self.allowed(page, {"old_string": "<your-key>", "new_string": "<other-key>"})
         self.assertEqual(page.read_text(encoding="utf-8"), PAGE + "api_key = <your-key>\n")
+
+    def test_pi_edits_are_matched_against_the_original_and_spliced_by_position(self):
+        page = self.vault / "wiki/topic/page.md"
+        real = "Q7abcdefgh12345"
+        # Applied one after another, the second edit would turn "Q7" in the new value into "<".
+        # Pi matches both against the original, so its result is `api_key = Q7abcdefgh12345`.
+        page.write_text(PAGE + "api_key = <your-key>\nsee Q7 report\n", encoding="utf-8")
+        edits = [{"oldText": "<your-key>", "newText": real}, {"oldText": "Q7", "newText": "<"}]
+        message = self.refused(page, {"path": str(page), "edits": edits})
+        self.assertIn("credential assignment", message)
+        self.assertNotIn(real, message)
+        self.refused(page, {"path": str(page), "edits": json.dumps(edits)})  # edits sent as a JSON string
+        self.refused(page, {"path": str(page), "edits": edits[:1], "oldText": "Q7", "newText": "<"})
+        # The same sequence is genuinely sequential in Claude MultiEdit, which turns the value into "<abcdefgh12345".
+        self.allowed(page, {"edits": [{"old_string": "<your-key>", "new_string": real},
+                                      {"old_string": "Q7", "new_string": "<"}]})
+        # Pi: a later edit cannot remove an earlier edit's text; disjoint edits are judged as spliced.
+        self.allowed(page, {"edits": [{"oldText": "<your-key>", "newText": "<other-key>"},
+                                      {"oldText": "Q7", "newText": "Q8"}]})
+
+    def test_pi_fuzzy_matching_cannot_hide_the_edited_text(self):
+        page = self.vault / "wiki/topic/page.md"
+        real = "abc123def456ghi789"
+        # U+2011 non-breaking hyphen, curly quote, NBSP, and trailing whitespace all match ASCII oldText in Pi.
+        for stored in ("<your\u2011key>", "<your\u2013key>"):
+            page.write_text(PAGE + f"api_key = {stored}\nother line\n", encoding="utf-8")
+            with self.subTest(stored=stored):
+                self.refused(page, {"edits": [{"oldText": "<your-key>", "newText": real}]})
+                self.allowed(page, {"edits": [{"oldText": "<your-key>", "newText": "<other-key>"}]})
+        page.write_text(PAGE + "api_key =\u00a0<your-key>   \nit\u2019s fine\r\nend\n", encoding="utf-8")
+        self.refused(page, {"edits": [{"oldText": "api_key = <your-key>", "newText": f"api_key = {real}"}]})
+        self.refused(page, {"edits": [{"oldText": "it's fine", "newText": f"token: {real}"}]})
+        self.allowed(page, {"edits": [{"oldText": "it's fine", "newText": "it is fine"}]})
+        # CRLF files and BOMs do not make an unchanged legacy match look new.
+        legacy = "\ufeff" + PAGE.replace("\n", "\r\n") + "key " + self.secret + "\r\n"
+        page.write_bytes(legacy.encode("utf-8"))
+        self.allowed(page, {"edits": [{"oldText": "# Page", "newText": "# Renamed"}]})
+
+    def test_unplaced_pi_edits_are_scanned_with_context_and_never_fail_open(self):
+        page = self.vault / "wiki/topic/page.md"
+        value = "abc123def456ghi789"
+        page.write_text(PAGE + "api_key =", encoding="utf-8")
+        # Not locatable (Pi would reject it), but the text it adds must not be able to complete a value.
+        self.refused(page, {"edits": [{"oldText": "absent", "newText": value}]})
+        self.refused(self.vault / "wiki/topic/missing.md", {"edits": [{"oldText": "a", "newText": f"token: {value}"}]})
+        # Duplicate or overlapping targets are also rejected by Pi, so the scanner falls back the same way.
+        page.write_text(PAGE + "x x\n", encoding="utf-8")
+        self.refused(page, {"edits": [{"oldText": "x", "newText": f"token: {value}"}]})
+        self.allowed(page, {"edits": [{"oldText": "absent", "newText": "fine"}]})
+        self.allowed(page, {"edits": [{"oldText": "x", "newText": "token: <your-token>"}]})
+
+    def test_normalization_and_case_aliases_of_the_wiki_path_are_scanned(self):
+        # Identity, not name comparison: APFS treats NFC and NFD spellings as the same directory.
+        name = unicodedata.normalize("NFC", "Caf\u00e9")
+        alias = unicodedata.normalize("NFD", name)
+        root = Path(self.temp.name) / "unicode"
+        (root / name / "wiki/topic").mkdir(parents=True)
+        if not (root / alias).exists():
+            self.skipTest("filesystem does not alias Unicode normalization forms")
+        vault = root / name
+        for spelling in (root / alias, root / name):
+            for rel in ("wiki/topic/page.md", "wiki/topic/new-page.md", "WIKI/topic/new-page.md"):
+                with self.subTest(spelling=spelling.name, rel=rel):
+                    result = run_cli(vault, spelling / rel, {"content": PAGE + self.secret})
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(SCAN._wiki_relative(vault, root / alias / "wiki/topic/page.md"), Path("topic/page.md"))
+        self.assertIsNone(SCAN._wiki_relative(vault, root / alias / "elsewhere/page.md"))
+        # A symlink that points into wiki/ routes to the scan, even for a file that does not exist yet.
+        link = Path(self.temp.name) / "link"
+        link.symlink_to(vault / "wiki/topic")
+        self.assertEqual(run_cli(vault, link / "new.md", {"content": PAGE + self.secret}).returncode, 1)
 
     def test_existing_matches_are_not_new(self):
         page = self.vault / "wiki/topic/legacy.md"

@@ -406,5 +406,16 @@ result=$(secret_prewrite Edit '{"old_string":"<your-key>","new_string":"abc123de
 printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("credential assignment"))' >/dev/null
 case "$result" in *abc123def456ghi789*) echo "secret value echoed" >&2; exit 1 ;; esac
 [ "$(cat "$secret_page")" = "$secret_before" ]
+# A Unicode-normalization alias of the vault path (APFS) is the same wiki; identity, not spelling, decides.
+nfc_name=$(printf 'Caf\303\251')
+nfd_name=$(printf 'Cafe\314\201')
+mkdir -p "$work/unicode/$nfc_name/wiki/topic"
+if [ -d "$work/unicode/$nfd_name" ]; then
+  alias_vault=$secret_vault
+  secret_vault=$work/unicode/$nfc_name
+  result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}' "$work/unicode/$nfd_name/wiki/topic/alias.md")
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("GitHub token"))' >/dev/null
+  secret_vault=$alias_vault
+fi
 
 printf 'vault lifecycle checks PASS\n'

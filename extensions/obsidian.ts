@@ -222,6 +222,42 @@ function wikiWriteCandidate(rawPath: unknown, cwd: string): string | null {
 	return target;
 }
 
+// Whether the secret check must run for this write destination. Names are never compared as
+// strings (JS lowercasing, Python casefolding, and filesystem Unicode normalization disagree). The
+// nearest existing ancestor of the destination is resolved through symlinks, and the destination
+// is a wiki path when that real path or any of its ancestors is the wiki directory by (device,
+// inode). That covers symlinks, case and normalization aliases, and files not yet created.
+// Anything that cannot be resolved cleanly (a dangling symlink, an unreadable entry) is sent to
+// the hook, as is a missing wiki/ and a case-different spelling of wiki/ (the guard's policy on
+// case-sensitive filesystems).
+function mayBeWikiTarget(vault: string, target: string): boolean {
+	const wikiDir = path.join(vault, "wiki");
+	let wiki: fs.BigIntStats;
+	try { wiki = fs.statSync(wikiDir, { bigint: true }); } catch { return true; }
+	const lowered = target.toLowerCase();
+	if (lowered === wikiDir.toLowerCase() || lowered.startsWith(wikiDir.toLowerCase() + path.sep)) return true;
+	let existing = target;
+	for (;;) {
+		try {
+			fs.statSync(existing);
+			break;
+		} catch {
+			// Missing is fine (the write creates it); a dangling symlink or unreadable entry is not.
+			try { fs.lstatSync(existing); return true; } catch { /* not present */ }
+		}
+		const parent = path.dirname(existing);
+		if (parent === existing) return false;
+		existing = parent;
+	}
+	try {
+		for (let current = fs.realpathSync(existing); ; current = path.dirname(current)) {
+			const stat = fs.statSync(current, { bigint: true });
+			if (stat.dev === wiki.dev && stat.ino === wiki.ino) return true;
+			if (path.dirname(current) === current) return false;
+		}
+	} catch { return true; }
+}
+
 function isNavigationPath(target: string, vault: string): boolean {
 	if (path.basename(target).toLowerCase() !== "index.md") return false;
 	const wiki = path.join(vault, "wiki");
@@ -443,9 +479,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Refuse likely secrets before any bytes change. This is separate from the
 		// guard feature: pages and ledger JSON under wiki/ are scanned either way.
-		// The hook decides wiki membership case-insensitively; a case-exact check
-		// here would let a case-different wiki/ spelling skip the scan.
-		if (!configError) {
+		// Only destinations that may be under wiki/ spawn the hook (it decides membership);
+		// mayBeWikiTarget compares filesystem identity, never name strings.
+		if (!configError && (!eventVault || mayBeWikiTarget(eventVault, path.resolve(ctx.cwd, rawPath)))) {
 			const scanned = await runHook("secret-check", ctx.cwd, [rawPath], eventVault, JSON.stringify(event.input));
 			if (scanned.error) {
 				if (pendingId) pendingWikiWrites.delete(pendingId);
