@@ -224,7 +224,8 @@ function serveMcp() {
         if (code !== 0 || error || typeof selected !== "string" || !selected) return done(null);
         const vault = realpathSync(selected);
         if (!statSync(vault).isDirectory()) return done(null);
-        done(`Configured Obsidian wiki: ${vault}/wiki (OKF v0.2; selected integration config: ${configPath}). `
+        // Paths are quoted so a directory name with newlines cannot inject instruction text.
+        done(`Configured Obsidian wiki: ${JSON.stringify(`${vault}/wiki`)} (OKF v0.2; selected integration config: ${JSON.stringify(configPath)}). `
           + "Load wiki/WIKI.md and the relevant wiki/index.md only when a task needs the wiki; call wiki_doctor for readiness state. ");
       } catch { done(null); }
     });
@@ -235,6 +236,16 @@ function serveMcp() {
     locatorChild?.kill("SIGKILL");
     for (const call of calls.values()) stop(call);
     process.stdin.destroy(); // the event loop ends once every child has closed
+  };
+  // On stdin EOF running calls end at once, but a pending `initialize` reply is still delivered (bounded by the
+  // locator deadline) before the server exits; signals and stdout errors call shutdown() directly.
+  let initializing = 0;
+  let draining = false;
+  const finishInitialize = () => { initializing -= 1; if (draining && initializing === 0) shutdown(); };
+  const onEof = () => {
+    draining = true;
+    for (const call of calls.values()) stop(call);
+    if (initializing === 0) shutdown();
   };
 
   function runTool(id, tool, toolArgs) {
@@ -290,7 +301,11 @@ function serveMcp() {
     if (method === "initialize") {
       if (!params || typeof params !== "object" || typeof params.protocolVersion !== "string") return fail(id, -32602, "Invalid params: protocolVersion is required");
       const protocolVersion = MCP_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : MCP_VERSIONS[0];
-      return void resolveLocator().then((found) => send({ id, result: { protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo, instructions: mcpInstructions(found) } }));
+      initializing += 1;
+      return void resolveLocator().then((found) => {
+        send({ id, result: { protocolVersion, capabilities: { tools: { listChanged: false } }, serverInfo, instructions: mcpInstructions(found) } });
+        finishInitialize();
+      });
     }
     if (method === "tools/list") return send({ id, result: { tools: toolList } });
     if (method === "tools/call") {
@@ -323,7 +338,7 @@ function serveMcp() {
       data = data.subarray(end + 1);
     }
   });
-  process.stdin.on("end", shutdown);
+  process.stdin.on("end", onEof);
   process.stdout.on("error", shutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
