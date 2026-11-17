@@ -300,6 +300,14 @@ class ToolInputTests(unittest.TestCase):
         link.symlink_to(vault / "wiki/topic")
         self.assertEqual(run_cli(vault, link / "new.md", {"content": PAGE + self.secret}).returncode, 1)
 
+    def test_dotdot_through_an_outward_symlink_is_scanned(self):
+        # Pi resolves wiki/out/../leak.md lexically to wiki/leak.md, even when wiki/out
+        # is a symlink to a directory outside the vault.
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (self.vault / "wiki/out").symlink_to(outside)
+        self.refused(Path(f"{self.vault}/wiki/out/../leak.md"), {"content": PAGE + self.secret})
+
     def test_existing_matches_are_not_new(self):
         page = self.vault / "wiki/topic/legacy.md"
         legacy = PAGE + "old key " + self.secret + "\n"

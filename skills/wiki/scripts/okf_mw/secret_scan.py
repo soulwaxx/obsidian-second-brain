@@ -38,6 +38,7 @@ Exit codes:
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -408,6 +409,13 @@ def refusal_for_tool_write(vault: str, path: str, tool_input: dict) -> str | Non
     """
     target = Path(path)
     relative = _wiki_relative(Path(vault), target)
+    if relative is None:
+        # Pi resolves `..` lexically, while Path.resolve() follows a symlink first:
+        # wiki/link-out/../page.md lands in wiki/ although its resolved form does not.
+        lexical = Path(os.path.normpath(os.path.abspath(path)))
+        relative = _wiki_relative(Path(vault), lexical)
+        if relative is not None:
+            target = lexical
     if relative is None:
         return None
     label = "wiki/" + relative.as_posix()
