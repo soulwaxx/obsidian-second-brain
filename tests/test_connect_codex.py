@@ -152,6 +152,7 @@ class DetectionAndPreviewTests(CodexCase):
         self.assertIn("AGENTS.override.md", notes)
         self.assertIn("~/.agents/skills", notes)
         self.assertIn("Restart Codex", notes)
+        self.assertIn("Pi also reads ~/.agents/skills", notes)
 
 
 class ApplyTests(CodexCase):
@@ -348,6 +349,158 @@ class RefusalTests(CodexCase):
         refusal = self.refused("codex")["refusals"][0]
         self.assertEqual(refusal["code"], "skill-customized")
         self.assertEqual(skill.read_text(encoding="utf-8"), "my own version\n")
+        self.assertIn("customized skill copies", refusal["message"])
+        self.assertNotIn("not installed by connect", refusal["message"])
+
+    def test_a_same_named_skill_connect_never_wrote_is_described_as_such(self):
+        other = self.skills / "wiki/SKILL.md"
+        self.write(other, "---\nname: wiki\ndescription: another tool's wiki\n---\n")
+        before = snapshot(self.home, self.config.parent)
+        refusal = self.refused("codex")["refusals"][0]
+        self.assertEqual(refusal["code"], "skill-customized")
+        self.assertIn("exists and was not installed by connect", refusal["message"])
+        self.assertNotIn("customized", refusal["message"])
+        self.assertIn("--force", refusal["message"])
+        self.assertEqual(before, snapshot(self.home, self.config.parent))
+        self.apply("codex", extra=("--force",))  # --force backs it up and replaces it
+        self.assertEqual((self.skills / "wiki/SKILL.md").read_bytes(), connect_module.skill_sources()["wiki/SKILL.md"])
+        self.assertTrue(list((self.config.parent / "connect-backups").rglob("*SKILL.md")))
+
+
+class ForeignEditTests(CodexCase):
+    """Codex rewrites config.toml with toml_edit: our markers can move or vanish, our table stays findable.
+
+    The texts below are hand-written after toml_edit's behavior: a new top-level table is inserted after the
+    last existing one (before a trailing comment), and `codex mcp add|remove` re-renders every server table
+    without comments.
+    """
+
+    def connected(self, base=REAL_CONFIG):
+        self.write(self.config_toml, base)
+        self.apply("codex")
+        return self.config_toml.read_text(encoding="utf-8")
+
+    def server_tables(self, name="obsidian-wiki"):
+        mine = self.entry()
+        env = "".join(f"{key} = {json.dumps(value)}\n" for key, value in mine["env"].items())
+        return (f"[mcp_servers.{name}]\ncommand = {json.dumps(mine['command'])}\nargs = {json.dumps(mine['args'])}\n",
+                f"[mcp_servers.{name}.env]\n{env}")
+
+    def assert_removed(self, expected_text, expected_settings):
+        self.assertEqual(self.codex_status()["state"], "connected")
+        self.apply("codex", extra=("--remove",))
+        kept = self.config_toml.read_text(encoding="utf-8")
+        self.assertNotIn("obsidian-second-brain:", kept)
+        self.assertEqual(tomllib.loads(kept), expected_settings)
+        if expected_text is not None:
+            self.assertEqual(kept, expected_text)
+        self.assertFalse(self.manifest.exists())
+
+    def test_a_table_codex_adds_before_our_end_marker_does_not_block_removal(self):
+        text = self.connected()
+        end = "# obsidian-second-brain:end\n"
+        self.assertTrue(text.endswith(end))
+        # `[notice]` and a trusted project, appended by Codex: toml_edit puts them before the trailing comment.
+        added = '\n[notice]\nhide_full_access_warning = true\n\n[projects."/Users/me/new"]\ntrust_level = "trusted"\n'
+        self.config_toml.write_text(text[:-len(end)] + added + end, encoding="utf-8")
+        original = tomllib.loads(REAL_CONFIG)
+        original["notice"] = {"hide_full_access_warning": True}
+        original["projects"]["/Users/me/new"] = {"trust_level": "trusted"}
+        self.assert_removed(REAL_CONFIG + added, original)
+
+    def test_codex_mcp_add_that_drops_the_start_marker_still_allows_removal(self):
+        self.connected()
+        main, env = self.server_tables()
+        # `codex mcp add later` re-renders the servers: comments (our start marker) are gone, tables are in place.
+        rendered = (REAL_CONFIG.split("[mcp_servers.context7]")[0]
+                    + '[mcp_servers.context7]\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]\n'
+                      "startup_timeout_sec = 20.0\ntool_timeout_sec = 90.5\n\n"
+                      '[mcp_servers.context7.env]\nCONTEXT7_API_KEY = "keep-me"\n\n'
+                      '[mcp_servers.docs]\nurl = "https://docs.example.com/mcp"\nbearer_token_env_var = "DOCS_TOKEN"\n'
+                      "enabled = false\n\n"
+                      + main + "\n" + env + '\n[mcp_servers.later]\ncommand = "later"\n\n'
+                      '[[skills.config]]\npath = "/Users/me/.agents/skills/old/SKILL.md"\nenabled = false\n'
+                      "# obsidian-second-brain:end\n")
+        self.config_toml.write_text(rendered, encoding="utf-8")
+        original = tomllib.loads(REAL_CONFIG)
+        original["mcp_servers"]["later"] = {"command": "later"}
+        self.assert_removed(None, original)
+
+    def test_codex_mcp_remove_of_another_server_that_drops_both_markers_still_allows_removal(self):
+        self.connected()
+        main, env = self.server_tables()
+        base = REAL_CONFIG.split("[mcp_servers.context7]")[0]
+        rendered = (base + main + "\n" + env + '\n[mcp_servers.docs]\nurl = "https://docs.example.com/mcp"\n'
+                    'bearer_token_env_var = "DOCS_TOKEN"\nenabled = false\n\n'
+                    '[[skills.config]]\npath = "/Users/me/.agents/skills/old/SKILL.md"\nenabled = false\n')
+        self.config_toml.write_text(rendered, encoding="utf-8")
+        original = tomllib.loads(REAL_CONFIG)
+        del original["mcp_servers"]["context7"]
+        self.assert_removed(None, original)
+
+    def test_reordered_tables_with_our_subtable_detached_are_removed_whole(self):
+        self.connected()
+        main, env = self.server_tables()
+        rendered = (REAL_CONFIG + "\n" + main + '\n[mcp_servers.later]\ncommand = "later"\n\n' + env
+                    + "\n[notice]\nhide_rate_limit_model_nudge = true\n")
+        self.config_toml.write_text(rendered, encoding="utf-8")
+        original = tomllib.loads(REAL_CONFIG)
+        original["mcp_servers"]["later"] = {"command": "later"}
+        original["notice"] = {"hide_rate_limit_model_nudge": True}
+        self.assert_removed(None, original)
+        kept = self.config_toml.read_text(encoding="utf-8")
+        self.assertIn('[mcp_servers.later]\ncommand = "later"\n', kept)
+        self.assertNotIn("obsidian-wiki", kept)
+
+    def test_an_edited_entry_is_still_refused_when_the_markers_are_gone(self):
+        self.connected()
+        main, env = self.server_tables()
+        self.config_toml.write_text(REAL_CONFIG + "\n" + main.replace('"all"', '"read"') + "\n" + env + "# obsidian-second-brain:end\n",
+                                    encoding="utf-8")
+        before = snapshot(self.home)
+        self.assertEqual(self.refused("codex", "--remove")["refusals"][0]["code"], "entry-modified")
+        self.assertEqual(before, snapshot(self.home))
+
+    def test_update_replaces_a_table_that_codex_moved_and_leaves_its_neighbours(self):
+        text = self.connected()
+        end = "# obsidian-second-brain:end\n"
+        added = '\n[notice]\nhide_full_access_warning = true\n'
+        self.config_toml.write_text(text[:-len(end)] + added + end, encoding="utf-8")
+        other = self.root / "other-node"
+        other.write_text("#!/bin/sh\necho v24.1.0\n", encoding="utf-8")
+        other.chmod(0o755)
+        self.apply("codex", extra=("--node", str(other)))
+        updated = self.config_toml.read_text(encoding="utf-8")
+        self.assertEqual(self.entry()["command"], str(other))
+        self.assertEqual(updated.count("obsidian-second-brain:start"), 1)
+        self.assertEqual(updated.count("obsidian-second-brain:end"), 1)
+        self.assertEqual(tomllib.loads(updated)["notice"], {"hide_full_access_warning": True})
+        self.assertEqual(self.codex_status()["state"], "connected")
+
+    def test_an_entry_written_as_dotted_keys_or_inline_is_refused_with_nothing_changed(self):
+        self.connected()
+        mine = self.entry()
+        dotted = ("[mcp_servers]\nobsidian-wiki.command = " + json.dumps(mine["command"]) + "\nobsidian-wiki.args = " + json.dumps(mine["args"])
+                  + "\nobsidian-wiki.env.PYTHON = " + json.dumps(mine["env"]["PYTHON"])
+                  + "\nobsidian-wiki.env.OBSIDIAN_AGENT_CONFIG = " + json.dumps(mine["env"]["OBSIDIAN_AGENT_CONFIG"]) + "\n")
+        inline = "[mcp_servers]\nobsidian-wiki = " + json.dumps({"command": mine["command"], "args": mine["args"], "env": mine["env"]}).replace(": ", " = ") + "\n"
+        for label, content in (("dotted", dotted), ("inline", inline)):
+            with self.subTest(label):
+                self.config_toml.write_text(REAL_CONFIG.split("[mcp_servers.context7]")[0] + content, encoding="utf-8")
+                self.assertEqual(self.entry(), mine)
+                self.assertEqual(self.codex_status()["state"], "connected")
+                before = snapshot(self.home)
+                refusal = self.refused("codex", "--remove")["refusals"][0]
+                self.assertEqual(refusal["code"], "toml-merge-unsafe")
+                self.assertIn("[mcp_servers.obsidian-wiki]", refusal["message"])
+                self.assertEqual(before, snapshot(self.home))
+        # An update is refused the same way, and prints the table to paste.
+        other = self.root / "other-node"
+        other.write_text("#!/bin/sh\necho v24.1.0\n", encoding="utf-8")
+        other.chmod(0o755)
+        refusal = self.refused("codex", "--node", str(other))["refusals"][0]
+        self.assertEqual(refusal["code"], "toml-merge-unsafe")
+        self.assertIn("[mcp_servers.obsidian-wiki]", refusal["snippet"])
 
 
 class DoctorTests(CodexCase):

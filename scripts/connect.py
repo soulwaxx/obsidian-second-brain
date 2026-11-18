@@ -361,12 +361,61 @@ def toml_block(key_path: tuple[str, ...], name: str, entry: dict[str, Any]) -> s
     return "\n".join([TOML_START, *_toml_table([*key_path, name], entry), TOML_END]) + "\n"
 
 
-def _toml_span(text: str, path: Path | None) -> tuple[int, int]:
-    starts = [m.start() for m in re.finditer(rf"(?m)^{re.escape(TOML_START)}[ \t]*$", text)]
-    ends = [m.end() for m in re.finditer(rf"(?m)^{re.escape(TOML_END)}[ \t]*\n?", text)]
-    if len(starts) != 1 or len(ends) != 1 or ends[0] <= starts[0]:
-        raise Refusal("toml-marker-missing", f"{path or 'config'}: the entry has no single marked {TOML_START} block; remove or edit it by hand", path)
-    return starts[0], ends[0]
+_TOML_MARKER = re.compile(rf"{re.escape(TOML_START)}|{re.escape(TOML_END)}")
+
+
+def _toml_header(line: str) -> tuple[tuple[str, ...], bool] | None:
+    """The key path and array-ness of a `[table]` / `[[array]]` header line, else None."""
+    stripped = line.strip()
+    if not stripped.startswith("["):
+        return None
+    try:
+        node: Any = tomllib.loads(stripped + "\n")
+    except tomllib.TOMLDecodeError:
+        return None
+    parts: list[str] = []
+    while isinstance(node, dict) and len(node) == 1:
+        key, node = next(iter(node.items()))
+        parts.append(key)
+    return tuple(parts), stripped.startswith("[[")
+
+
+def _toml_regions(text: str, table: tuple[str, ...]) -> list[tuple[int, int, bool]]:
+    """Character ranges of our entry: its table header and own subtables, plus our marker comment lines.
+
+    Another tool (Codex rewrites config.toml with toml_edit) may move, reorder or detach the markers, so the
+    entry is located by its `[table]` header. A group runs to the next header that is not ours (or EOF), minus
+    trailing blank and comment lines, which belong to what follows. Only exact marker lines are taken. Adjacent
+    ranges are merged; the flag says whether a range holds the table itself.
+    """
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    marked = [i for i, line in enumerate(lines) if _TOML_MARKER.fullmatch(line.rstrip("\r\n").rstrip(" \t"))]
+    spans: list[tuple[int, int, bool]] = []  # inclusive line numbers
+    first: int | None = None
+    for i, line in enumerate(lines + [""]):
+        header = _toml_header(line) if i < len(lines) else None
+        ours = header is not None and not header[1] and header[0][:len(table)] == table
+        if first is not None and (i == len(lines) or (header is not None and not ours)):
+            last = i - 1
+            while last > first and (not lines[last].strip() or lines[last].lstrip().startswith("#")):
+                last -= 1
+            spans.append((first, last, True))
+            first = None
+        if ours and first is None:
+            first = i
+    spans += [(i, i, False) for i in marked]
+    spans.sort()
+    merged: list[list[Any]] = []
+    for lo, hi, table_flag in spans:
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], hi)
+            merged[-1][2] = merged[-1][2] or table_flag
+        else:
+            merged.append([lo, hi, table_flag])
+    return [(offsets[lo], offsets[hi + 1], flag) for lo, hi, flag in merged]
 
 
 def cut_block(text: str, start: int, end: int) -> str:
@@ -377,6 +426,29 @@ def cut_block(text: str, start: int, end: int) -> str:
     if tail.startswith("\n"):
         tail = tail[1:]
     return head + tail
+
+
+def toml_cut(text: str, table: tuple[str, ...], insert: str | None = None) -> str | None:
+    """`text` without our entry (markers included), or with `insert` where the entry's table was. None: not found.
+
+    Removing drops one blank line next to the cut (the one an append adds), so an untouched append is undone exactly.
+    """
+    regions = _toml_regions(text, table)
+    if not any(flag for _, _, flag in regions):
+        return None
+    place = next(index for index, (_, _, flag) in enumerate(regions) if flag)
+    for index in range(len(regions) - 1, -1, -1):
+        start, end, _ = regions[index]
+        head, tail = text[:start], text[end:]
+        if insert and index == place:
+            text = head + insert + tail
+        elif head.endswith("\n\n"):
+            text = head[:-1] + tail
+        elif not head and tail.startswith("\n"):
+            text = tail[1:]
+        else:
+            text = head + tail
+    return text
 
 
 def _prune(doc: dict[str, Any], key_path: tuple[str, ...]) -> dict[str, Any]:
@@ -409,16 +481,15 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
         if owned is None or entry_hash(current) != owned:
             raise Refusal("entry-modified", f"{path or 'config'}: entry {name!r} was changed after connect; remove it by hand", path)
         if fmt == "toml":
-            start, end = _toml_span(text or "", path)
-            new_text = cut_block(text or "", start, end)
+            new_text = toml_cut(text or "", (*key_path, name))
             expected = copy.deepcopy(doc)
             drop_entry(expected, key_path, name, False)
             try:
-                remaining = tomllib.loads(new_text)
+                remaining = None if new_text is None else tomllib.loads(new_text)
             except tomllib.TOMLDecodeError:
                 remaining = None
             if remaining is None or _prune(remaining, key_path) != _prune(expected, key_path):
-                raise Refusal("toml-merge-unsafe", f"{path or 'config'}: removal would change other settings; remove the entry by hand", path)
+                raise Refusal("toml-merge-unsafe", f"{path or 'config'}: the entry is not a removable [{'.'.join((*key_path, name))}] table (dotted keys, an inline table or a table that another section interrupts), or removing it would change other settings; remove it by hand", path)
             return None if created and not new_text.strip() else new_text
         drop_entry(doc, key_path, name, created)
         if created and not doc:
@@ -435,8 +506,9 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
         if current is None:
             new_text = body + ("" if not body or body.endswith("\n") else "\n") + ("\n" if body.strip() else "") + block
         else:
-            start, end = _toml_span(body, path)
-            new_text = body[:start] + block + body[end:]
+            new_text = toml_cut(body, (*key_path, name), block)
+            if new_text is None:
+                raise Refusal("toml-merge-unsafe", f"{path or 'config'}: the entry is not a replaceable [{'.'.join((*key_path, name))}] table; edit it by hand", path)
         expected = copy.deepcopy(doc)
         set_entry(expected, key_path, name, copy.deepcopy(entry), path)
         try:
@@ -875,6 +947,7 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
             for rel, digest in item["files"].items():
                 known.setdefault(str(Path(item["root"]) / rel), set()).add(digest)
     customized: list[str] = []
+    foreign: list[str] = []  # differing copies that connect never wrote (no manifest record)
     files: dict[str, str] = {}
     adopted: list[str] = []
 
@@ -916,7 +989,7 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
             elif ctx.force:
                 planner.set(path, "skill", adapter.name, data, backup=True, root=str(root))
             else:
-                customized.append(str(path))
+                (customized if str(path) in known else foreign).append(str(path))
         for rel, digest in recorded.items():
             if rel not in ctx.sources:
                 path = root / rel
@@ -927,9 +1000,16 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
                     planner.set(path, "skill", adapter.name, None, root=str(root))
                 elif current is not None:
                     ctx.notes.append(f"{adapter.name}: {path} is no longer shipped but was customized; left in place")
-    if customized:
-        shown = ", ".join(customized[:5]) + (f" and {len(customized) - 5} more" if len(customized) > 5 else "")
-        raise Refusal("skill-customized", f"customized skill copies would be overwritten ({shown}); review them, then rerun with --force to back them up and replace them")
+    if customized or foreign:
+        def show(paths: list[str]) -> str:
+            return ", ".join(paths[:5]) + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
+
+        parts = []
+        if customized:
+            parts.append(f"customized skill copies would be overwritten ({show(customized)})")
+        if foreign:
+            parts.append(f"{show(foreign)}: exists and was not installed by connect, so it would be overwritten")
+        raise Refusal("skill-customized", "; ".join(parts) + "; review them, then rerun with --force to back them up and replace them")
     return None if ctx.remove else {"root": str(root), "files": files, **({"adopted": sorted(adopted)} if adopted else {})}
 
 
