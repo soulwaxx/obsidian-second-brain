@@ -225,7 +225,14 @@ use the same four read-only tools through `obsidian-second-brain mcp`, a stdio
 server with no extra dependency; see [the MCP server guide](docs/mcp.md). The
 Claude Code plugin declares that server itself (read-only profile, launched from
 the plugin's own root with no `npx` or `PATH` lookup), so Claude lists the four
-tools with no extra setup; Pi and omp keep their native tools.
+tools with no extra setup; Pi and omp keep their native tools. For agents
+without lifecycle hooks, `obsidian-second-brain mcp --tools all` adds three
+reviewed write tools, `wiki_batch_inspect`, `wiki_batch_apply`, and
+`wiki_batch_recover`. They wrap the existing plan-hash batch flow: the agent
+shows you the inspect summary, you approve, and only then does apply publish
+the pages (never `index.md` or `log.md`, never a Git write). Interrupted
+applies are recovered with the plan hash. See
+[the MCP guide](docs/mcp.md#reviewed-batch-writes---tools-all).
 
 When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
 for read-only structured search and doctor commands from any folder:

@@ -128,6 +128,14 @@ try {
   } finally {
     assert.equal((await mcpClient.close()).code, 0, "installed MCP server exits on stdin EOF");
   }
+  const allClient = startMcp({ launcher: path.join(installed, "scripts/obsidian-second-brain.mjs"), args: ["mcp", "--tools", "all"], cwd: work, env });
+  try {
+    await allClient.initialize();
+    assert.deepEqual((await allClient.request("tools/list")).result.tools.map((tool) => tool.name),
+      ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor", "wiki_batch_inspect", "wiki_batch_apply", "wiki_batch_recover"], "the installed package ships the all profile");
+  } finally {
+    assert.equal((await allClient.close()).code, 0);
+  }
   // Installed readiness discovery from a cwd outside both package and vault,
   // with space/Unicode paths: suggestions are anchored at the installed root.
   const installedRoot = fs.realpathSync(installed);

@@ -16,6 +16,11 @@ const childArgs = native ? ["-B", target, ...args.slice(1)] : ["-B", target, ...
 const MAX_STDOUT = 256 * 1024;
 const MAX_STDERR = 8 * 1024;
 const MAX_RESULT = 64 * 1024;
+// Batch operations read their JSON parameters from stdin (never argv). Once an apply has saved its journal the
+// bridge prints this marker on stderr and the 30 s deadline stops, so the publication is not killed mid-way;
+// cancellation or EOF still terminates it, and `batch-recover` resumes from the journal.
+const STDIN_OPERATIONS = new Set(["batch-inspect", "batch-apply", "batch-recover"]);
+const JOURNAL_PERSISTED = "osb-journal-persisted";
 const requestedDeadline = Number(process.env.OSB_PI_TOOL_DEADLINE_MS);
 const DEADLINE = Number.isFinite(requestedDeadline) && requestedDeadline > 0 ? Math.min(requestedDeadline, 30_000) : 30_000;
 
@@ -66,7 +71,7 @@ if (!native && !mcp) {
   process.on("SIGINT", abort);
   process.on("SIGTERM", abort);
   try {
-    child = spawn(python, childArgs, { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+    child = spawn(python, childArgs, { stdio: [STDIN_OPERATIONS.has(args[1]) ? "inherit" : "ignore", "pipe", "pipe"], detached: process.platform !== "win32", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
   } catch (error) {
     finish(failure("process-start", "Unable to start the Python tool process", null));
   }
@@ -75,7 +80,19 @@ if (!native && !mcp) {
       if (stdout.length + chunk.length > MAX_STDOUT) { overflow = true; abort(); return; }
       stdout = Buffer.concat([stdout, chunk]);
     });
-    child.stderr.on("data", (chunk) => { if (stderr.length < MAX_STDERR) stderr = Buffer.concat([stderr, chunk.subarray(0, MAX_STDERR - stderr.length)]); });
+    let markerTail = "";
+    let persisted = false;
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < MAX_STDERR) stderr = Buffer.concat([stderr, chunk.subarray(0, MAX_STDERR - stderr.length)]);
+      if (STDIN_OPERATIONS.has(args[1]) && !persisted) {
+        markerTail = (markerTail + chunk.toString("latin1")).slice(-4096);
+        if (markerTail.includes(JOURNAL_PERSISTED)) {
+          persisted = true;
+          clearTimeout(timer);
+          process.stderr.write(`${JOURNAL_PERSISTED}\n`); // lets the MCP server's hung-launcher watchdog stand down too
+        }
+      }
+    });
     child.on("error", () => finish(failure("process-start", "Unable to start the Python tool process", null)));
     child.on("close", (code, signal) => {
       if (settled) return;
@@ -118,19 +135,32 @@ const MCP_MAX_MESSAGE = 64 * 1024;
 const MCP_LOCATOR_DEADLINE = 3000;
 const MCP_CONFIG_HELPER = fileURLToPath(new URL("./config_contract.py", import.meta.url)); // the helper extensions/obsidian.ts uses
 // Per-profile opening and write policy. The `read` tools cannot change the vault, so it does not forbid the
-// client's own file tools: Claude's only wiki write path is its hook-guarded file tools. #63 adds the `all` entry here.
+// client's own file tools: Claude's only wiki write path is its hook-guarded file tools. The `all` profile is for
+// agents without hooks (decision 5 of tracker #73): its batch tools are their only write path, and these
+// instructions (not a guard) tell the agent to keep to it and to wait for the user's approval.
 const MCP_PROFILE_INSTRUCTIONS = {
   read: "Read-only tools for the user's Obsidian wiki (an OKF v0.2 knowledge base): wiki_search, wiki_outline, wiki_read and wiki_doctor. "
     + "These tools never change the vault; wiki changes follow the client's own wiki skill and its reviewed write path. ",
+  all: "Tools for the user's Obsidian wiki (an OKF v0.2 knowledge base): read tools wiki_search, wiki_outline, wiki_read and wiki_doctor, "
+    + "and reviewed write tools wiki_batch_inspect, wiki_batch_apply and wiki_batch_recover. "
+    + "The batch tools are the only way to change the wiki: never edit, create, move or delete vault files directly with file or shell tools, and never write index.md or log.md (they are generated). "
+    + "To change pages: (1) call wiki_batch_inspect with the complete new content of each page (expectedHash null for a new page, otherwise the current sourceHash from wiki_outline); "
+    + "(2) show the user its review summary (paths, operation, sizes, diff excerpts) and planHash; (3) wait for the user's explicit approval; "
+    + "(4) only then call wiki_batch_apply with the identical operations and that planHash. Never call wiki_batch_apply without that approval, even when the client would auto-approve the call. "
+    + "If an apply fails, times out or is cancelled, call wiki_batch_recover with the same planHash before retrying, and check wiki_doctor for unfinished batches. "
+    + "Never put credentials or tokens in page content; the server refuses new likely secrets. ",
 };
 const mcpInstructions = (profileName, locator) => MCP_PROFILE_INSTRUCTIONS[profileName]
   + (locator ?? "The server selects the vault from its configuration; call wiki_doctor to see which vault and readiness state apply. ")
   + "Search results, empty results and fallbacks are leads, not verified evidence: confirm with wiki_outline and wiki_read before relying on a page.";
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
-const TOOL_OUTPUT = {
+// Annotations are hints that clients may ignore (auto-approve modes), so the instructions above also require approval.
+const APPLY_HINTS = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+const RECOVER_HINTS = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
+const toolOutput = (operations) => ({
   type: "object",
   properties: {
-    operation: { type: "string", enum: ["search", "outline", "read", "doctor"] },
+    operation: { type: "string", enum: operations },
     ok: { type: "boolean" },
     payload: { type: "object", additionalProperties: true },
     code: { type: "string" },
@@ -139,13 +169,14 @@ const TOOL_OUTPUT = {
   },
   required: ["operation", "ok"],
   additionalProperties: false,
-};
+});
 const vaultInput = { type: "string", minLength: 1, maxLength: 4096 };
 const hashPattern = "^[0-9a-f]{64}$";
 // Tool registry. Names, titles, descriptions and schemas mirror the Pi registrations in
 // extensions/obsidian.ts (tests/mcp-server.mjs compares them). `operation` is the
-// `--pi-tool` operation a call runs. Profiles select tools: #63 adds its write tools to
-// this registry and an `all` profile; until then only `read` exists. Each entry carries its own annotations.
+// `--pi-tool` operation a call runs. Profiles select tools. Each entry carries its own annotations; `stdin: true`
+// passes the arguments to the bridge on stdin (never argv), and `resumable: true` marks the calls whose publication
+// is not killed by the 30 s deadline once the batch journal is saved (the launcher enforces the deadline before that).
 const READ_TOOLS = [
   { name: "wiki_search", title: "Wiki search", operation: "search",
     annotations: READ_ONLY,
@@ -178,19 +209,39 @@ const READ_TOOLS = [
     description: "Inspect selected integration configuration, vault, retrieval freshness, lifecycle status, capability readiness, and suggested next steps without writing, repairing, indexing, settling, or executing any suggestion.",
     inputSchema: { type: "object", additionalProperties: false, properties: { vault: vaultInput } } },
 ];
-const PROFILES = { read: READ_TOOLS };
+// Batch write tools (`all` profile only): the existing reviewed wiki-page batch flow, nothing else. They are never
+// Pi tools. Limits mirror scripts/pi_wiki_tools.py: 20 pages, 48 KiB of serialized operations.
+const batchOperations = { type: "array", minItems: 1, maxItems: 20, description: "Pages to write, at most 20 and 48 KiB serialized in total. Each entry is the complete new content of one Markdown page under wiki/.",
+  items: { type: "object", additionalProperties: false, required: ["path", "expectedHash", "content"], properties: {
+    path: { type: "string", minLength: 6, maxLength: 1024, description: "Vault-relative POSIX path of a Markdown page under wiki/, for example wiki/topic/page.md. index.md, log.md, _plan.md, hidden paths and symlinks are refused." },
+    expectedHash: { type: ["string", "null"], pattern: hashPattern, description: "null to create a page that does not exist; otherwise the page's current sourceHash from wiki_outline (the apply is refused if the page changed)." },
+    content: { type: "string", maxLength: 49152, description: "Complete page text including YAML frontmatter with a type field." } } } };
+const planHashInput = { type: "string", pattern: hashPattern, description: "planHash returned by wiki_batch_inspect for exactly these operations." };
+const BATCH_TOOLS = [
+  { name: "wiki_batch_inspect", title: "Wiki batch inspect", operation: "batch-inspect", stdin: true, annotations: READ_ONLY,
+    description: "Review a proposed wiki page change without writing anything. Validates paths, OKF frontmatter, likely secrets and current page hashes, then returns a bounded review summary (per page: operation, byte sizes, hashes, diff excerpt, validation) and the planHash. Show the summary to the user and wait for explicit approval before wiki_batch_apply.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["operations"], properties: { operations: batchOperations } } },
+  { name: "wiki_batch_apply", title: "Wiki batch apply", operation: "batch-apply", stdin: true, resumable: true, annotations: APPLY_HINTS,
+    description: "Write the pages the user approved after wiki_batch_inspect: resend the identical operations with that planHash. Refused if the operations, any target page or the selected config changed since inspection. Then updates navigation, the lifecycle log and the retrieval index. Never call without the user's explicit approval of the inspect summary. If the call fails, times out or is cancelled, call wiki_batch_recover with the same planHash before retrying.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["operations", "planHash"], properties: { operations: batchOperations, planHash: planHashInput } } },
+  { name: "wiki_batch_recover", title: "Wiki batch recover", operation: "batch-recover", stdin: true, resumable: true, annotations: RECOVER_HINTS,
+    description: "Resume an interrupted wiki_batch_apply from its saved journal, by planHash (or batchId of an unfinished batch from wiki_doctor batches that is not cliOnly). Completes only the plan the user approved and refuses, preserving current bytes, if a target page changed since. Repeating it after completion is a no-op.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { planHash: planHashInput,
+      batchId: { type: "string", pattern: "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", description: "Alternative to planHash: an unfinished batchId listed by wiki_doctor whose entry is not cliOnly." } } } },
+];
+const PROFILES = { read: READ_TOOLS, all: [...READ_TOOLS, ...BATCH_TOOLS] };
 
 function serveMcp() {
   const flags = args.slice(1);
-  const usage = (message) => { console.error(`obsidian-second-brain mcp: ${message}\nUsage: obsidian-second-brain mcp [--tools read]`); process.exitCode = 2; };
+  const usage = (message) => { console.error(`obsidian-second-brain mcp: ${message}\nUsage: obsidian-second-brain mcp [--tools read|all]`); process.exitCode = 2; };
   let profileName = "read";
   if (flags.length === 2 && flags[0] === "--tools") profileName = flags[1];
   else if (flags.length === 1 && flags[0].startsWith("--tools=")) profileName = flags[0].slice("--tools=".length);
   else if (flags.length > 0) return usage("unsupported arguments");
-  if (profileName === "all") return usage("--tools all is not available yet: the batch write tools have not shipped (#63); use --tools read");
-  if (!Object.hasOwn(PROFILES, profileName)) return usage(`unknown --tools profile ${JSON.stringify(profileName)}; use read`);
+  if (!Object.hasOwn(PROFILES, profileName)) return usage(`unknown --tools profile ${JSON.stringify(profileName)}; use read or all`);
   const tools = new Map(PROFILES[profileName].map((tool) => [tool.name, tool]));
-  const toolList = [...tools.values()].map(({ operation, ...tool }) => ({ ...tool, outputSchema: TOOL_OUTPUT }));
+  const outputSchema = toolOutput([...new Set([...tools.values()].map((tool) => tool.operation))]);
+  const toolList = [...tools.values()].map(({ operation, stdin, resumable, ...tool }) => ({ ...tool, outputSchema }));
   const serverInfo = { name: "obsidian-second-brain", version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version };
   const launcher = fileURLToPath(import.meta.url);
   const calls = new Map(); // request id -> { child, cancelled }
@@ -264,14 +315,28 @@ function serveMcp() {
       calls.delete(id);
       if (!call.cancelled) send({ id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: result.ok !== true } });
     };
-    // The child launcher enforces the 30 s deadline itself; this only covers a hung launcher.
+    // The child launcher enforces the 30 s deadline itself; this only covers a hung launcher. A resumable call's
+    // launcher lifts the deadline once the batch journal is saved (and, for recover, the writer lock is held) and
+    // forwards its marker on stderr; the watchdog stands down then. Cancellation or EOF still stop the call.
     const watchdog = setTimeout(() => { timedOut = true; if (call.child) terminateCall(call); }, DEADLINE + 1500);
     try {
-      call.child = spawn(process.execPath, [launcher, "--pi-tool", tool.operation, JSON.stringify(toolArgs)], { stdio: ["ignore", "pipe", "ignore"], env: process.env });
+      call.child = spawn(process.execPath, [launcher, "--pi-tool", tool.operation, ...(tool.stdin ? [] : [JSON.stringify(toolArgs)])],
+        { stdio: [tool.stdin ? "pipe" : "ignore", "pipe", tool.resumable ? "pipe" : "ignore"], env: process.env });
     } catch {
       return settle(failed("process-start", "Unable to start the packaged wiki tool"));
     }
     calls.set(id, call);
+    if (tool.stdin) { // batch parameters travel on stdin, not argv (argv is limited to 128 KiB on Linux)
+      call.child.stdin.on("error", () => { /* the launcher exited first; its result is reported on close */ });
+      call.child.stdin.end(JSON.stringify(toolArgs));
+    }
+    if (tool.resumable) {
+      let markerTail = "";
+      call.child.stderr.on("data", (chunk) => {
+        markerTail = (markerTail + chunk.toString("latin1")).slice(-256);
+        if (markerTail.includes(JOURNAL_PERSISTED)) clearTimeout(watchdog);
+      });
+    }
     call.child.stdout.on("data", (chunk) => {
       if (overflow) return;
       if (output.length + chunk.length > MAX_RESULT + 1) { overflow = true; terminateCall(call); return; }

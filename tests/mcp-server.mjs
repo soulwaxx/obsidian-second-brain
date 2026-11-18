@@ -325,9 +325,9 @@ print(json.dumps({"algorithm": module.ALGORITHM, "inputScheme": module.INPUT_SCH
   assert.equal((await relative.callTool("wiki_doctor", {})).result.structuredContent.payload.vault, fs.realpathSync(path.join(relativeCwd, "rel-vault")));
   await relative.close();
 
-  // Profiles: read is the default; all is refused until #63; nothing is written to stdout on refusal.
-  for (const [flags, message] of [[["--tools", "all"], /--tools all is not available yet/], [["--tools=all"], /--tools all is not available yet/],
-    [["--tools", "write"], /unknown --tools profile/], [["--bogus"], /unsupported arguments/], [["--tools"], /unsupported arguments/]]) {
+  // Profiles: read is the default; `all` adds the batch write tools (tests/mcp-batch.mjs); nothing goes to stdout on refusal.
+  for (const [flags, message] of [[["--tools", "write"], /unknown --tools profile/], [["--tools=bogus"], /unknown --tools profile/],
+    [["--bogus"], /unsupported arguments/], [["--tools"], /unsupported arguments/]]) {
     const refused = spawnSync(process.execPath, [launcher, "mcp", ...flags], { cwd, encoding: "utf8", timeout: 5000, env: { ...process.env, ...baseEnv } });
     assert.equal(refused.status, 2, flags.join(" "));
     assert.equal(refused.stdout, "");
@@ -337,6 +337,11 @@ print(json.dumps({"algorithm": module.ALGORITHM, "inputScheme": module.INPUT_SCH
     const explicit = open({ args: ["mcp", ...flags] });
     assert.deepEqual((await explicit.request("tools/list")).result.tools.map((tool) => tool.name), READ_TOOLS);
     await explicit.close();
+  }
+  for (const flags of [["--tools", "all"], ["--tools=all"]]) {
+    const everything = open({ args: ["mcp", ...flags] });
+    assert.deepEqual((await everything.request("tools/list")).result.tools.map((tool) => tool.name), [...READ_TOOLS, "wiki_batch_inspect", "wiki_batch_apply", "wiki_batch_recover"]);
+    await everything.close();
   }
 
   // Deadline overrun, cancellation and EOF with an unresponsive Python process.
@@ -415,7 +420,7 @@ print(json.dumps({"algorithm": module.ALGORITHM, "inputScheme": module.INPUT_SCH
   while (commandsMentioning(marker).length > 0 && Date.now() < leftovers) await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(commandsMentioning(marker), [], "no launcher or Python child remains after EOF");
   assert.ok(!eof.messages.some((message) => message.id === 60), "no response is written after EOF");
-  console.log("MCP server PASS: handshake, version negotiation, four read tools with --pi-tool parity, protocol errors, read-only profile, deadline, cancellation and EOF cleanup.");
+  console.log("MCP server PASS: handshake, version negotiation, four read tools with --pi-tool parity, protocol errors, read-only profile, profile selection, deadline, cancellation and EOF cleanup.");
 } finally {
   for (const client of clients) { try { client.child.kill("SIGKILL"); } catch { /* already exited */ } }
   for (const group of processGroups) {

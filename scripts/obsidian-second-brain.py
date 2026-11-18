@@ -121,6 +121,15 @@ def doctor(config_file: Path, config: dict[str, Any] | None, config_error: str |
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         lifecycle.update({"state": "unavailable", "error": str(exc)})
     checks["lifecycle"] = lifecycle
+    # Interrupted reviewed batches stay recoverable (`batch-recover`, or MCP wiki_batch_recover by plan hash).
+    checks["batches"] = {"unfinished": [], "unfinishedCount": 0, "unreadable": 0}
+    if checks["vaultExists"]:
+        try:
+            if any((vault / part).is_symlink() for part in (".vault-meta", ".vault-meta/lifecycle", ".vault-meta/lifecycle/batches")):
+                raise ValueError("batch journal parent is symlinked")
+            checks["batches"] = load_source("obsidian_cli_batch", str(Path(__file__).with_name("wiki_batch.py"))).batch_status(vault)
+        except (ImportError, OSError, ValueError, TypeError, RuntimeError) as exc:
+            checks["batches"]["error"] = str(exc)
     index = vault / DEFAULT_INDEX
     index_valid = False
     reason = "index missing"

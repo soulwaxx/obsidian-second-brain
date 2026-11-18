@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Read-only bridge for Pi's four native wiki locator tools."""
+"""Bounded bridge for Pi's four native read-only wiki tools and the MCP server's three reviewed batch tools.
+
+The batch operations (`batch-inspect`, `batch-apply`, `batch-recover`) are never Pi tools: they take their
+parameters as JSON on stdin (not argv), are wiki-page authority only, and reuse wiki_batch.py unchanged.
+"""
 from __future__ import annotations
 
 import json
 import os
 import re
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -18,8 +23,19 @@ except Exception as exc:
     cli = None
     CLI_LOAD_ERROR = getattr(exc, "name", None) or "required package module"
 
-OPERATIONS = {"search", "outline", "read", "doctor"}
+BATCH_OPERATIONS = {"batch-inspect", "batch-apply", "batch-recover"}
+OPERATIONS = {"search", "outline", "read", "doctor"} | BATCH_OPERATIONS
+# Transport limits for batch parameters. The serialized `operations` cap sits below the 64 KiB stdin/MCP-message limit
+# (JSON framing and escaping differences) and, with the bounded review summary, below the launcher's 64 KiB result cap.
+MAX_BATCH_BYTES = 48 * 1024
+MAX_BATCH_STDIN = 64 * 1024
+MAX_BATCH_OPERATIONS = 20
+MAX_REVIEW_BYTES = 56 * 1024
+JOURNAL_PERSISTED = "osb-journal-persisted"  # stderr marker: the launcher stops its 30 s deadline once an apply is recoverable
 PARAMETERS = {
+    "batch-inspect": {"operations"},
+    "batch-apply": {"operations", "planHash"},
+    "batch-recover": {"planHash", "batchId"},
     "search": {"query", "vault", "limit", "hybrid", "ollamaUrl", "ollamaModel", "timeout"},
     "outline": {"page", "vault", "expectedHash", "limit", "offset"},
     "read": {"page", "vault", "expectedHash", "section", "start", "end", "view", "maxChars", "cursor"},
@@ -27,10 +43,37 @@ PARAMETERS = {
 }
 
 
+def validate_batch(operation: str, params: dict[str, Any]) -> None:
+    if operation != "batch-recover":
+        operations = params.get("operations")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= MAX_BATCH_OPERATIONS:
+            raise ValueError(f"operations must be a list of 1–{MAX_BATCH_OPERATIONS} entries")
+        for item in operations:
+            if (not isinstance(item, dict) or set(item) != {"path", "expectedHash", "content"}
+                    or not isinstance(item["path"], str) or not 1 <= len(item["path"]) <= 1024
+                    or not isinstance(item["content"], str)
+                    or not (item["expectedHash"] is None or (isinstance(item["expectedHash"], str) and re.fullmatch(r"[0-9a-f]{64}", item["expectedHash"])))):
+                raise ValueError("each operation must contain exactly path, expectedHash (64 lowercase hex or null) and content")
+        if len(json.dumps(operations, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_BATCH_BYTES:
+            raise ValueError(f"operations exceed the {MAX_BATCH_BYTES // 1024} KiB bundle limit; split the change into several batches")
+    plan_hash = params.get("planHash")
+    if (operation == "batch-apply" or (operation == "batch-recover" and "batchId" not in params)) and plan_hash is None:
+        raise ValueError("planHash is required")
+    if plan_hash is not None and (not isinstance(plan_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", plan_hash)):
+        raise ValueError("planHash must be 64 lowercase hexadecimal characters")
+    if operation == "batch-recover":
+        if ("planHash" in params) == ("batchId" in params):
+            raise ValueError("provide exactly one of planHash or batchId")
+        if "batchId" in params and (not isinstance(params["batchId"], str) or not re.fullmatch(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", params["batchId"])):
+            raise ValueError("batchId must be a lowercase UUID")
+
+
 def validate(operation: str, params: dict[str, Any]) -> None:
     extra = params.keys() - PARAMETERS[operation]
     if extra:
         raise ValueError("unsupported tool parameter")
+    if operation in BATCH_OPERATIONS:
+        return validate_batch(operation, params)
     if "vault" in params and params["vault"] is not None and (not isinstance(params["vault"], str) or len(params["vault"]) > 4096 or not os.path.isabs(params["vault"])):
         raise ValueError("vault must be an absolute path")
     if operation in {"outline", "read"}:
@@ -146,20 +189,73 @@ def run(operation: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"operation": operation, "ok": True, "payload": payload}
 
 
+def fit_review(review: dict[str, Any]) -> dict[str, Any]:
+    """Drop diff excerpts, last path first, until the summary fits the result budget (hashes and sizes always stay)."""
+    for item in reversed(review["operations"]):
+        if len(json.dumps(review, ensure_ascii=False).encode("utf-8")) <= MAX_REVIEW_BYTES:
+            break
+        item.update({"diff": "", "diffTruncated": True})
+    return review
+
+
+def run_batch(operation: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Reviewed batch operations on the configured vault only (no `vault` input), through wiki_batch.py."""
+    config_file = cli.config_path(None)
+    config, config_error = cli.load_config(config_file)
+    if config_error:
+        return fail(operation, "invalid-config", "Selected integration config is invalid", {"config": {"path": str(config_file), "error": config_error}})
+    vault = cli.resolve_vault(None, config)
+    if vault is None:
+        return fail(operation, "no-vault", "No vault selected; select one in configuration or OBSIDIAN_VAULT_PATH")
+    batch = load_source("pi_wiki_batch", str(Path(__file__).with_name("wiki_batch.py")))
+    persisted = False
+
+    def mark_persisted() -> None:
+        nonlocal persisted
+        persisted = True
+        print(JOURNAL_PERSISTED, file=sys.stderr, flush=True)
+
+    plan_hash = params.get("planHash")
+    try:
+        if operation == "batch-recover":
+            batch_id = params.get("batchId") or batch.batch_for_plan(vault, plan_hash)
+            authority = batch._load_journal(vault, batch_id)["authority"]
+            if authority != "wiki-page":
+                return fail(operation, "authority-cli-only", f"Batch {batch_id} has {authority} authority; recover it with the CLI batch-recover (batch-rollback is CLI-only too)")
+            payload = batch.recover(vault, batch_id, config_file, on_locked=mark_persisted)
+        else:
+            bundle = {"version": 1, "operations": params["operations"]}
+            if operation == "batch-inspect":
+                payload = fit_review(batch.review(vault, bundle, config_file))
+            else:
+                payload = batch.apply(vault, bundle, config_file, plan_hash, "wiki-page", on_persisted=mark_persisted)
+    except (batch.BatchError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        if operation == "batch-apply" and persisted:
+            return fail(operation, "batch-interrupted", f"Apply stopped after its journal was saved; call wiki_batch_recover with this planHash before retrying. Cause: {exc}", {"planHash": plan_hash})
+        return fail(operation, "batch-refused", str(exc))
+    return {"operation": operation, "ok": True, "payload": payload}
+
+
 def main() -> int:
     requested = sys.argv[1] if len(sys.argv) > 1 else ""
     operation = requested if requested in OPERATIONS else "doctor"
     try:
-        if requested not in OPERATIONS or len(sys.argv) != 3:
-            result = fail(operation, "invalid-request", "Expected a supported operation and one JSON parameter object")
+        if requested not in OPERATIONS or len(sys.argv) != (2 if requested in BATCH_OPERATIONS else 3):
+            result = fail(operation, "invalid-request", "Expected a supported operation and one JSON parameter object (batch operations read it from stdin)")
         elif CLI_LOAD_ERROR:
             result = fail(operation, "dependency-missing", "A required Python package module could not be loaded")
         else:
-            params = json.loads(sys.argv[2])
+            if operation in BATCH_OPERATIONS:
+                raw = sys.stdin.buffer.read(MAX_BATCH_STDIN + 1)
+                if len(raw) > MAX_BATCH_STDIN:
+                    raise ValueError("batch parameters exceed the 64 KiB transport limit")
+                params = json.loads(raw)
+            else:
+                params = json.loads(sys.argv[2])
             if not isinstance(params, dict):
                 raise ValueError("tool parameters must be an object")
             validate(operation, params)
-            result = run(operation, params)
+            result = run_batch(operation, params) if operation in BATCH_OPERATIONS else run(operation, params)
     except ModuleNotFoundError as exc:
         missing = "markdown-it-py is missing; install the shipped requirements.txt" if exc.name in {"markdown_it", "mdurl"} else "A required Python dependency is missing"
         result = fail(operation, "dependency-missing", missing)
