@@ -5,6 +5,7 @@ Nothing here touches the real home directory, a real agent, Git or the network.
 """
 import contextlib
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -1091,7 +1092,7 @@ class CliProcessTests(ConnectCase):
         self.assertEqual(result.stdout, expected)
         self.assertTrue(os.path.isabs(expected))
 
-    def test_packaged_launcher_lists_no_agents_until_an_adapter_is_registered(self):
+    def test_packaged_launcher_lists_exactly_the_registered_adapters(self):
         node = shutil.which("node")
         if node is None:
             self.skipTest("node is unavailable")
@@ -1100,7 +1101,9 @@ class CliProcessTests(ConnectCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         listed = json.loads(result.stdout)
         self.assertEqual(listed["mode"], "list")
-        self.assertEqual(listed["agents"], [])
+        registered = [importlib.import_module(module).ADAPTER.name for module in connect_adapters.REGISTRY]
+        self.assertEqual([item["name"] for item in listed["agents"]], registered)
+        self.assertTrue(all(item["state"] == "absent" for item in listed["agents"]), listed["agents"])
         self.assertEqual(sorted(listed["genericSnippets"]), ["all", "read"])
         self.assertFalse(self.manifest.exists())
 

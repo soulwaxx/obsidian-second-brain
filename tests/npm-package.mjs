@@ -116,7 +116,12 @@ try {
   fs.mkdirSync(connectHome);
   const connectList = JSON.parse(run(cli, ["connect", "--json"], { cwd: work, encoding: "utf8", env: { ...env, HOME: connectHome } }));
   assert.equal(connectList.mode, "list");
-  assert.deepEqual(connectList.agents, []);
+  // Exactly the adapters the installed registry lists, in its order, all absent in an empty HOME.
+  const registered = JSON.parse(run(process.env.PYTHON || "python3", ["-B", "-c",
+    "import importlib, json, connect_adapters; print(json.dumps([importlib.import_module(m).ADAPTER.name for m in connect_adapters.REGISTRY]))"],
+    { cwd: path.join(installed, "scripts"), encoding: "utf8" }));
+  assert.deepEqual(connectList.agents.map((agent) => agent.name), registered);
+  assert.ok(connectList.agents.every((agent) => agent.state === "absent"), "an empty HOME has no connected agents");
   assert.deepEqual(connectList.genericSnippets.read.args, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "mcp", "--tools", "read"]);
   assert.deepEqual(connectList.genericSnippets.all.args.slice(-2), ["--tools", "all"]);
   assert.deepEqual(fs.readdirSync(connectHome), [], "connect list must not write");
