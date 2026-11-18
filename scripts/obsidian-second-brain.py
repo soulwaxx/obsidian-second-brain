@@ -480,9 +480,14 @@ def connect_state(config_file: Path) -> dict[str, Any]:
     state = load_source("obsidian_cli_connect", str(Path(__file__).with_name("connect.py"))).status(config_file)
     cli = str(PACKAGE_ROOT / "scripts/obsidian-second-brain.py")
     env = {"OBSIDIAN_AGENT_CONFIG": str(config_file)}
+    broken = {"interpreter-missing", "interpreter-unsuitable"}
     state["nextActions"] = [
         _action("reconnect-agent", f"Preview the reviewed reconnect for {name}; it repairs the stale wiring only after you apply its plan hash.",
-                "doctor-and-stale-connections", [sys.executable, cli, "connect", name], doc=AGENTS_DOC, env=env, review=True)
+                "doctor-and-stale-connections",
+                [sys.executable, cli, "connect", name]
+                # Keep the recorded interpreter while it still works, so the repair does not silently switch environments.
+                + (["--python", agent["interpreter"]] if not broken & {reason["code"] for reason in agent["reasons"]} else []),
+                doc=AGENTS_DOC, env=env, review=True)
         for name, agent in state["agents"].items() if agent["state"] == "stale"]
     return state
 

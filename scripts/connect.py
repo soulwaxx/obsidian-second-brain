@@ -6,7 +6,7 @@ the exact file changes with a plan hash; `--apply --confirm <planHash>` applies 
 and `--remove` previews/applies the undo the same way. Per agent it merges one MCP
 entry into the agent's user-level config, upserts a marked rules block, copies the
 six portable skills, and records everything (paths, hashes, package root,
-interpreter, version) in a manifest next to the selected integration config.
+interpreter, node, version) in a manifest next to the selected integration config.
 
 The framework owns reading, merging, hashing, backups, atomic writes, rollback and
 the manifest; each agent is a small declarative module in `connect_adapters/`
@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -46,6 +47,7 @@ PACKAGE_ROOT = SCRIPTS.parent
 LAUNCHER = "scripts/obsidian-second-brain.mjs"
 MANIFEST_NAME = "connect-manifest.json"
 BACKUP_DIR = "connect-backups"
+NODE_ENV = "OSB_NODE"  # set by the JavaScript launcher to its own node executable
 MANIFEST_SCHEMA = 1
 RULES_START = "<!-- obsidian-second-brain:start -->"
 RULES_END = "<!-- obsidian-second-brain:end -->"
@@ -125,12 +127,22 @@ def read_text(planner: "Planner", path: Path) -> str | None:
         raise Refusal("not-utf8", f"{path} is not UTF-8 text", path) from exc
 
 
-def locate(location: Location, home: Path) -> Path:
-    path = location(home) if callable(location) else home / location
+def literal_location(location: Location, home: Path) -> Path:
+    """The adapter's location as written (absolute, not symlink-resolved)."""
+    path = location(home, dict(os.environ)) if callable(location) else home / location
     path = Path(os.path.abspath(path))
     if not path.is_absolute():
         raise Refusal("relative-target", f"adapter location {location!r} is not absolute")
     return path
+
+
+def resolve_path(path: Path, directory: bool = False) -> Path:
+    """Follow symlinked parent directories (a directory target is followed entirely).
+
+    Connect writes the real file, with the temporary file and rename in its real directory.
+    A symlinked final file is still refused by `read_file`.
+    """
+    return Path(os.path.realpath(path)) if directory else Path(os.path.realpath(path.parent)) / path.name
 
 
 def write_atomic(path: Path, data: bytes, mode: int) -> None:
@@ -151,7 +163,7 @@ def write_atomic(path: Path, data: bytes, mode: int) -> None:
         raise
 
 
-def ensure_parent(path: Path, created: list[Path]) -> None:
+def ensure_parent(path: Path, created: list[Path], mode: int | None = None) -> None:
     missing = []
     parent = path.parent
     while not parent.exists():
@@ -159,6 +171,8 @@ def ensure_parent(path: Path, created: list[Path]) -> None:
         parent = parent.parent
     for directory in reversed(missing):
         directory.mkdir()
+        if mode is not None:
+            os.chmod(directory, mode)
         created.append(directory)
 
 
@@ -198,6 +212,55 @@ def parse_config(fmt: str, text: str | None, path: Path | None = None) -> dict[s
     if not isinstance(doc, dict):
         raise Refusal("config-unparseable", f"{path or 'config'} root must be an object", path)
     return doc
+
+
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"non-standard constant {name}")
+
+
+def _number(kind: type) -> Any:
+    def parse(literal: str) -> Any:
+        value = kind(literal)
+        if (repr(value) if kind is float else str(value)) != literal:
+            raise ValueError(f"number {literal} would be rewritten as {value!r}")
+        return value
+    return parse
+
+
+def ensure_rewrite_safe(fmt: str, text: str | None, path: Path | None = None) -> None:
+    """Refuse a JSON/YAML rewrite that would change the textual form of an existing value.
+
+    Layout (indent, line breaks, flow style, quoting of keys) is normalized by a rewrite and documented;
+    values must stay as written: numbers such as `1e5` or `1.50`, JSON string escapes, YAML anchors, aliases
+    and merge keys, and YAML 1.1 booleans such as `yes` or `On`. TOML is never rewritten.
+    """
+    if not text:
+        return
+    try:
+        if fmt == "json":
+            json.loads(text, parse_float=_number(float), parse_int=_number(int), parse_constant=_reject_constant)
+            for literal in _JSON_STRING.findall(text):
+                if json.dumps(json.loads(literal), ensure_ascii=False) != literal:
+                    raise ValueError(f"string {literal} would be rewritten")
+        elif fmt == "yaml":
+            import yaml
+            resolver = yaml.SafeLoader("")
+            for event in yaml.parse(text, Loader=yaml.SafeLoader):
+                if isinstance(event, yaml.AliasEvent):
+                    raise ValueError("YAML aliases would be expanded")
+                if getattr(event, "anchor", None):
+                    raise ValueError("YAML anchors would be dropped")
+                if isinstance(event, yaml.ScalarEvent) and event.tag is None and event.style is None:
+                    tag = resolver.resolve(yaml.ScalarNode, event.value, event.implicit)
+                    if tag == "tag:yaml.org,2002:merge":
+                        raise ValueError("YAML merge keys would be expanded")
+                    if tag == "tag:yaml.org,2002:bool" and event.value not in ("true", "false"):
+                        raise ValueError(f"YAML boolean {event.value} would be rewritten as true or false")
+    except ValueError as exc:
+        raise Refusal("config-rewrite-unsafe", f"cannot merge into {path or 'config'}: rewriting it would change existing values ({exc}); add the entry by hand", path) from exc
 
 
 def lookup(doc: dict[str, Any], key_path: tuple[str, ...], name: str, path: Path | None = None) -> Any:
@@ -340,7 +403,10 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
                 raise Refusal("toml-merge-unsafe", f"{path or 'config'}: removal would change other settings; remove the entry by hand", path)
             return None if created and not new_text.strip() else new_text
         drop_entry(doc, key_path, name, created)
-        return None if created and not doc else dump_config(fmt, doc, text)
+        if created and not doc:
+            return None
+        ensure_rewrite_safe(fmt, text, path)
+        return dump_config(fmt, doc, text)
     if current == entry:
         return text
     if current is not None and (owned is None or entry_hash(current) != owned):
@@ -363,6 +429,7 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
             raise Refusal("toml-merge-unsafe", f"{path or 'config'}: appending the table would change other settings", path)
         return new_text
     set_entry(doc, key_path, name, copy.deepcopy(entry), path)
+    ensure_rewrite_safe(fmt, text, path)
     return dump_config(fmt, doc, text)
 
 
@@ -417,7 +484,61 @@ def skill_sources(root: Path = PACKAGE_ROOT) -> dict[str, bytes]:
 
 # -- manifest -----------------------------------------------------------------------------------
 
+def _absolute(value: Any) -> bool:
+    return isinstance(value, str) and os.path.isabs(value)
+
+
+def _strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _relative(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and not os.path.isabs(value) and ".." not in Path(value).parts
+
+
+def _mcp_valid(item: Any) -> bool:
+    return (isinstance(item, dict) and _absolute(item.get("path")) and item.get("format") in ("json", "toml", "yaml")
+            and _strings(item.get("keyPath")) and bool(item.get("keyPath")) and isinstance(item.get("name"), str)
+            and isinstance(item.get("entrySha256"), str) and isinstance(item.get("createdFile"), bool)
+            and isinstance(item.get("adopted", False), bool))
+
+
+def _rules_valid(item: Any) -> bool:
+    return (isinstance(item, dict) and _absolute(item.get("path")) and isinstance(item.get("blockSha256"), str)
+            and isinstance(item.get("createdFile"), bool) and isinstance(item.get("header", ""), str))
+
+
+def _skills_valid(item: Any) -> bool:
+    return (isinstance(item, dict) and _absolute(item.get("root")) and isinstance(item.get("files"), dict)
+            and all(_relative(rel) and isinstance(digest, str) for rel, digest in item["files"].items())
+            and _strings(item.get("adopted", [])) and all(rel in item["files"] for rel in item.get("adopted", [])))
+
+
+RECORD_FIELDS = {
+    "version": lambda value: value is None or isinstance(value, str),
+    "packageRoot": _absolute, "interpreter": _absolute, "node": _absolute,
+    "profile": lambda value: isinstance(value, str),
+    "mcp": lambda value: value is None or _mcp_valid(value),
+    "rules": lambda value: value is None or _rules_valid(value),
+    "skills": lambda value: value is None or _skills_valid(value),
+}
+
+
+def manifest_problem(manifest: Any) -> str | None:
+    """The first structural problem of a manifest, or None; every reader may then trust the record shapes."""
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != MANIFEST_SCHEMA or not isinstance(manifest.get("agents"), dict):
+        return "unsupported install manifest"
+    for name, record in manifest["agents"].items():
+        if not isinstance(record, dict):
+            return f"agent {name!r} is not an object"
+        for field_name, valid in RECORD_FIELDS.items():
+            if field_name not in record or not valid(record[field_name]):
+                return f"agent {name!r} has a missing or malformed {field_name!r}"
+    return None
+
+
 def load_manifest(path: Path) -> tuple[dict[str, Any], str | None]:
+    """The manifest and None, or an empty manifest and an error message (code `manifest-invalid`)."""
     empty = {"schemaVersion": MANIFEST_SCHEMA, "agents": {}}
     try:
         raw = read_file(path)
@@ -429,10 +550,14 @@ def load_manifest(path: Path) -> tuple[dict[str, Any], str | None]:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
         return empty, f"cannot load {path}: {exc}"
-    if (not isinstance(manifest, dict) or manifest.get("schemaVersion") != MANIFEST_SCHEMA
-            or not isinstance(manifest.get("agents"), dict)):
-        return empty, f"invalid {path}: unsupported install manifest"
+    problem = manifest_problem(manifest)
+    if problem:
+        return empty, f"invalid {path}: {problem}; fix or delete the file by hand, connect changes nothing until then"
     return manifest, None
+
+
+def manifest_path_for(config_file: Path) -> Path:
+    return Path(os.path.realpath(config_file.parent)) / MANIFEST_NAME
 
 
 # -- adapters -------------------------------------------------------------------------------------
@@ -456,8 +581,8 @@ def load_adapters(strict: bool = True) -> tuple[list[Adapter], list[str]]:
     return adapters, errors
 
 
-def mcp_command(package_root: Path, profile: str = "all") -> list[str]:
-    return ["node", str(package_root / LAUNCHER), "mcp", "--tools", profile]
+def mcp_command(package_root: Path, node: str = "node", profile: str = "all") -> list[str]:
+    return [node, str(package_root / LAUNCHER), "mcp", "--tools", profile]
 
 
 def mcp_env(interpreter: str, config_file: Path) -> dict[str, str]:
@@ -467,30 +592,63 @@ def mcp_env(interpreter: str, config_file: Path) -> dict[str, str]:
     return env
 
 
+PROBE_CODE = """import sys, importlib.util as u
+try:
+    import yaml
+    has_yaml = 1
+except Exception:
+    has_yaml = 0
+print(int(sys.version_info >= %r), has_yaml, int(u.find_spec('markdown_it') is not None))
+""" % (MIN_PYTHON,)
+
+
+def probe_flags(path: Path, timeout: int) -> tuple[bool, bool, bool]:
+    """(Python version is new enough, yaml imports, markdown_it is installed) for an interpreter; read-only."""
+    if path == Path(os.path.abspath(sys.executable)):
+        try:
+            import yaml  # noqa: F401
+            has_yaml = True
+        except ImportError:
+            has_yaml = False
+        return sys.version_info >= MIN_PYTHON, has_yaml, importlib.util.find_spec("markdown_it") is not None
+    result = subprocess.run([str(path), "-B", "-c", PROBE_CODE], capture_output=True, text=True, timeout=timeout,
+                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    python_ok, yaml_ok, markdown_ok = (bool(int(value)) for value in result.stdout.split())
+    return python_ok, yaml_ok, markdown_ok
+
+
 def probe_interpreter(selected: str | None) -> tuple[str, list[str]]:
     """Absolute interpreter path (symlinks kept, so venvs stay pinned) and advisory notes; refuses unusable ones."""
     path = Path(os.path.abspath(os.path.expanduser(selected or sys.executable)))
     if not path.is_file() or not os.access(path, os.X_OK):
         raise Refusal("interpreter-invalid", f"interpreter {path} is not an executable file")
-    code = ("import sys, importlib.util as u; print(int(sys.version_info >= %r), int(u.find_spec('yaml') is not None), "
-            "int(u.find_spec('markdown_it') is not None))" % (MIN_PYTHON,))
-    if path == Path(os.path.abspath(sys.executable)):
-        python_ok = int(sys.version_info >= MIN_PYTHON)
-        yaml_ok = int(importlib.util.find_spec("yaml") is not None)
-        markdown_ok = int(importlib.util.find_spec("markdown_it") is not None)
-    else:
-        try:
-            result = subprocess.run([str(path), "-c", code], capture_output=True, text=True, timeout=30,
-                                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-            python_ok, yaml_ok, markdown_ok = (int(value) for value in result.stdout.split())
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            raise Refusal("interpreter-invalid", f"interpreter {path} could not be probed: {exc}") from exc
+    try:
+        python_ok, yaml_ok, markdown_ok = probe_flags(path, 30)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise Refusal("interpreter-invalid", f"interpreter {path} could not be probed: {exc}") from exc
     if not python_ok:
         raise Refusal("interpreter-unsuitable", f"interpreter {path} is older than Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}; select one with --python")
     if not yaml_ok:
         raise Refusal("interpreter-unsuitable", f"interpreter {path} cannot import yaml; install requirements.txt there or select another with --python")
     notes = [] if markdown_ok else [f"interpreter {path} lacks markdown-it-py; wiki_outline and wiki_read need requirements.txt installed there"]
     return str(path), notes
+
+
+def resolve_node(selected: str | None) -> str:
+    """Absolute node executable to pin in MCP entries: --node, else the launcher's own node, else the one on PATH."""
+    chosen = selected or os.environ.get(NODE_ENV) or shutil.which("node")
+    if not chosen:
+        raise Refusal("node-missing", "no node executable found; select one with --node PATH")
+    path = Path(os.path.abspath(os.path.expanduser(chosen)))
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise Refusal("node-invalid", f"node {path} is not an executable file")
+    try:
+        result = subprocess.run([str(path), "--version"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Refusal("node-invalid", f"node {path} could not be run: {exc}") from exc
+    if result.returncode != 0 or not result.stdout.startswith("v"):
+        raise Refusal("node-invalid", f"{path} --version did not report a Node.js version; select node with --node PATH")
+    return str(path)
 
 
 # -- planning -----------------------------------------------------------------------------------------
@@ -516,16 +674,33 @@ class FileOp:
 class Context:
     home: Path
     config_file: Path
+    config_dir: Path
     vault: Path | None
     package_root: Path
     version: str | None
     interpreter: str | None
+    node: str | None
     env: dict[str, str]
     manifest: dict[str, Any]
     remove: bool
     force: bool
     sources: dict[str, bytes]
     notes: list[str] = field(default_factory=list)
+    aliases: dict[str, str] = field(default_factory=dict)
+
+    def place(self, location: Location, directory: bool = False) -> Path:
+        """The real path of an adapter location; a symlinked parent shows up in the plan as `requestedPath`."""
+        literal = literal_location(location, self.home)
+        real = resolve_path(literal, directory)
+        if real != literal:
+            self.aliases[str(real)] = str(literal)
+        return real
+
+    def requested(self, path: Path) -> Path:
+        for real, literal in self.aliases.items():
+            if path == Path(real) or path.is_relative_to(real):
+                return Path(literal) / path.relative_to(real)
+        return path
 
 
 class Planner:
@@ -560,7 +735,7 @@ def _owners(ctx: Context, selected: set[str], section: str) -> dict[str, set[str
         if agent in selected or not isinstance(record.get(section), dict):
             continue
         item = record[section]
-        paths = [item.get("path")] if "path" in item else [str(Path(item["root"]) / rel) for rel in item.get("files", {})]
+        paths = [item["path"]] if "path" in item else [str(Path(item["root"]) / rel) for rel in item["files"]]
         for path in paths:
             owners.setdefault(path, set()).add(agent)
     return owners
@@ -573,10 +748,13 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
             return None
         path, fmt, key_path, name = Path(old["path"]), old["format"], tuple(old["keyPath"]), old["name"]
         entry = None
+        if old.get("adopted"):
+            ctx.notes.append(f"{adapter.name}: the {name!r} entry in {path} existed before connect (adopted); it stays")
+            return None
     else:
-        assert target is not None and ctx.interpreter is not None
-        path, fmt, key_path, name = locate(target.path, ctx.home), target.format, tuple(target.key_path), target.name
-        entry = target.entry(mcp_command(ctx.package_root), ctx.env)
+        assert target is not None and ctx.interpreter is not None and ctx.node is not None
+        path, fmt, key_path, name = ctx.place(target.path), target.format, tuple(target.key_path), target.name
+        entry = target.entry(mcp_command(ctx.package_root, ctx.node), ctx.env)
     created = old["createdFile"] if old else read_file(path) is None
     try:
         if entry is None and str(path) in others:
@@ -588,12 +766,14 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
         if entry is not None:
             refusal.snippet = render_snippet(fmt, key_path, name, entry)
         raise
-    planner.set(path, "mcp", adapter.name, None if new_text is None else new_text.encode("utf-8"), backup=True,
+    # Removal never backs up: the entry is removed only while it still matches the recorded hash.
+    planner.set(path, "mcp", adapter.name, None if new_text is None else new_text.encode("utf-8"), backup=entry is not None,
                 **({"entry": entry} if entry is not None else {}))
     if entry is None:
         return None
+    adopted = text is not None and new_text == text and (old is None or bool(old.get("adopted")))
     return {"path": str(path), "format": fmt, "keyPath": list(key_path), "name": name,
-            "entrySha256": entry_hash(entry), "createdFile": created}
+            "entrySha256": entry_hash(entry), "createdFile": created, **({"adopted": True} if adopted else {})}
 
 
 def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, Any] | None, others: dict[str, set[str]]) -> dict[str, Any] | None:
@@ -606,7 +786,7 @@ def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, 
             return None
     else:
         assert adapter.rules is not None
-        path = locate(adapter.rules.path, ctx.home)
+        path = ctx.place(adapter.rules.path)
     created = old["createdFile"] if old else read_file(path) is None
     text = read_text(planner, path)
     span = _rules_span(text, path) if text is not None else None
@@ -619,38 +799,48 @@ def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, 
         if span is None:
             return None
         remaining = cut_block(text, span[0], span[1])
-        planner.set(path, "rules", adapter.name, None if created and not remaining.strip() else remaining.encode("utf-8"), backup=True)
+        # The file goes only when it still holds nothing but the header connect wrote with the block.
+        only_ours = created and remaining.strip() == old.get("header", "").strip()
+        planner.set(path, "rules", adapter.name, None if only_ours else remaining.encode("utf-8"))
         return None
     body = rules_body(ctx.vault, ctx.config_file)
     block = rules_block(body)
-    if text is None or not text.strip():
+    header = (adapter.rules.header or "") if text is None else (old or {}).get("header", "")
+    if text is None:
+        new_text = (header.rstrip("\n") + "\n\n" if header.strip() else "") + block + "\n"
+    elif not text.strip():
         new_text = block + "\n"
     elif span is None:
         new_text = text.rstrip("\n") + "\n\n" + block + "\n"
     else:
         new_text = text[:span[0]] + block + text[span[1]:]
-    planner.set(path, "rules", adapter.name, new_text.encode("utf-8"), backup=True, block=block)
-    return {"path": str(path), "blockSha256": sha256(block), "createdFile": created}
+    planner.set(path, "rules", adapter.name, new_text.encode("utf-8"), backup=True, block=block, **({"header": header} if text is None and header else {}))
+    return {"path": str(path), "blockSha256": sha256(block), "createdFile": created, "header": header}
 
 
 def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, Any] | None, others: dict[str, set[str]]) -> dict[str, Any] | None:
     recorded: dict[str, str] = dict(old["files"]) if old else {}
-    root = Path(old["root"]) if (ctx.remove and old) else (locate(adapter.skills.path, ctx.home) if adapter.skills else None)
+    previously_adopted = set(old.get("adopted", [])) if old else set()
+    root = Path(old["root"]) if (ctx.remove and old) else (ctx.place(adapter.skills.path, directory=True) if adapter.skills else None)
     if root is None:
         return None
     known: dict[str, set[str]] = {}
     for record in ctx.manifest["agents"].values():
         item = record.get("skills")
-        if isinstance(item, dict):
-            for rel, digest in item.get("files", {}).items():
+        if item:
+            for rel, digest in item["files"].items():
                 known.setdefault(str(Path(item["root"]) / rel), set()).add(digest)
     customized: list[str] = []
     files: dict[str, str] = {}
+    adopted: list[str] = []
 
     def retire(rel: str, digest: str) -> None:
         path = root / rel
         current = planner.current(path)
         if current is None:
+            return
+        if rel in previously_adopted:
+            ctx.notes.append(f"{adapter.name}: {path} existed before connect (adopted); it stays")
             return
         if str(path) in others:
             ctx.notes.append(f"{adapter.name}: {path} is also installed for {', '.join(sorted(others[str(path)]))}; it stays")
@@ -668,9 +858,13 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
     else:
         for rel, data in ctx.sources.items():
             path = root / rel
+            if Path(os.path.realpath(path.parent)) != path.parent:
+                raise Refusal("symlink-target", f"{path.parent} is a symlink inside the skills directory; connect never writes through it", path)
             current = planner.current(path)
             want = sha256(data)
             files[rel] = want
+            if current is not None and sha256(current) == want and path not in planner.ops and (rel in previously_adopted or str(path) not in known):
+                adopted.append(rel)  # an identical copy that connect did not write: it is kept on --remove
             if current is None or sha256(current) == want:
                 planner.set(path, "skill", adapter.name, data, root=str(root))
             elif sha256(current) in known.get(str(path), set()):
@@ -683,6 +877,8 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
             if rel not in ctx.sources:
                 path = root / rel
                 current = planner.current(path)
+                if rel in previously_adopted:
+                    continue
                 if current is not None and sha256(current) == digest:
                     planner.set(path, "skill", adapter.name, None, root=str(root))
                 elif current is not None:
@@ -690,7 +886,7 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
     if customized:
         shown = ", ".join(customized[:5]) + (f" and {len(customized) - 5} more" if len(customized) > 5 else "")
         raise Refusal("skill-customized", f"customized skill copies would be overwritten ({shown}); review them, then rerun with --force to back them up and replace them")
-    return None if ctx.remove else {"root": str(root), "files": files}
+    return None if ctx.remove else {"root": str(root), "files": files, **({"adopted": sorted(adopted)} if adopted else {})}
 
 
 def plan_agent(adapter: Adapter, ctx: Context, planner: Planner, others: dict[str, dict[str, set[str]]]) -> dict[str, Any] | None:
@@ -699,20 +895,21 @@ def plan_agent(adapter: Adapter, ctx: Context, planner: Planner, others: dict[st
         ctx.notes.append(f"{adapter.name}: not connected by this manifest; nothing to remove")
         return None
     record: dict[str, Any] = {"version": ctx.version, "packageRoot": str(ctx.package_root), "interpreter": ctx.interpreter,
-                              "profile": "all", "mcp": None, "rules": None, "skills": None}
+                              "node": ctx.node, "profile": "all", "mcp": None, "rules": None, "skills": None}
     for section, plan, present in (("mcp", plan_mcp, adapter.mcp), ("rules", plan_rules, adapter.rules), ("skills", plan_skills, adapter.skills)):
         if ctx.remove or present is not None:
             record[section] = plan(adapter, ctx, planner, (old or {}).get(section), others[section])
     return None if ctx.remove else record
 
 
-def build_plan(names: list[str], *, remove: bool, force: bool, python: str | None, home: Path, config_file: Path) -> tuple[Context, Planner, list[Adapter]]:
+def build_plan(names: list[str], *, remove: bool, force: bool, python: str | None, node: str | None, home: Path,
+               config_file: Path) -> tuple[Context, Planner, list[Adapter]]:
     registered, _ = load_adapters()
     by_name = {adapter.name: adapter for adapter in registered}
     unknown = [name for name in names if name not in by_name]
     if unknown:
         raise ConnectError("unknown-agent", f"unknown agent {', '.join(unknown)}; registered agents: {', '.join(by_name) or 'none'}. See docs/agents.md for generic MCP snippets.")
-    manifest_path = config_file.parent / MANIFEST_NAME
+    manifest_path = manifest_path_for(config_file)
     manifest, manifest_error = load_manifest(manifest_path)
     if manifest_error:
         raise ConnectError("manifest-invalid", manifest_error)
@@ -725,18 +922,22 @@ def build_plan(names: list[str], *, remove: bool, force: bool, python: str | Non
         path = Path(configured).expanduser()
         vault = Path(os.path.abspath(path if path.is_absolute() else Path.cwd() / path)).resolve()
     notes: list[str] = []
-    interpreter = None
+    interpreter = node_path = None
     try:
         if not remove:
             interpreter, interpreter_notes = probe_interpreter(python)
+            node_path = resolve_node(node)
             notes.extend(interpreter_notes)
             if not (PACKAGE_ROOT / LAUNCHER).is_file():
                 raise Refusal("package-incomplete", f"{PACKAGE_ROOT / LAUNCHER} is missing")
     except Refusal as refusal:
         raise ConnectError(refusal.code, str(refusal)) from refusal
-    ctx = Context(home=home, config_file=config_file, vault=vault, package_root=PACKAGE_ROOT, version=package_version(),
-                  interpreter=interpreter, env=mcp_env(interpreter, config_file) if interpreter else {}, manifest=manifest,
+    ctx = Context(home=home, config_file=config_file, config_dir=manifest_path.parent, vault=vault, package_root=PACKAGE_ROOT,
+                  version=package_version(), interpreter=interpreter, node=node_path,
+                  env=mcp_env(interpreter, config_file) if interpreter else {}, manifest=manifest,
                   remove=remove, force=force, sources={} if remove else skill_sources(), notes=notes)
+    if manifest_path.parent != config_file.parent.absolute():
+        ctx.aliases[str(manifest_path)] = str(config_file.parent.absolute() / MANIFEST_NAME)
     planner = Planner(ctx)
     selected = set(names)
     others = {section: _owners(ctx, selected, section) for section in ("mcp", "rules", "skills")}
@@ -767,11 +968,16 @@ def build_plan(names: list[str], *, remove: bool, force: bool, python: str | Non
 
 
 def core_plan(ctx: Context, planner: Planner, names: list[str]) -> dict[str, Any]:
-    """The reviewed, hashed plan: exact agent selection, inputs, and each file's before/after digests."""
+    """The reviewed, hashed plan: exact agent selection, inputs, and each file's before/after digests.
+
+    A path reached through a symlinked parent directory is listed as the real path, with the path as
+    configured in `requestedPath`; both are part of the hash.
+    """
     return {"operation": "connect", "remove": ctx.remove, "force": ctx.force, "agents": sorted(names),
-            "packageRoot": str(ctx.package_root), "version": ctx.version, "interpreter": ctx.interpreter,
+            "packageRoot": str(ctx.package_root), "version": ctx.version, "interpreter": ctx.interpreter, "node": ctx.node,
             "config": str(ctx.config_file),
             "files": [{"agents": sorted(op.agents), "role": op.role, "path": str(op.path), "op": op.op,
+                       **({"requestedPath": str(ctx.requested(op.path))} if ctx.requested(op.path) != op.path else {}),
                        "beforeSha256": None if op.before is None else sha256(op.before),
                        "afterSha256": None if op.after is None else sha256(op.after),
                        "backup": bool(op.backup and op.before is not None and op.op in ("update", "delete"))}
@@ -784,12 +990,33 @@ def plan_digest(plan: dict[str, Any]) -> str:
 
 
 def backup_dir(ctx: Context, plan_hash: str) -> Path:
-    return ctx.config_file.parent / BACKUP_DIR / plan_hash[:16]
+    """`connect-backups/<plan>/` next to the manifest; each agent's files go in `<agent>/` below it."""
+    return ctx.config_dir / BACKUP_DIR / plan_hash[:16]
+
+
+def prune_backups(ctx: Context, agents: list[str], plan_hash: str) -> None:
+    """Delete the connect-time backups of removed agents; this plan's own (customized skill copies) stay."""
+    root = ctx.config_dir / BACKUP_DIR
+    if not root.is_dir():
+        return
+    for plan_dir in root.iterdir():
+        if plan_dir.name == plan_hash[:16] or not plan_dir.is_dir():
+            continue
+        for agent in agents:
+            shutil.rmtree(plan_dir / agent, ignore_errors=True)
+        try:
+            plan_dir.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
 
 
 # -- apply ----------------------------------------------------------------------------------------------
 
-def apply_plan(ctx: Context, planner: Planner, plan_hash: str) -> list[str]:
+def apply_plan(ctx: Context, planner: Planner, plan_hash: str, agents: list[str]) -> list[str]:
     changed = [op for op in planner.ops.values() if op.op != "unchanged"]
     for op in changed:
         if read_file(op.path) != op.before:
@@ -797,13 +1024,13 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str) -> list[str]:
     written: list[tuple[Path, bytes | None, bytes | None, int]] = []
     created_dirs: list[Path] = []
 
-    def put(path: Path, before: bytes | None, after: bytes | None, mode: int) -> None:
+    def put(path: Path, before: bytes | None, after: bytes | None, mode: int, private: bool = False) -> None:
         if read_file(path) != before:
             raise ConnectError("destination-changed", f"{path} changed during apply")
         if after is None:
             path.unlink()
         else:
-            ensure_parent(path, created_dirs)
+            ensure_parent(path, created_dirs, 0o700 if private else None)
             write_atomic(path, after, mode)
         written.append((path, before, after, mode))
         if read_file(path) != after:
@@ -811,17 +1038,23 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str) -> list[str]:
 
     try:
         backups = [op for op in changed if op.backup and op.before is not None]
-        if backups:
-            directory = backup_dir(ctx, plan_hash)
+        per_agent: dict[str, list[FileOp]] = {}
+        for op in backups:
+            for agent in op.agents:
+                per_agent.setdefault(agent, []).append(op)
+        for agent, ops in sorted(per_agent.items()):
+            directory = backup_dir(ctx, plan_hash) / agent
             index = {}
-            for number, op in enumerate(backups, 1):
+            for number, op in enumerate(ops, 1):
                 name = f"{number:03d}-{op.path.name}"
                 index[name] = str(op.path)
                 if read_file(directory / name) != op.before:
-                    put(directory / name, None, op.before, 0o600)
+                    put(directory / name, None, op.before, 0o600, private=True)
             index_data = (json.dumps(index, indent=2, sort_keys=True) + "\n").encode("utf-8")
             if read_file(directory / "backup-index.json") != index_data:
-                put(directory / "backup-index.json", None, index_data, 0o600)
+                put(directory / "backup-index.json", None, index_data, 0o600, private=True)
+            for private_dir in (directory, directory.parent, directory.parent.parent):
+                os.chmod(private_dir, 0o700)
         for op in changed:
             mode = op.path.lstat().st_mode & 0o777 if op.before is not None else (0o600 if op.role in ("mcp", "manifest") else 0o644)
             put(op.path, op.before, op.after, mode)
@@ -857,6 +1090,8 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str) -> list[str]:
                     parent.rmdir()  # empty skill folders, then the emptied skills directory itself
                 except OSError:
                     break
+    if ctx.remove:
+        prune_backups(ctx, [agent for agent in agents if agent in ctx.manifest["agents"]], plan_hash)
     return [str(op.path) for op in changed]
 
 
@@ -879,21 +1114,45 @@ def _entry_state(record: dict[str, Any]) -> list[dict[str, str]]:
     return reasons
 
 
-def evaluate(record: dict[str, Any]) -> list[dict[str, str]]:
-    """Why a recorded connection no longer matches this installed package; reads only."""
+def interpreter_problem(interpreter: str, probes: dict[str, str | None]) -> str | None:
+    """Why the pinned interpreter cannot run the server (Python < 3.14 or no yaml), else None.
+
+    The check runs the interpreter read-only with a 5 s timeout, once per interpreter in a doctor run
+    (`probes` is that run's cache). It never compares against the interpreter that runs doctor.
+    """
+    if interpreter not in probes:
+        try:
+            python_ok, yaml_ok, _ = probe_flags(Path(interpreter), 5)
+            probes[interpreter] = (None if python_ok and yaml_ok else
+                                   f"{interpreter} is older than Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}" if not python_ok else
+                                   f"{interpreter} cannot import yaml")
+        except subprocess.TimeoutExpired:
+            probes[interpreter] = f"{interpreter} did not answer within 5 s"
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            probes[interpreter] = f"{interpreter} could not be run: {exc}"
+    return probes[interpreter]
+
+
+def evaluate(record: dict[str, Any], probes: dict[str, str | None] | None = None) -> list[dict[str, str]]:
+    """Why a recorded connection no longer works; reads only.
+
+    The entry runs the recorded package root, so that root (not the install that runs doctor, which may be
+    another copy such as the Claude plugin cache) is what must exist and match the recorded version.
+    """
     reasons: list[dict[str, str]] = []
-    root = record.get("packageRoot")
-    if root != str(PACKAGE_ROOT):
-        reasons.append({"code": "package-root-mismatch", "detail": f"connected from {root}, running {PACKAGE_ROOT}"})
-    if not (Path(str(root)) / LAUNCHER).is_file():
+    root = record["packageRoot"]
+    if not (Path(root) / LAUNCHER).is_file():
         reasons.append({"code": "package-root-missing", "detail": f"{root} no longer contains {LAUNCHER}"})
-    interpreter = record.get("interpreter")
-    if not interpreter or not os.access(interpreter, os.X_OK):
-        reasons.append({"code": "interpreter-missing", "detail": str(interpreter)})
-    elif Path(interpreter) != Path(os.path.abspath(sys.executable)):
-        reasons.append({"code": "interpreter-mismatch", "detail": f"connected with {interpreter}, running {sys.executable}"})
-    if record.get("version") != package_version():
-        reasons.append({"code": "version-mismatch", "detail": f"connected with {record.get('version')}, installed {package_version()}"})
+    installed = package_version(Path(root))
+    if installed is not None and record["version"] != installed:
+        reasons.append({"code": "version-mismatch", "detail": f"connected with {record['version']}, installed {installed}"})
+    interpreter = record["interpreter"]
+    if not os.access(interpreter, os.X_OK):
+        reasons.append({"code": "interpreter-missing", "detail": interpreter})
+    elif (problem := interpreter_problem(interpreter, {} if probes is None else probes)):
+        reasons.append({"code": "interpreter-unsuitable", "detail": problem})
+    if not os.access(record["node"], os.X_OK):
+        reasons.append({"code": "node-missing", "detail": record["node"]})
     reasons += _entry_state(record)
     item = record.get("rules")
     if item:
@@ -931,16 +1190,16 @@ def evaluate(record: dict[str, Any]) -> list[dict[str, str]]:
     return reasons
 
 
-def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: Path) -> dict[str, Any]:
+def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: Path, probes: dict[str, str | None]) -> dict[str, Any]:
     detected = None
     if adapter is not None:
         try:
-            detected = any(locate(location, home).is_dir() for location in adapter.detect)
+            detected = any(literal_location(location, home).is_dir() for location in adapter.detect)
         except Refusal:
             detected = False
     reasons: list[dict[str, str]] = []
     if record is not None:
-        reasons = evaluate(record)
+        reasons = evaluate(record, probes)
         state = "stale" if reasons else "connected"
     elif adapter is None or adapter.mcp is None:
         state = "manual-only"
@@ -950,7 +1209,7 @@ def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: 
         if detected:
             try:
                 target = adapter.mcp
-                path = locate(target.path, home)
+                path = resolve_path(literal_location(target.path, home))
                 raw = read_file(path)
                 merge_config(target.format, None if raw is None else raw.decode("utf-8"), tuple(target.key_path), target.name,
                              target.entry(mcp_command(PACKAGE_ROOT), {"PYTHON": sys.executable}), None, raw is None, path)
@@ -959,27 +1218,29 @@ def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: 
                 reasons = [{"code": getattr(exc, "code", "config-unparseable"), "detail": str(exc)}]
     return {"title": adapter.title if adapter else None, "state": state, "detected": detected,
             "verification": adapter.verification if adapter else None, "adapterRegistered": adapter is not None,
-            "version": (record or {}).get("version"), "reasons": reasons}
+            "version": (record or {}).get("version"), "interpreter": (record or {}).get("interpreter"), "reasons": reasons}
 
 
 def status(config_file: Path, home: Path | None = None) -> dict[str, Any]:
     """Read-only connect state for doctor and the list view: connected, stale, absent or manual-only."""
     home = home or Path.home()
-    manifest_path = config_file.parent / MANIFEST_NAME
+    manifest_path = manifest_path_for(config_file)
     manifest, error = load_manifest(manifest_path)
     registered, adapter_errors = load_adapters(strict=False)
     records = {} if error else manifest["agents"]
-    agents = {adapter.name: _agent_status(adapter, records.get(adapter.name), home) for adapter in registered}
+    probes: dict[str, str | None] = {}  # one interpreter probe per interpreter in this run
+    agents = {adapter.name: _agent_status(adapter, records.get(adapter.name), home, probes) for adapter in registered}
     for name, record in records.items():
         if name not in agents:
-            agents[name] = _agent_status(None, record, home)
-    return {"manifest": {"path": str(manifest_path), "exists": manifest_path.is_file(), "error": error},
+            agents[name] = _agent_status(None, record, home, probes)
+    return {"manifest": {"path": str(manifest_path), "exists": manifest_path.is_file(), "error": error,
+                         "code": "manifest-invalid" if error else None},
             "agents": agents, "adapterErrors": adapter_errors}
 
 
 def generic_snippets(interpreter: str, config_file: Path) -> dict[str, Any]:
     from connect_adapters.spec import standard_entry
-    return {profile: standard_entry(mcp_command(PACKAGE_ROOT, profile), mcp_env(interpreter, config_file)) for profile in GENERIC_PROFILES}
+    return {profile: standard_entry(mcp_command(PACKAGE_ROOT, "node", profile), mcp_env(interpreter, config_file)) for profile in GENERIC_PROFILES}
 
 
 # -- command line -----------------------------------------------------------------------------------------------
@@ -989,7 +1250,7 @@ def public_plan(ctx: Context, planner: Planner, core: dict[str, Any], plan_hash:
     for item in core["files"]:
         op = planner.ops[Path(item["path"])]
         shown = dict(item)
-        shown.update({key: value for key, value in op.detail.items() if key in ("entry", "block", "root")})
+        shown.update({key: value for key, value in op.detail.items() if key in ("entry", "block", "header", "root")})
         files.append(shown)
     return {**core, "files": files, "planHash": plan_hash,
             "backupDir": str(backup_dir(ctx, plan_hash)) if any(item["backup"] for item in core["files"]) else None}
@@ -1038,6 +1299,7 @@ def _print_plan(output: dict[str, Any], names: list[str], args: argparse.Namespa
     if not plan["remove"]:
         print(f"Package root: {plan['packageRoot']}")
         print(f"Interpreter: {plan['interpreter']}")
+        print(f"Node: {plan['node']}")
     skills: dict[str, list[dict[str, Any]]] = {}
     for item in plan["files"]:
         if item["op"] == "unchanged":
@@ -1045,9 +1307,13 @@ def _print_plan(output: dict[str, Any], names: list[str], args: argparse.Namespa
         if item["role"] == "skill" and item["op"] == "create":
             skills.setdefault(item["root"], []).append(item)
             continue
-        print(f"{item['op'].capitalize()} {item['role']}: {item['path']}" + (" (original is backed up first)" if item["backup"] else ""))
+        print(f"{item['op'].capitalize()} {item['role']}: {item['path']}"
+              + (f" (configured as {item['requestedPath']}, a symlinked path; the real file is changed)" if "requestedPath" in item else "")
+              + (" (original is backed up first)" if item["backup"] else ""))
         if "entry" in item:
             print("  entry: " + json.dumps(item["entry"], ensure_ascii=False))
+        if "header" in item:
+            print("  header (written with the new file):\n" + "\n".join("    " + line for line in item["header"].splitlines()))
         if "block" in item:
             print("  rules block:\n" + "\n".join("    " + line for line in item["block"].splitlines()))
     for root, items in skills.items():
@@ -1067,7 +1333,7 @@ def _print_plan(output: dict[str, Any], names: list[str], args: argparse.Namespa
         selected = os.environ.get("OBSIDIAN_AGENT_CONFIG")
         prefix = f"OBSIDIAN_AGENT_CONFIG={shlex.quote(str(Path(selected).expanduser().absolute()))} " if selected else ""
         argv = ["obsidian-second-brain", "connect", *names] + (["--remove"] if args.remove else []) + (["--force"] if args.force else []) \
-            + (["--python", plan["interpreter"]] if args.python else []) + ["--apply", "--confirm", output["planHash"]]
+            + (["--python", plan["interpreter"]] if args.python else []) + (["--node", plan["node"]] if args.node else []) + ["--apply", "--confirm", output["planHash"]]
         print(f"Review, then apply exactly this plan: {prefix}{shlex.join(argv)}")
 
 
@@ -1086,16 +1352,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--remove", action="store_true", help="plan (or apply) removal of what connect wrote")
     parser.add_argument("--force", action="store_true", help="replace customized skill copies after backing them up")
     parser.add_argument("--python", help="interpreter to pin in MCP entries (default: the one running this command); must import yaml")
+    parser.add_argument("--node", help="node executable to pin in MCP entries (default: the one that runs the launcher, else node on PATH); must run")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     args = parser.parse_args(argv)
     if args.confirm is not None and not args.apply:
         parser.error("--confirm requires --apply")
     if args.apply and args.confirm is None:
         parser.error("--apply requires --confirm <planHash> from a reviewed preview")
-    if not args.agents and (args.apply or args.remove or args.force or args.python):
-        parser.error("--apply, --remove, --force and --python require at least one agent")
-    if args.remove and args.python:
-        parser.error("--python does not apply to --remove")
+    if not args.agents and (args.apply or args.remove or args.force or args.python or args.node):
+        parser.error("--apply, --remove, --force, --python and --node require at least one agent")
+    if args.remove and (args.python or args.node):
+        parser.error("--python and --node do not apply to --remove")
     names = sorted(set(args.agents))
     home = Path.home()
     config_file = config_file_path()
@@ -1119,14 +1386,14 @@ def main(argv: list[str]) -> int:
             else:
                 _print_list(output)
             return 0
-        ctx, planner, adapters = build_plan(names, remove=args.remove, force=args.force, python=args.python,
+        ctx, planner, adapters = build_plan(names, remove=args.remove, force=args.force, python=args.python, node=args.node,
                                             home=home, config_file=config_file)
         core = core_plan(ctx, planner, names)
         plan_hash = plan_digest(core)
         if args.apply:
             if args.confirm != plan_hash:
                 return fail("stale-plan", f"stale or unconfirmed plan; preview again (hash {plan_hash})")
-            apply_plan(ctx, planner, plan_hash)
+            apply_plan(ctx, planner, plan_hash, names)
         snippets, notes = adapter_extras(adapters, ctx)
         output = {"operation": "connect", "mode": "apply" if args.apply else "preview", "planHash": plan_hash,
                   "plan": public_plan(ctx, planner, core, plan_hash), "applied": args.apply,

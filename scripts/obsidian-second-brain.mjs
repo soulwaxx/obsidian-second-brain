@@ -33,7 +33,8 @@ function terminate(child) {
 }
 
 if (!native && !mcp) {
-  const child = spawn(python, childArgs, { stdio: "inherit", detached: process.platform !== "win32", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  // OSB_NODE lets `connect` pin this exact node executable in the MCP entries it writes.
+  const child = spawn(python, childArgs, { stdio: "inherit", detached: process.platform !== "win32", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", OSB_NODE: process.execPath } });
   let stopping = false;
   const stop = () => { if (!stopping) { stopping = true; terminate(child); } };
   process.on("SIGINT", stop);

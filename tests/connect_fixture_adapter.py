@@ -5,6 +5,7 @@ registry a real adapter uses. `register` appends them to `connect_adapters.REGIS
 """
 import sys
 import types
+from pathlib import Path
 
 from connect_adapters.spec import Adapter, McpTarget, RulesTarget, SkillsTarget, Snippet
 
@@ -32,9 +33,25 @@ SHARED = Adapter(
     mcp=McpTarget(path=".fixture-shared/mcp.json", format="json", key_path=("mcpServers",)),
     skills=SkillsTarget(path=".fixture-json/skills"),
 )
+
+
+def _custom_home(home, env):
+    """Like Codex's CODEX_HOME: an environment override of the agent's directory."""
+    return Path(env.get("FIXTURE_CUSTOM_HOME") or home / ".fixture-custom")
+
+
+# Function locations of (home, env), an OpenCode-like entry (command as an array, `environment` instead of `env`,
+# `type: local`) and a rules file whose front matter is written only when connect creates it (VS Code `applyTo`).
+CUSTOM = Adapter(
+    name="fixture-custom", title="Fixture custom agent", detect=(_custom_home,),
+    mcp=McpTarget(path=lambda home, env: _custom_home(home, env) / "opencode.json", format="json", key_path=("mcp",),
+                  entry=lambda command, env: {"type": "local", "command": command, "environment": env, "enabled": True}),
+    rules=RulesTarget(path=lambda home, env: _custom_home(home, env) / "wiki.instructions.md",
+                      header='---\napplyTo: "**"\n---'),
+)
 MANUAL = Adapter(name="fixture-manual", title="Fixture manual agent", detect=(".fixture-manual",),
                  snippets=(Snippet("Settings", "settings UI", "paste in the UI"),))
-ALL = (JSON, TOML, YAML, SHARED, MANUAL)
+ALL = (JSON, TOML, YAML, SHARED, MANUAL, CUSTOM)
 
 
 def register(connect_adapters, adapters=ALL):

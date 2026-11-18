@@ -299,7 +299,7 @@ Claude Code and Pi load the package directly. Other MCP-capable agents are wired
 with the reviewed `connect` command: it previews the exact changes and a plan hash,
 applies only a confirmed plan (`--apply --confirm <planHash>`), and undoes them
 (`--remove`). Per agent it merges one `obsidian-wiki` MCP entry that runs the
-installed package by absolute path with the interpreter pinned (no `npx`, no
+installed package by absolute path with the node and Python interpreters pinned (no `npx`, no
 network call at agent start), upserts a marked rules block, and copies the six
 portable skills, recording everything in a manifest next to the selected config.
 It writes user-level files only, never into the vault or a project repository, and
@@ -311,12 +311,15 @@ manual-only agents without repairing them. See [the agent guide](docs/agents.md)
 | Claude Code | Plugin: hooks, skills, read-only MCP server | live-validated |
 | Pi | Package: extension, hooks, skills | live-validated |
 | Codex CLI | `connect` adapter (planned, #66) | planned adapter |
-| GitHub Copilot (CLI and VS Code) | `connect` adapter (planned, #67) | planned adapter |
+| GitHub Copilot CLI | `connect` adapter `copilot-cli` (planned, #67) | planned adapter |
+| GitHub Copilot in VS Code | `connect` adapter `copilot-vscode` (planned, #67) | planned adapter |
 | Cursor | `connect` adapter (planned, #68) | planned adapter |
 | OpenCode | `connect` adapter (planned, #69) | planned adapter |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, other MCP clients | [Generic MCP snippets](docs/agents.md#generic-mcp-snippets) (`read` and `all`) | snippet-only |
 
-An adapter row becomes "fixture-tested (live-unverified)" when its tests pass in a
+"Planned adapter" is a temporary row label, not a status; the statuses are
+live-validated, fixture-tested (live-unverified) and snippet-only. An adapter row
+becomes "fixture-tested (live-unverified)" when its tests pass in a
 temporary home; no real agent has been run, and live validation is tracked
 separately. "Snippet-only" agents are untested.
 
