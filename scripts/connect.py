@@ -798,6 +798,8 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
             planner.ctx.notes.append(f"{adapter.name}: {path} also serves {', '.join(sorted(others[str(path)]))}; its entry stays")
             return None
         text = read_text(planner, path)
+        if text is None and entry is not None:
+            created = True  # absent now (new, or deleted since an earlier connect): connect creates it, so removal may delete it
         new_text = merge_config(fmt, text, key_path, name, entry, old["entrySha256"] if old else None, created, path)
     except Refusal as refusal:
         if entry is not None:

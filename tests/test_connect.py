@@ -746,6 +746,18 @@ class HardeningTests(ConnectCase):
         self.remove_with(env, "fixture-custom")
         self.assertFalse(rules.exists())  # no header-only file is left behind
 
+    def test_mcp_file_recreated_after_deletion_is_removed(self):
+        mcp = self.json_dir / "mcp.json"
+        self.json_dir.mkdir()
+        mcp.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+        self.apply("fixture-json")
+        self.assertIs(json.loads(self.manifest.read_text())["agents"]["fixture-json"]["mcp"]["createdFile"], False)
+        mcp.unlink()  # the user deletes the file; the next connect creates it again
+        self.apply("fixture-json")
+        self.assertIs(json.loads(self.manifest.read_text())["agents"]["fixture-json"]["mcp"]["createdFile"], True)
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertFalse(mcp.exists())  # no empty config file is left behind
+
     # -- symlinked parents ------------------------------------------------------------------------
     def test_symlinked_parent_directories_are_resolved_shown_and_hashed(self):
         real = self.root / "dotfiles/json"
