@@ -26,6 +26,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR_SCHEMA_VERSION = 1
 SEMANTIC_CACHE = Path(".vault-meta/retrieval/chunks.json")
 SETUP_DOC = "docs/setup.md"
+AGENTS_DOC = "docs/agents.md"
 READS_MODULE = load_source("obsidian_cli_retrieval_reads", str(Path(__file__).with_name("retrieval_reads.py")))
 
 
@@ -470,7 +471,33 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     recall["reason"] = (recall["error"] if not recall["valid"] else
                         None if not recall["enabled"] or recall["ready"] else retrieval["reason"])
     checks["autoRecall"] = recall
+    checks["connect"] = connect_state(config_file)
     return checks
+
+
+def connect_state(config_file: Path) -> dict[str, Any]:
+    """Read-only `connect` wiring state (connected, stale, absent, manual-only, advisory newer-package-available); suggestions are never run."""
+    state = load_source("obsidian_cli_connect", str(Path(__file__).with_name("connect.py"))).status(config_file)
+    cli = str(PACKAGE_ROOT / "scripts/obsidian-second-brain.py")
+    env = {"OBSIDIAN_AGENT_CONFIG": str(config_file)}
+    broken = {"interpreter-missing", "interpreter-unsuitable"}
+
+    def reconnect(name: str, agent: dict[str, Any]) -> list[str]:
+        codes = {reason["code"] for reason in agent["reasons"]}
+        # Keep the recorded interpreter and node while they still work, so the repair does not silently switch environments.
+        return ([sys.executable, cli, "connect", name]
+                + (["--python", agent["interpreter"]] if not broken & codes else [])
+                + (["--node", agent["node"]] if "node-missing" not in codes and os.access(agent["node"], os.X_OK) else []))
+
+    state["nextActions"] = [
+        _action("reconnect-agent", f"Preview the reviewed reconnect for {name}; it repairs the stale wiring only after you apply its plan hash.",
+                "doctor-and-stale-connections", reconnect(name, agent), doc=AGENTS_DOC, env=env, review=True)
+        for name, agent in state["agents"].items() if agent["state"] == "stale"
+    ] + [
+        _action("reconnect-newer-package", f"A newer package than the one {name} runs is installed here; preview a reconnect with this install (advisory, nothing is broken).",
+                "doctor-and-stale-connections", reconnect(name, agent), doc=AGENTS_DOC, env=env, review=True)
+        for name, agent in state["agents"].items() if agent["state"] == "newer-package-available"]
+    return state
 
 
 def format_action(action: dict[str, Any]) -> str:
@@ -759,8 +786,12 @@ def main() -> int:
                 raise SystemExit(2)
             super().error(message)
 
+    if sys.argv[1:2] == ["connect"]:
+        # `connect` takes several agent names and its own options, so it parses its own arguments
+        # and must be the first argument; the shared parser below does not accept them.
+        return load_source("obsidian_cli_connect", str(Path(__file__).with_name("connect.py"))).main(sys.argv[2:])
     parser = CliParser(description=__doc__)
-    parser.add_argument("command", choices=("setup", "doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history", "source-check"))
+    parser.add_argument("command", choices=("connect", "setup", "doctor", "search", "read", "outline", "build", "evidence-report", "batch-inspect", "batch-apply", "batch-recover", "batch-rollback", "capture-inspect", "capture-apply", "observe-inspect", "observe-apply", "baseline-inspect", "baseline-apply", "source-history", "source-check"))
     parser.add_argument("query", nargs="?", help="search terms (required for search)")
     parser.add_argument("--vault", help="explicit vault root; overrides OBSIDIAN_VAULT_PATH and config")
     parser.add_argument("--config", help="config JSON path (default: OBSIDIAN_AGENT_CONFIG or standard user config)")
@@ -795,6 +826,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="setup: apply the plan confirmed by --confirm")
     parser.add_argument("--confirm", help="setup: exact plan hash shown by the reviewed preview")
     args = parser.parse_args()
+    if args.command == "connect":
+        parser.error("connect must be the first argument: obsidian-second-brain connect [agent...] [--apply --confirm <planHash>]")
 
     def fail(message: str, code: str = "command-error") -> int:
         if args.json:
@@ -1109,6 +1142,13 @@ def main() -> int:
             for name, capability in output["capabilities"].items():
                 print(f"Capability {name}: {capability['state']}" + (f" ({capability['reason']})" if capability["reason"] else ""))
             print_next_actions(readiness["nextActions"])
+            for name, agent in output["connect"]["agents"].items():
+                # Quiet by default: only wired, stale, manual-only or detected agents are listed.
+                if agent["state"] != "absent" or agent["detected"]:
+                    print(f"Connect {name}: {agent['state']}" + (f" ({', '.join(reason['code'] for reason in agent['reasons'])})" if agent["reasons"] else ""))
+            print_next_actions(output["connect"]["nextActions"])
+            if output["connect"]["manifest"]["error"]:
+                print(output["connect"]["manifest"]["error"], file=sys.stderr)
             if output['config']['error']:
                 print(output['config']['error'], file=sys.stderr)
             if output['dependencies']['pythonError']:

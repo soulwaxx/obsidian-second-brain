@@ -30,6 +30,8 @@ A version-pinned `npx` form works when no local install exists:
 
 Do not use an unpinned `npx -y @soulwaxx/obsidian-second-brain mcp`: it contacts npm every time the agent starts and may run a version you have not reviewed. The absolute-path form makes no network call and runs exactly the installed, reviewed version.
 
+`obsidian-second-brain connect` writes this entry (with `--tools all`) for the agents it supports, previews it first, and `doctor` flags it when the package moves; see [Connect agents to the wiki](agents.md). Generic `read` and `all` snippets for other clients are in [the same guide](agents.md#generic-mcp-snippets).
+
 ## Claude Code plugin
 
 The Claude Code plugin declares this server inline in `.claude-plugin/plugin.json` (`mcpServers.obsidian-wiki`), with no `.mcp.json`:
