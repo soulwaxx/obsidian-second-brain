@@ -13,7 +13,7 @@ REGISTRY: list[str] = [
     #
     # "connect_adapters.copilot_vscode",
     #
-    # "connect_adapters.cursor",
+    "connect_adapters.cursor",
     #
     # "connect_adapters.opencode",
 ]

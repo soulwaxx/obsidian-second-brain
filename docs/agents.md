@@ -11,7 +11,7 @@
 | Codex CLI | `connect` adapter (planned, #66): MCP entry in TOML, rules, skills | planned adapter |
 | GitHub Copilot CLI (`copilot-cli`) | `connect` adapter (planned, #67): MCP entry in `~/.copilot/mcp-config.json`, rules, skills | planned adapter |
 | GitHub Copilot in VS Code (`copilot-vscode`) | `connect` adapter (planned, #67): MCP entry in the VS Code user `mcp.json`, instructions file with `applyTo` front matter | planned adapter |
-| Cursor | `connect` adapter (planned, #68): MCP entry, skills; project rules as a printed snippet | planned adapter |
+| Cursor | `connect` adapter `cursor` (#68): MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; [project rule snippet](#cursor) | fixture-tested (live-unverified) |
 | OpenCode | `connect` adapter (planned, #69): MCP entry, rules, skills | planned adapter |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, any other MCP client | [Generic MCP snippet](#generic-mcp-snippets) | snippet-only |
 
@@ -168,6 +168,25 @@ REGISTRY: list[str] = [
 Separate comment lines keep each adapter's edit on its own line, so adapter changes merge without conflicts. A module that fails to import or has an invalid `ADAPTER` is reported by `connect` and, as `adapterErrors`, by doctor.
 
 Test an adapter with `tests/connect_fixture_adapter.py` and `tests/test_connect.py` as the model: run the real `connect` code against a temporary `HOME` and `OBSIDIAN_AGENT_CONFIG`, assert the exact paths, entry shape, preservation of unrelated entries, preview-without-writes, apply, repeat no-op, removal, and a doctor round trip. Never touch the real home directory or run the agent. When the tests pass, change the agent's row in the table above and in the README from "planned adapter" to "fixture-tested (live-unverified)"; live validation (#72) is a separate step. `tests/connect_fixture_adapter.py` has fixtures for each target shape (`fixture-custom`: environment-dependent location functions, an OpenCode-like entry and a rules header).
+
+## Cursor
+
+`connect cursor` is detected by the `~/.cursor` directory only; the `cursor` binary is never run. Targets and formats were checked against Cursor's current official documentation:
+
+| Piece | Target | Source |
+| --- | --- | --- |
+| MCP entry | `~/.cursor/mcp.json`, strict JSON, under `mcpServers`: `{"type": "stdio", "command": "<absolute node>", "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"], "env": {"PYTHON": "<interpreter>"}}` (`OBSIDIAN_AGENT_CONFIG` is added when a non-default config is selected) | [MCP: `mcp.json`, STDIO configuration, global configuration](https://cursor.com/docs/context/mcp) |
+| Skill copies | `~/.cursor/skills/<name>/SKILL.md` plus `~/.cursor/skills/wiki/references/*.md` (a user-level skills directory; Cursor reads each `SKILL.md`, whose `name` must equal its folder) | [Agent Skills: skill directories](https://cursor.com/docs/context/skills) |
+| User rules | none: Cursor user rules are set in Customize > Rules and are not stored as a file, so `connect` writes no rules block. The server's MCP `initialize` instructions carry the wiki rules | [Rules: User Rules](https://cursor.com/docs/context/rules) |
+| Project rule | printed as a snippet for `.cursor/rules/obsidian-second-brain.mdc` (`alwaysApply: true`); never written | [Rules: project rules](https://cursor.com/docs/context/rules) |
+
+Notes:
+
+- A `~/.cursor/mcp.json` with comments, trailing commas or an existing different `obsidian-wiki` entry is refused with the snippet to add by hand. Other servers (stdio, `url`/`headers`, `auth`) and other keys are kept.
+- Restart Cursor or refresh MCP servers in Customize after connecting. Cursor asks for approval before each MCP tool call, which is where you review the batch inspect summary.
+- Cursor's "Sync Skills for Cloud Agents" setting moves `~/.cursor/skills` into its synced storage. After turning it on, `doctor` reports the local skill copies as missing.
+- Cursor also reads skills from `~/.agents/skills`, `~/.claude/skills` and `~/.codex/skills`; connecting several agents that write to those directories can show a skill twice.
+- Status: fixture-tested (live-unverified). `tests/test_connect_cursor.py` runs the real framework against a temporary `HOME`; a live Cursor run belongs to #72.
 
 ## Generic MCP snippets
 
