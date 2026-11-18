@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -245,6 +246,63 @@ class WikiBatchTests(unittest.TestCase):
         result = MODULE.recover(self.vault, journal["batchId"])
         self.assertEqual(result["phase"], "complete")
         self.assertEqual((self.vault / "wiki/beta.md").read_text(), PAGE_B)
+
+    def interrupted_after_first_publication(self):
+        bundle = self.bundle(self.operation(), self.operation("wiki/sub/beta.md", PAGE_B))
+        plan = self.inspect(bundle)
+        save = MODULE._save_journal
+        def interrupt(vault, journal):
+            if journal["entries"][0]["state"] == "published" and journal["entries"][1]["state"] == "pending":
+                raise OSError("simulated interruption after first publication")
+            return save(vault, journal)
+        with mock.patch.object(MODULE, "_save_journal", interrupt), self.assertRaises(OSError):
+            MODULE.apply(self.vault, bundle, self.config, plan["planHash"])
+        journal_path = next((self.vault / ".vault-meta/lifecycle/batches").glob("*.json"))
+        return json.loads(journal_path.read_text())["batchId"]
+
+    def test_recover_reports_the_writer_lock_only_once_it_is_held(self):
+        batch_id = self.interrupted_after_first_publication()
+        lock = self.vault / ".vault-meta/lifecycle/batches/writer.lock"
+        observed = []
+        def on_locked():
+            fd = os.open(lock, os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                observed.append("held")
+            finally:
+                os.close(fd)
+        MODULE.recover(self.vault, batch_id, on_locked=on_locked)
+        self.assertEqual(observed, ["held"])
+        called = []
+        with mock.patch.object(MODULE.fcntl, "flock", side_effect=BlockingIOError("lock wait")):
+            with self.assertRaises(BlockingIOError):
+                MODULE.recover(self.vault, batch_id, on_locked=lambda: called.append(True))
+        self.assertEqual(called, [], "the callback never fires while the lock is not held")
+
+    def test_recover_removes_only_this_batchs_interrupted_publication_copies(self):
+        batch_id = self.interrupted_after_first_publication()
+        other = "11111111-1111-4111-8111-111111111111"
+        digits = "0123456789abcdef" * 2
+        stale = [self.vault / f"wiki/.batch-{batch_id}-{digits}.tmp", self.vault / f"wiki/sub/.batch-{batch_id}-{digits}.tmp"]
+        for path in stale:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("partial")
+        outside = Path(self.temp.name) / "outside.txt"
+        outside.write_text("precious")
+        stale_link = self.vault / f"wiki/.batch-{batch_id}-{'a' * 32}.tmp"
+        stale_link.symlink_to(outside)
+        keep = [self.vault / f"wiki/.batch-{other}-{digits}.tmp", self.vault / f"wiki/.batch-{batch_id}-nothex.tmp",
+                self.vault / f"wiki/.batch-{batch_id}-{digits}.tmp.keep", self.vault / "wiki/notes.tmp"]
+        for path in keep:
+            path.write_text("keep")
+        MODULE.recover(self.vault, batch_id)
+        for path in [*stale, stale_link]:
+            self.assertFalse(path.is_symlink() or path.exists(), path.name)
+        self.assertEqual(outside.read_text(), "precious", "a symlinked copy is unlinked, never followed")
+        for path in keep:
+            self.assertEqual(path.read_text(), "keep", path.name)
+        self.assertEqual((self.vault / "wiki/sub/beta.md").read_text(), PAGE_B)
 
     def test_interrupted_record_and_finalization_recover_only_remaining_work(self):
         bundle = self.bundle(self.operation(), self.operation("wiki/beta.md", PAGE_B))

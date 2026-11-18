@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { defaultLauncher as launcher, startMcp } from "./mcp-client.mjs";
 
 // Reviewed batch write tools of `mcp --tools all` (#63), against synthetic disposable vaults and temporary configs.
@@ -297,6 +297,24 @@ subprocess.run = run
   const interruptedHash = await prepare([interrupted], 60);
   await cancelDuringPublish([interrupted], interruptedHash);
   assert.equal(fs.readFileSync(path.join(vault, interrupted.path), "utf8"), interrupted.content, "the page was published before the stall");
+  // Recover waits for the writer lock inside the 30 s deadline (the marker fires only once the lock is held), so a
+  // held lock ends in a clean timeout error, never a hang; a later recover succeeds once the lock is free.
+  const lockFile = path.join(vault, ".vault-meta/lifecycle/batches/writer.lock");
+  const holder = spawn("python3", ["-c", "import fcntl,sys,time\nfd=open(sys.argv[1],'a')\nfcntl.flock(fd,fcntl.LOCK_EX)\nprint('locked',flush=True)\ntime.sleep(60)", lockFile], { stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    await new Promise((resolve, reject) => { holder.stdout.once("data", resolve); holder.once("exit", () => reject(new Error("lock holder exited"))); });
+    const blockedClient = open({ env: { OSB_PI_TOOL_DEADLINE_MS: "1000" } });
+    await blockedClient.initialize();
+    const waitStart = Date.now();
+    const waited = structured(await blockedClient.callTool("wiki_batch_recover", { planHash: interruptedHash }));
+    assert.ok(Date.now() - waitStart < 10_000, "recover did not hang on the held lock");
+    assert.equal(waited.ok, false);
+    assert.equal(waited.code, "timeout");
+    await blockedClient.close();
+  } finally {
+    holder.kill("SIGKILL");
+  }
+  assert.equal(fs.readFileSync(path.join(vault, interrupted.path), "utf8"), interrupted.content, "the timed-out recover changed nothing");
   const recovering = open();
   await recovering.initialize();
   const doctor = structured(await recovering.callTool("wiki_doctor", {})).payload;

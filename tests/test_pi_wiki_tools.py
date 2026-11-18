@@ -281,6 +281,34 @@ class PiWikiToolTests(unittest.TestCase):
         self.assertEqual(batches, {"unfinished": [], "unfinishedCount": 0, "unreadable": 0})
         self.assertEqual(self.snapshot(), before)
 
+    def cli_only_journal(self, phase):
+        """A CLI-created source-capture batch whose journal has the given phase."""
+        batch = cli.load_source("pi_wiki_batch_authority", str(SCRIPTS / "wiki_batch.py"))
+        bundle = {"version": 1, "operations": [{"path": ".raw/agent-captures/ref.txt", "expectedHash": None, "content": "payload\n"}]}
+        planned = batch.inspect(self.vault.resolve(), bundle, self.config, "source-capture")
+        batch_id = batch.apply(self.vault.resolve(), bundle, self.config, planned["planHash"], "source-capture")["batchId"]
+        journal_path = self.vault / ".vault-meta/lifecycle/batches" / f"{batch_id}.json"
+        journal = json.loads(journal_path.read_text())
+        journal["phase"] = phase
+        journal_path.write_text(json.dumps(journal))
+        return batch_id, planned["planHash"]
+
+    def test_recover_refuses_non_wiki_page_batches_by_id_and_by_plan_hash(self):
+        batch_id, plan_hash = self.cli_only_journal("approved")
+        by_id = bridge.run_batch("batch-recover", {"batchId": batch_id})
+        self.assertEqual((by_id["ok"], by_id["code"]), (False, "authority-cli-only"))
+        by_plan = bridge.run_batch("batch-recover", {"planHash": plan_hash})
+        self.assertEqual((by_plan["ok"], by_plan["code"]), (False, "batch-refused"), "the plan-hash path only matches wiki-page journals")
+        journal = json.loads((self.vault / ".vault-meta/lifecycle/batches" / f"{batch_id}.json").read_text())
+        self.assertEqual(journal["phase"], "approved", "the refused recover did not touch the journal")
+
+    def test_doctor_marks_non_wiki_page_batches_cli_only(self):
+        batch_id, _ = self.cli_only_journal("approved")
+        before = self.snapshot()
+        entry = bridge.run("doctor", {})["payload"]["batches"]["unfinished"][0]
+        self.assertEqual((entry["batchId"], entry["authority"], entry["cliOnly"]), (batch_id, "source-capture", True))
+        self.assertEqual(self.snapshot(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -828,7 +828,8 @@ def batch_status(vault: Path, limit: int = 20) -> dict:
                 unreadable += 1
             elif journal["phase"] not in {"complete", "rolled-back"}:
                 unfinished.append({"batchId": journal["batchId"], "planHash": journal["planHash"], "phase": journal["phase"],
-                                   "authority": journal["authority"], "paths": [e["path"] for e in journal["entries"]][:limit]})
+                                   "authority": journal["authority"], "cliOnly": journal["authority"] != "wiki-page",
+                                   "paths": [e["path"] for e in journal["entries"]][:limit]})
         return {"unfinished": unfinished[:limit], "unfinishedCount": len(unfinished), "unreadable": unreadable}
     finally:
         os.close(dir_fd)
@@ -860,6 +861,25 @@ def batch_for_plan(vault: Path, plan_hash: str) -> str:
     if not chosen:
         raise BatchError("no recoverable batch journal exists for this plan hash")
     return chosen[0]["batchId"]
+
+
+def _remove_batch_temps(vault: Path, journal: dict) -> None:
+    """Delete this batch's interrupted `.batch-<id>-<hex>.tmp` publication copies from its target directories.
+
+    Only exact batch-ID matches are removed, through no-follow directory descriptors; a symlink with such a name is
+    unlinked itself, never followed. The caller holds the writer lock, so no live publication owns these names.
+    """
+    pattern = re.compile(rf"\.batch-{re.escape(journal['batchId'])}-[0-9a-f]{{32}}\.tmp")
+    for entry in journal["entries"]:
+        _, parent, _ = _target(vault, entry["path"], journal["authority"], allow_missing=True)
+        if parent is None:
+            continue
+        try:
+            for name in os.listdir(parent):
+                if pattern.fullmatch(name) and not stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode):
+                    os.unlink(name, dir_fd=parent)
+        finally:
+            os.close(parent)
 
 
 def _require_approved_config(journal: dict, selected: Path | None = None) -> Path:
@@ -1144,15 +1164,18 @@ def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: st
         return {"batchId": batch_id, "planHash": plan_hash, "phase": journal["phase"], "noop": False}
 
 
-def recover(vault: Path, batch_id: str, config: Path | None = None) -> dict:
+def recover(vault: Path, batch_id: str, config: Path | None = None, *, on_locked=None) -> dict:
     vault = Path(vault).resolve(strict=True)
     initial = _load_journal(vault, batch_id)
     require_valid_config(config or Path(initial["config"]["path"]))
     _require_approved_config(initial, config)
     with _locked(vault):
+        if on_locked is not None:
+            on_locked()  # the writer lock is held: the MCP bridge lifts its deadline only after any lock wait
         journal = _load_journal(vault, batch_id)
         require_valid_config(config or Path(journal["config"]["path"]))
         approved_config = _require_approved_config(journal, config)
+        _remove_batch_temps(vault, journal)
         if journal["phase"] == "complete":
             _verify_postimages(vault, journal)
             if journal["authority"] == "wiki-ledger":

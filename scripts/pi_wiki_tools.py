@@ -219,8 +219,10 @@ def run_batch(operation: str, params: dict[str, Any]) -> dict[str, Any]:
     try:
         if operation == "batch-recover":
             batch_id = params.get("batchId") or batch.batch_for_plan(vault, plan_hash)
-            mark_persisted()
-            payload = batch.recover(vault, batch_id, config_file)
+            authority = batch._load_journal(vault, batch_id)["authority"]
+            if authority != "wiki-page":
+                return fail(operation, "authority-cli-only", f"Batch {batch_id} has {authority} authority; recover it with the CLI batch-recover (batch-rollback is CLI-only too)")
+            payload = batch.recover(vault, batch_id, config_file, on_locked=mark_persisted)
         else:
             bundle = {"version": 1, "operations": params["operations"]}
             if operation == "batch-inspect":

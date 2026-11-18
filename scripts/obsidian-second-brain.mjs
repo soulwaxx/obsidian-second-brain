@@ -81,11 +81,16 @@ if (!native && !mcp) {
       stdout = Buffer.concat([stdout, chunk]);
     });
     let markerTail = "";
+    let persisted = false;
     child.stderr.on("data", (chunk) => {
       if (stderr.length < MAX_STDERR) stderr = Buffer.concat([stderr, chunk.subarray(0, MAX_STDERR - stderr.length)]);
-      if (STDIN_OPERATIONS.has(args[1])) {
+      if (STDIN_OPERATIONS.has(args[1]) && !persisted) {
         markerTail = (markerTail + chunk.toString("latin1")).slice(-4096);
-        if (markerTail.includes(JOURNAL_PERSISTED)) clearTimeout(timer);
+        if (markerTail.includes(JOURNAL_PERSISTED)) {
+          persisted = true;
+          clearTimeout(timer);
+          process.stderr.write(`${JOURNAL_PERSISTED}\n`); // lets the MCP server's hung-launcher watchdog stand down too
+        }
       }
     });
     child.on("error", () => finish(failure("process-start", "Unable to start the Python tool process", null)));
@@ -220,9 +225,9 @@ const BATCH_TOOLS = [
     description: "Write the pages the user approved after wiki_batch_inspect: resend the identical operations with that planHash. Refused if the operations, any target page or the selected config changed since inspection. Then updates navigation, the lifecycle log and the retrieval index. Never call without the user's explicit approval of the inspect summary. If the call fails, times out or is cancelled, call wiki_batch_recover with the same planHash before retrying.",
     inputSchema: { type: "object", additionalProperties: false, required: ["operations", "planHash"], properties: { operations: batchOperations, planHash: planHashInput } } },
   { name: "wiki_batch_recover", title: "Wiki batch recover", operation: "batch-recover", stdin: true, resumable: true, annotations: RECOVER_HINTS,
-    description: "Resume an interrupted wiki_batch_apply from its saved journal, by planHash (or batchId from wiki_doctor batches). Completes only the plan the user approved and refuses, preserving current bytes, if a target page changed since. Repeating it after completion is a no-op.",
+    description: "Resume an interrupted wiki_batch_apply from its saved journal, by planHash (or batchId of an unfinished batch from wiki_doctor batches that is not cliOnly). Completes only the plan the user approved and refuses, preserving current bytes, if a target page changed since. Repeating it after completion is a no-op.",
     inputSchema: { type: "object", additionalProperties: false, properties: { planHash: planHashInput,
-      batchId: { type: "string", pattern: "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", description: "Alternative to planHash: an unfinished batchId listed by wiki_doctor." } } } },
+      batchId: { type: "string", pattern: "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", description: "Alternative to planHash: an unfinished batchId listed by wiki_doctor whose entry is not cliOnly." } } } },
 ];
 const PROFILES = { read: READ_TOOLS, all: [...READ_TOOLS, ...BATCH_TOOLS] };
 
@@ -310,12 +315,13 @@ function serveMcp() {
       calls.delete(id);
       if (!call.cancelled) send({ id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: result.ok !== true } });
     };
-    // The child launcher enforces the 30 s deadline itself; this only covers a hung launcher. A resumable call is
-    // exempt: its launcher lifts the deadline once the batch journal is saved, and cancellation or EOF still stop it.
-    const watchdog = tool.resumable ? undefined : setTimeout(() => { timedOut = true; if (call.child) terminateCall(call); }, DEADLINE + 1500);
+    // The child launcher enforces the 30 s deadline itself; this only covers a hung launcher. A resumable call's
+    // launcher lifts the deadline once the batch journal is saved (and, for recover, the writer lock is held) and
+    // forwards its marker on stderr; the watchdog stands down then. Cancellation or EOF still stop the call.
+    const watchdog = setTimeout(() => { timedOut = true; if (call.child) terminateCall(call); }, DEADLINE + 1500);
     try {
       call.child = spawn(process.execPath, [launcher, "--pi-tool", tool.operation, ...(tool.stdin ? [] : [JSON.stringify(toolArgs)])],
-        { stdio: [tool.stdin ? "pipe" : "ignore", "pipe", "ignore"], env: process.env });
+        { stdio: [tool.stdin ? "pipe" : "ignore", "pipe", tool.resumable ? "pipe" : "ignore"], env: process.env });
     } catch {
       return settle(failed("process-start", "Unable to start the packaged wiki tool"));
     }
@@ -323,6 +329,13 @@ function serveMcp() {
     if (tool.stdin) { // batch parameters travel on stdin, not argv (argv is limited to 128 KiB on Linux)
       call.child.stdin.on("error", () => { /* the launcher exited first; its result is reported on close */ });
       call.child.stdin.end(JSON.stringify(toolArgs));
+    }
+    if (tool.resumable) {
+      let markerTail = "";
+      call.child.stderr.on("data", (chunk) => {
+        markerTail = (markerTail + chunk.toString("latin1")).slice(-256);
+        if (markerTail.includes(JOURNAL_PERSISTED)) clearTimeout(watchdog);
+      });
     }
     call.child.stdout.on("data", (chunk) => {
       if (overflow) return;
