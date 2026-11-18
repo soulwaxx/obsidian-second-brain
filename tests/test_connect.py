@@ -203,7 +203,7 @@ class FrameworkTests(ConnectCase):
         before = snapshot(self.home, self.config.parent)
         bootstrap = load_source("connect_test_bootstrap", str(SCRIPTS / "bootstrap-vault.py"))
         core = dict(planned["plan"])
-        del core["planHash"], core["backupDir"]
+        del core["planHash"], core["backupDir"], core["forcedBackupDirs"]
         for item in core["files"]:
             item.pop("entry", None)
             item.pop("block", None)
@@ -355,7 +355,7 @@ class FrameworkTests(ConnectCase):
         self.assertEqual(before, snapshot(self.home, self.config.parent))
         applied = self.apply("fixture-json", extra=("--force",))
         self.assertEqual(skill.read_bytes(), shipped)
-        backup_dir = Path(applied["plan"]["backupDir"]) / "fixture-json"  # one directory per agent
+        backup_dir = Path(applied["plan"]["backupDir"]) / "fixture-json/forced"  # one directory per agent; forced copies live in forced/
         self.assertEqual((backup_dir / "001-SKILL.md").read_bytes(), b"my customized skill\n")
         self.assertEqual(json.loads((backup_dir / "backup-index.json").read_text())["001-SKILL.md"], str(skill))
         # A pre-existing different file at a destination is refused even without a manifest.
@@ -641,6 +641,30 @@ class HardeningTests(ConnectCase):
         other.unlink()
         self.assertIn("node-missing", [r["code"] for r in self.status()["agents"]["fixture-json"]["reasons"]])
 
+    def test_launcher_node_is_replaced_by_the_same_executable_on_path(self):
+        cellar = self.root / "Cellar/node@24/24.1.0/bin"
+        cellar.mkdir(parents=True)
+        real = cellar / "node"
+        real.write_text("#!/bin/sh\necho v24.1.0\n", encoding="utf-8")
+        real.chmod(0o755)
+        stable = self.root / "opt/bin"
+        stable.mkdir(parents=True)
+        (stable / "node").symlink_to(real)
+        path = f"{stable}:{os.environ['PATH']}"
+        planned = self.preview("fixture-json", extra=())
+        self.assertEqual(planned["plan"]["node"], str(self.node))  # control: PATH has no node of ours
+        code, out, err = self.run_cli("fixture-json", "--json", env={"OSB_NODE": str(real), "PATH": path})
+        self.assertEqual(json.loads(out)["plan"]["node"], str(stable / "node"), err)  # unresolved PATH path, not the Cellar one
+        # A different executable on PATH does not replace the launcher's node, and --node always wins.
+        other = self.root / "elsewhere"
+        other.mkdir()
+        (other / "node").write_text("#!/bin/sh\necho v26.0.0\n", encoding="utf-8")
+        (other / "node").chmod(0o755)
+        code, out, err = self.run_cli("fixture-json", "--json", env={"OSB_NODE": str(real), "PATH": f"{other}:{os.environ['PATH']}"})
+        self.assertEqual(json.loads(out)["plan"]["node"], str(real), err)
+        code, out, err = self.run_cli("fixture-json", "--node", str(real), "--json", env={"OSB_NODE": str(real), "PATH": path})
+        self.assertEqual(json.loads(out)["plan"]["node"], str(real), err)
+
     # -- adapter targets ------------------------------------------------------------------------
     def test_function_locations_custom_entry_shape_and_rules_header(self):
         env = self.custom_env()
@@ -707,6 +731,21 @@ class HardeningTests(ConnectCase):
         self.assertEqual(rules.read_text(), '---\napplyTo: "**"\n---\n\nmy own instruction\n')
         self.assertFalse(self.manifest.exists())
 
+    def test_rules_file_recreated_after_deletion_is_removed_with_its_header(self):
+        env = self.custom_env()
+        home = Path(env["FIXTURE_CUSTOM_HOME"])
+        rules = home / "wiki.instructions.md"
+        home.mkdir()
+        rules.write_text("# mine\n", encoding="utf-8")
+        self.apply_with(env, "fixture-custom")
+        self.assertIs(json.loads(self.manifest.read_text())["agents"]["fixture-custom"]["rules"]["createdFile"], False)
+        rules.unlink()  # the user deletes the file; the next connect creates it again, with the header
+        self.apply_with(env, "fixture-custom", extra=("--force",))
+        record = json.loads(self.manifest.read_text())["agents"]["fixture-custom"]["rules"]
+        self.assertEqual((record["createdFile"], record["header"]), (True, '---\napplyTo: "**"\n---'))
+        self.remove_with(env, "fixture-custom")
+        self.assertFalse(rules.exists())  # no header-only file is left behind
+
     # -- symlinked parents ------------------------------------------------------------------------
     def test_symlinked_parent_directories_are_resolved_shown_and_hashed(self):
         real = self.root / "dotfiles/json"
@@ -754,20 +793,27 @@ class HardeningTests(ConnectCase):
             "yes": "enabled: yes\nmcp:\n  servers: {}\n",
             "On": "mcp:\n  servers: {}\nflag: On\n",
             "True": "flag: True\n",
+            "octal respelled": "n: 017\nmcp:\n  servers: {}\n",
+            "null respelled": "n: ~\nmcp:\n  servers: {}\n",
+            "underscored int": "n: 1_000\n",
+            "hex": "n: 0x1F\n",
+            "empty value": "n:\nmcp:\n  servers: {}\n",
+            "duplicate key": "a: 1\na: 2\nmcp:\n  servers: {}\n",
+            "nested duplicate key": "mcp:\n  servers: {}\n  servers: {}\n",
         }
         for label, content in cases.items():
             with self.subTest(label):
                 path.write_text(content, encoding="utf-8")
                 before = snapshot(self.home, self.config.parent)
                 refusal = self.refused("fixture-yaml")["refusals"][0]
-                self.assertEqual(refusal["code"], "config-rewrite-unsafe")
+                self.assertEqual(refusal["code"], "config-unparseable" if "duplicate" in label else "config-rewrite-unsafe")
                 self.assertIn("obsidian-wiki", refusal["snippet"])
                 self.assertEqual(before, snapshot(self.home, self.config.parent))
-        path.write_text("enabled: true\nquoted: 'yes'\nmcp:\n  servers: {}\n", encoding="utf-8")
+        path.write_text("enabled: true\nquoted: 'yes'\nport: 17\nratio: 1.5\nnothing: null\nname: café\nmcp:\n  servers: {}\n", encoding="utf-8")
         self.apply("fixture-yaml")
         import yaml
         merged = yaml.safe_load(path.read_text(encoding="utf-8"))
-        self.assertEqual((merged["enabled"], merged["quoted"]), (True, "yes"))
+        self.assertEqual((merged["enabled"], merged["quoted"], merged["port"], merged["ratio"], merged["nothing"]), (True, "yes", 17, 1.5, None))
 
     def test_json_rewrite_that_would_change_a_value_is_refused(self):
         mcp = self.json_dir / "mcp.json"
@@ -836,10 +882,65 @@ class HardeningTests(ConnectCase):
         self.assertFalse(skill.exists())
         self.assertFalse((self.json_dir / "skills").exists())
         self.assertTrue(removed["plan"]["force"])
-        backup = Path(removed["plan"]["backupDir"]) / "fixture-json"
+        backup = Path(removed["plan"]["backupDir"]) / "fixture-json/forced"
+        self.assertEqual(removed["plan"]["forcedBackupDirs"], [str(backup)])
         self.assertEqual((backup / "001-SKILL.md").read_bytes(), b"my customized skill\n")  # the only copy of the user's file
         self.assertFalse(Path(first["plan"]["backupDir"]).exists())  # connect-time backups were pruned
         self.assertFalse(self.manifest.exists())
+
+    def test_forced_skill_backups_survive_later_removal(self):
+        self.apply("fixture-json")
+        skill = self.json_dir / "skills/wiki-save/SKILL.md"
+        skill.write_bytes(b"my customized skill\n")
+        forced = self.apply("fixture-json", extra=("--force",))
+        forced_dir = Path(forced["plan"]["backupDir"]) / "fixture-json/forced"
+        self.assertEqual(forced["plan"]["forcedBackupDirs"], [str(forced_dir)])
+        for directory in (forced_dir, forced_dir.parent, forced_dir.parent.parent, forced_dir.parent.parent.parent):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
+        removed = self.apply("fixture-json", extra=("--remove",))
+        self.assertFalse(skill.exists())
+        self.assertFalse(self.manifest.exists())
+        self.assertEqual((forced_dir / "001-SKILL.md").read_bytes(), b"my customized skill\n")  # the only copy of the user's text
+        self.assertEqual(json.loads((forced_dir / "backup-index.json").read_text())["001-SKILL.md"], str(skill))
+        self.assertEqual([path.name for path in forced_dir.parent.iterdir()], ["forced"])  # connect-time backups were pruned
+        self.assertEqual(removed["plan"]["forcedBackupDirs"], [])
+        # The location is reported whenever a forced copy is made, in the human preview too.
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        self.apply("fixture-json")
+        skill.write_bytes(b"edited again\n")
+        planned = self.run_cli("fixture-json", "--force")[1]
+        self.assertIn("/fixture-json/forced; removal never prunes them", planned)
+
+    def test_mcp_entry_written_for_another_agent_is_shared_not_adopted(self):
+        twin = connect_fixture_adapter.Adapter(
+            name="fixture-twin", title="Fixture twin", detect=(".fixture-json",),
+            mcp=connect_fixture_adapter.McpTarget(path=".fixture-json/mcp.json", format="json", key_path=("mcpServers",)))
+        connect_fixture_adapter.register(type("R", (), {"REGISTRY": self.registry}), [twin])
+
+        def records():
+            return json.loads(self.manifest.read_text())["agents"]
+
+        # Across plans: the second agent shares the first one's entry and does not adopt it.
+        self.apply("fixture-json")
+        self.apply("fixture-twin")
+        self.assertNotIn("adopted", records()["fixture-twin"]["mcp"])
+        removal = self.apply("fixture-json", extra=("--remove",))
+        self.assertEqual(self.installed_mcp()["command"], str(self.node))  # still owned by the twin
+        self.assertTrue(any("also serves fixture-twin" in note for note in removal["notes"]))
+        self.apply("fixture-twin", extra=("--remove",))
+        self.assertFalse((self.json_dir / "mcp.json").exists())  # the last owner removes it
+        # Within one plan: nothing is adopted either, and removing both removes the entry.
+        self.apply("fixture-json", "fixture-twin")
+        self.assertTrue(all("adopted" not in record["mcp"] for record in records().values()))
+        self.apply("fixture-json", "fixture-twin", extra=("--remove",))
+        self.assertFalse((self.json_dir / "mcp.json").exists())
+        # An entry that was there before connect stays adopted by every agent that shares it.
+        self.apply("fixture-json")
+        self.manifest.unlink()
+        self.apply("fixture-json", "fixture-twin")
+        self.assertTrue(all(record["mcp"]["adopted"] for record in records().values()))
+        self.apply("fixture-json", "fixture-twin", extra=("--remove",))
+        self.assertEqual(self.installed_mcp()["command"], str(self.node))
 
     # -- adoption -----------------------------------------------------------------------------------------
     def test_identical_existing_entry_and_skill_copies_are_adopted_and_left_on_remove(self):
@@ -952,12 +1053,17 @@ class CliProcessTests(ConnectCase):
         report = self.doctor()["connect"]
         self.assertEqual([r["code"] for r in report["agents"]["fixture-json"]["reasons"]], ["version-mismatch"])
         argv = report["nextActions"][0]["argv"]
-        self.assertEqual(argv[-4:], ["connect", "fixture-json", "--python", str(shim)])
-        self.assertIn("--python " + str(shim), self.cli("doctor").stdout)
+        self.assertEqual(argv[-6:], ["connect", "fixture-json", "--python", str(shim), "--node", str(self.node)])
+        self.assertIn(f"--python {shim} --node {self.node}", self.cli("doctor").stdout)
         # Once the pinned interpreter cannot run the server, the command no longer pins it.
         shim.write_text("#!/bin/sh\necho 0 1 1\n", encoding="utf-8")
         report = self.doctor()["connect"]
         self.assertEqual({r["code"] for r in report["agents"]["fixture-json"]["reasons"]}, {"version-mismatch", "interpreter-unsuitable"})
+        self.assertEqual(report["nextActions"][0]["argv"][-4:], ["connect", "fixture-json", "--node", str(self.node)])
+        # A recorded node that is gone is not pinned either.
+        self.node.unlink()
+        report = self.doctor()["connect"]
+        self.assertIn("node-missing", {r["code"] for r in report["agents"]["fixture-json"]["reasons"]})
         self.assertEqual(report["nextActions"][0]["argv"][-2:], ["connect", "fixture-json"])
 
     def test_launcher_passes_its_own_node_to_connect(self):
@@ -1034,12 +1140,52 @@ class CliProcessTests(ConnectCase):
         self.assertEqual(report["agents"]["fixture-toml"]["state"], "connected")
         action = report["nextActions"][0]
         self.assertEqual((action["code"], action["mutates"], action["requiresReview"]), ("reconnect-agent", False, True))
-        self.assertEqual(action["argv"][-2:], ["connect", "fixture-json"])
+        self.assertEqual(action["argv"][-4:], ["connect", "fixture-json", "--node", str(self.node)])  # interpreter is gone, node is not
         human = self.cli("doctor").stdout
         self.assertIn("Connect fixture-json: stale (", human)
         self.assertIn("mcp-entry-modified", human)
         self.assertIn("Next: Preview the reviewed reconnect for fixture-json", human)
         self.assertEqual(before, snapshot(self.home, self.config.parent, self.vault))
+
+    def test_a_different_newer_package_is_advisory_not_stale(self):
+        older = self.root / "pkg-old"
+        for name in ("scripts", "skills", "hooks", "package.json", "requirements.txt"):
+            source = ROOT / name
+            (shutil.copytree if source.is_dir() else shutil.copy)(source, older / name,
+                                                                  **({"ignore": shutil.ignore_patterns("__pycache__")} if source.is_dir() else {}))
+        manifest_version = json.loads((ROOT / "package.json").read_text())["version"]
+        package_json = json.loads((older / "package.json").read_text())
+        package_json["version"] = "0.0.1"
+        (older / "package.json").write_text(json.dumps(package_json), encoding="utf-8")
+        self.connect_apply("fixture-json", package=older)
+        before = snapshot(self.home, self.config.parent, self.vault)
+        result = self.cli("doctor", "--json")  # run from ROOT: another install, newer than the recorded one
+        self.assertEqual(result.returncode, 0, result.stderr)  # advisory: not a doctor failure
+        report = json.loads(result.stdout)["connect"]
+        agent = report["agents"]["fixture-json"]
+        self.assertEqual(agent["state"], "newer-package-available")
+        self.assertEqual([reason["code"] for reason in agent["reasons"]], ["newer-package-available"])
+        self.assertIn(manifest_version, agent["reasons"][0]["detail"])
+        action = report["nextActions"][0]
+        self.assertEqual((action["code"], action["mutates"], action["requiresReview"]), ("reconnect-newer-package", False, True))
+        self.assertEqual(action["argv"][1], str(SCRIPTS / "obsidian-second-brain.py"))  # reconnect with the newer install
+        self.assertEqual(action["argv"][-6:], ["connect", "fixture-json", "--python", sys.executable, "--node", str(self.node)])
+        human = self.cli("doctor").stdout
+        self.assertIn("Connect fixture-json: newer-package-available", human)
+        self.assertIn("Next: A newer package than the one fixture-json runs", human)
+        self.assertEqual(before, snapshot(self.home, self.config.parent, self.vault))
+        # The recorded root still decides staleness: a version mismatch there stays version-mismatch.
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest["agents"]["fixture-json"]["version"] = "0.0.0"
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        agent = self.doctor()["connect"]["agents"]["fixture-json"]
+        self.assertEqual((agent["state"], [reason["code"] for reason in agent["reasons"]]), ("stale", ["version-mismatch"]))
+        # The same root, or an older/equal doctor install, is plain connected.
+        package_json["version"] = "999.0.0"
+        (older / "package.json").write_text(json.dumps(package_json), encoding="utf-8")
+        manifest["agents"]["fixture-json"]["version"] = "999.0.0"
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(self.doctor()["connect"]["agents"]["fixture-json"]["state"], "connected")
 
     def test_doctor_flags_an_unmergeable_detected_agent_as_manual_only(self):
         self.json_dir.mkdir()

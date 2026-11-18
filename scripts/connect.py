@@ -47,6 +47,7 @@ PACKAGE_ROOT = SCRIPTS.parent
 LAUNCHER = "scripts/obsidian-second-brain.mjs"
 MANIFEST_NAME = "connect-manifest.json"
 BACKUP_DIR = "connect-backups"
+FORCED_DIR = "forced"  # below an agent's backup directory: --force copies of customized skills, never pruned
 NODE_ENV = "OSB_NODE"  # set by the JavaScript launcher to its own node executable
 MANIFEST_SCHEMA = 1
 RULES_START = "<!-- obsidian-second-brain:start -->"
@@ -199,7 +200,20 @@ def parse_config(fmt: str, text: str | None, path: Path | None = None) -> dict[s
             if re.search(r"(?m)(^|\s)#", text):
                 raise ValueError("YAML comments would be lost by a rewrite")
             import yaml
-            doc = yaml.safe_load(text)
+
+            class StrictLoader(yaml.SafeLoader):
+                def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+                    seen: set[Any] = set()
+                    for key_node, _ in node.value:
+                        if key_node.tag == "tag:yaml.org,2002:merge":
+                            continue  # refused later by ensure_rewrite_safe
+                        key = self.construct_object(key_node, deep=True)
+                        if key in seen:
+                            raise ValueError(f"duplicate key {key!r}")
+                        seen.add(key)
+                    return super().construct_mapping(node, deep)
+
+            doc = yaml.load(text, Loader=StrictLoader)  # noqa: S506 - a SafeLoader subclass
             if doc is None:
                 doc = {}
         else:
@@ -235,7 +249,8 @@ def ensure_rewrite_safe(fmt: str, text: str | None, path: Path | None = None) ->
 
     Layout (indent, line breaks, flow style, quoting of keys) is normalized by a rewrite and documented;
     values must stay as written: numbers such as `1e5` or `1.50`, JSON string escapes, YAML anchors, aliases
-    and merge keys, and YAML 1.1 booleans such as `yes` or `On`. TOML is never rewritten.
+    and merge keys, and plain scalars that resolve to a non-string and would be respelled (`yes`, `017`, `~`,
+    `1_000`, an empty value). TOML is never rewritten.
     """
     if not text:
         return
@@ -257,8 +272,11 @@ def ensure_rewrite_safe(fmt: str, text: str | None, path: Path | None = None) ->
                     tag = resolver.resolve(yaml.ScalarNode, event.value, event.implicit)
                     if tag == "tag:yaml.org,2002:merge":
                         raise ValueError("YAML merge keys would be expanded")
-                    if tag == "tag:yaml.org,2002:bool" and event.value not in ("true", "false"):
-                        raise ValueError(f"YAML boolean {event.value} would be rewritten as true or false")
+                    if tag != "tag:yaml.org,2002:str":
+                        value = resolver.construct_object(yaml.ScalarNode(tag, event.value))
+                        dumped = yaml.safe_dump(value, allow_unicode=True).removesuffix("\n...\n").removesuffix("\n")
+                        if dumped != event.value:
+                            raise ValueError(f"YAML value {event.value!r} would be rewritten as {dumped}")
     except ValueError as exc:
         raise Refusal("config-rewrite-unsafe", f"cannot merge into {path or 'config'}: rewriting it would change existing values ({exc}); add the entry by hand", path) from exc
 
@@ -635,8 +653,17 @@ def probe_interpreter(selected: str | None) -> tuple[str, list[str]]:
 
 
 def resolve_node(selected: str | None) -> str:
-    """Absolute node executable to pin in MCP entries: --node, else the launcher's own node, else the one on PATH."""
-    chosen = selected or os.environ.get(NODE_ENV) or shutil.which("node")
+    """Absolute node executable to pin in MCP entries: --node, else the launcher's own node, else the one on PATH.
+
+    The launcher's node is replaced by the `node` on PATH (symlinks kept) when both are the same executable.
+    """
+    launcher_node = os.environ.get(NODE_ENV)
+    on_path = shutil.which("node")
+    chosen = selected or launcher_node or on_path
+    if not selected and launcher_node and on_path and os.path.realpath(on_path) == os.path.realpath(launcher_node):
+        # The launcher's node is a version-specific path (a Homebrew Cellar directory); the same executable
+        # reached through PATH (`/opt/homebrew/bin/node`) survives an upgrade, so pin that unresolved path.
+        chosen = on_path
     if not chosen:
         raise Refusal("node-missing", "no node executable found; select one with --node PATH")
     path = Path(os.path.abspath(os.path.expanduser(chosen)))
@@ -687,6 +714,7 @@ class Context:
     sources: dict[str, bytes]
     notes: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
+    claims: dict[tuple[str, str], tuple[bool, bool]] = field(default_factory=dict)  # (path, name) -> (adopted, createdFile) of the MCP entries planned so far
 
     def place(self, location: Location, directory: bool = False) -> Path:
         """The real path of an adapter location; a symlinked parent shows up in the plan as `requestedPath`."""
@@ -755,7 +783,16 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
         assert target is not None and ctx.interpreter is not None and ctx.node is not None
         path, fmt, key_path, name = ctx.place(target.path), target.format, tuple(target.key_path), target.name
         entry = target.entry(mcp_command(ctx.package_root, ctx.node), ctx.env)
-    created = old["createdFile"] if old else read_file(path) is None
+    key = (str(path), name)
+    if old is None and not ctx.remove:
+        # An entry that another record or an earlier agent of this plan owns is shared: it shares that owner's
+        # adoption and file creation, so the last agent removed undoes what connect did.
+        owners = [(bool(item.get("adopted")), item["createdFile"]) for agent, other in ctx.manifest["agents"].items()
+                  if agent != adapter.name and (item := other["mcp"]) and (item["path"], item["name"]) == key]
+        claim = ctx.claims.get(key) or ((all(a for a, _ in owners), any(c for _, c in owners)) if owners else None)
+    else:
+        claim = None
+    created = old["createdFile"] if old else (claim[1] if claim else False) or read_file(path) is None
     try:
         if entry is None and str(path) in others:
             planner.ctx.notes.append(f"{adapter.name}: {path} also serves {', '.join(sorted(others[str(path)]))}; its entry stays")
@@ -771,7 +808,10 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
                 **({"entry": entry} if entry is not None else {}))
     if entry is None:
         return None
-    adopted = text is not None and new_text == text and (old is None or bool(old.get("adopted")))
+    # Adopted: identical and already there, and nobody else owns it (an owner's adoption is inherited).
+    inherited = bool(old.get("adopted")) if old is not None else (claim[0] if claim else True)
+    adopted = text is not None and new_text == text and inherited
+    ctx.claims[key] = (adopted, created)
     return {"path": str(path), "format": fmt, "keyPath": list(key_path), "name": name,
             "entrySha256": entry_hash(entry), "createdFile": created, **({"adopted": True} if adopted else {})}
 
@@ -789,6 +829,8 @@ def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, 
         path = ctx.place(adapter.rules.path)
     created = old["createdFile"] if old else read_file(path) is None
     text = read_text(planner, path)
+    if text is None:
+        created = True  # absent now (new, or deleted since an earlier connect): connect creates it, so removal may delete it
     span = _rules_span(text, path) if text is not None else None
     recorded = old["blockSha256"] if old else None
     if span is not None:
@@ -994,8 +1036,13 @@ def backup_dir(ctx: Context, plan_hash: str) -> Path:
     return ctx.config_dir / BACKUP_DIR / plan_hash[:16]
 
 
+def forced_backup(op: FileOp) -> bool:
+    """A customized skill copy that --force replaces or removes: the only copy of the user's text."""
+    return op.role == "skill" and op.backup and op.before is not None and op.op in ("update", "delete")
+
+
 def prune_backups(ctx: Context, agents: list[str], plan_hash: str) -> None:
-    """Delete the connect-time backups of removed agents; this plan's own (customized skill copies) stay."""
+    """Delete the connect-time backups of removed agents; this plan's own and every `forced/` copy stay."""
     root = ctx.config_dir / BACKUP_DIR
     if not root.is_dir():
         return
@@ -1003,7 +1050,20 @@ def prune_backups(ctx: Context, agents: list[str], plan_hash: str) -> None:
         if plan_dir.name == plan_hash[:16] or not plan_dir.is_dir():
             continue
         for agent in agents:
-            shutil.rmtree(plan_dir / agent, ignore_errors=True)
+            agent_dir = plan_dir / agent
+            if not agent_dir.is_dir():
+                continue
+            for item in agent_dir.iterdir():
+                if item.name == FORCED_DIR:
+                    continue
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+            try:
+                agent_dir.rmdir()
+            except OSError:
+                pass
         try:
             plan_dir.rmdir()
         except OSError:
@@ -1038,12 +1098,12 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str, agents: list[str]
 
     try:
         backups = [op for op in changed if op.backup and op.before is not None]
-        per_agent: dict[str, list[FileOp]] = {}
+        per_agent: dict[tuple[str, bool], list[FileOp]] = {}
         for op in backups:
             for agent in op.agents:
-                per_agent.setdefault(agent, []).append(op)
-        for agent, ops in sorted(per_agent.items()):
-            directory = backup_dir(ctx, plan_hash) / agent
+                per_agent.setdefault((agent, forced_backup(op)), []).append(op)
+        for (agent, forced), ops in sorted(per_agent.items()):
+            directory = backup_dir(ctx, plan_hash) / agent / (FORCED_DIR if forced else "")
             index = {}
             for number, op in enumerate(ops, 1):
                 name = f"{number:03d}-{op.path.name}"
@@ -1053,8 +1113,12 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str, agents: list[str]
             index_data = (json.dumps(index, indent=2, sort_keys=True) + "\n").encode("utf-8")
             if read_file(directory / "backup-index.json") != index_data:
                 put(directory / "backup-index.json", None, index_data, 0o600, private=True)
-            for private_dir in (directory, directory.parent, directory.parent.parent):
+            private_dir = directory
+            while True:  # the forced/ or agent directory, the plan directory and connect-backups itself
                 os.chmod(private_dir, 0o700)
+                if private_dir.name == BACKUP_DIR:
+                    break
+                private_dir = private_dir.parent
         for op in changed:
             mode = op.path.lstat().st_mode & 0o777 if op.before is not None else (0o600 if op.role in ("mcp", "manifest") else 0o644)
             put(op.path, op.before, op.after, mode)
@@ -1190,6 +1254,28 @@ def evaluate(record: dict[str, Any], probes: dict[str, str | None] | None = None
     return reasons
 
 
+def _version_key(version: str | None) -> tuple[tuple[int, ...], int, str] | None:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?", version or "")
+    return None if match is None else ((int(match[1]), int(match[2]), int(match[3])), match[4] is None, match[4] or "")
+
+
+def newer_package(record: dict[str, Any]) -> dict[str, str] | None:
+    """An advisory when doctor's own install is a different, newer package than the recorded one.
+
+    Compared with the version at the recorded root (what the entry runs), else the recorded version.
+    The recorded root is never replaced silently: the user reviews a reconnect from the newer install.
+    """
+    root = record["packageRoot"]
+    if os.path.realpath(root) == os.path.realpath(PACKAGE_ROOT):
+        return None
+    running = package_version(Path(root)) or record["version"]
+    mine = package_version()
+    mine_key, running_key = _version_key(mine), _version_key(running)
+    if mine_key and running_key and mine_key > running_key:
+        return {"code": "newer-package-available", "detail": f"{mine} at {PACKAGE_ROOT} is newer than {running} at {root}"}
+    return None
+
+
 def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: Path, probes: dict[str, str | None]) -> dict[str, Any]:
     detected = None
     if adapter is not None:
@@ -1201,6 +1287,8 @@ def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: 
     if record is not None:
         reasons = evaluate(record, probes)
         state = "stale" if reasons else "connected"
+        if not reasons and (advisory := newer_package(record)):
+            state, reasons = "newer-package-available", [advisory]  # advisory only: nothing is broken
     elif adapter is None or adapter.mcp is None:
         state = "manual-only"
         reasons = [{"code": "no-automatic-target", "detail": "this agent has no user-level MCP config connect can merge safely"}]
@@ -1218,11 +1306,11 @@ def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: 
                 reasons = [{"code": getattr(exc, "code", "config-unparseable"), "detail": str(exc)}]
     return {"title": adapter.title if adapter else None, "state": state, "detected": detected,
             "verification": adapter.verification if adapter else None, "adapterRegistered": adapter is not None,
-            "version": (record or {}).get("version"), "interpreter": (record or {}).get("interpreter"), "reasons": reasons}
+            "version": (record or {}).get("version"), "interpreter": (record or {}).get("interpreter"), "node": (record or {}).get("node"), "reasons": reasons}
 
 
 def status(config_file: Path, home: Path | None = None) -> dict[str, Any]:
-    """Read-only connect state for doctor and the list view: connected, stale, absent or manual-only."""
+    """Read-only connect state for doctor and the list view: connected, newer-package-available (advisory), stale, absent or manual-only."""
     home = home or Path.home()
     manifest_path = manifest_path_for(config_file)
     manifest, error = load_manifest(manifest_path)
@@ -1252,8 +1340,10 @@ def public_plan(ctx: Context, planner: Planner, core: dict[str, Any], plan_hash:
         shown = dict(item)
         shown.update({key: value for key, value in op.detail.items() if key in ("entry", "block", "header", "root")})
         files.append(shown)
+    forced = sorted({str(backup_dir(ctx, plan_hash) / agent / FORCED_DIR) for op in planner.ops.values() if forced_backup(op) for agent in op.agents})
     return {**core, "files": files, "planHash": plan_hash,
-            "backupDir": str(backup_dir(ctx, plan_hash)) if any(item["backup"] for item in core["files"]) else None}
+            "backupDir": str(backup_dir(ctx, plan_hash)) if any(item["backup"] for item in core["files"]) else None,
+            "forcedBackupDirs": forced}
 
 
 def adapter_extras(adapters: list[Adapter], ctx: Context) -> tuple[list[dict[str, str]], list[str]]:
@@ -1320,6 +1410,8 @@ def _print_plan(output: dict[str, Any], names: list[str], args: argparse.Namespa
         print(f"Create skill copies ({len(items)} files, JSON lists each): {root}")
     if plan["backupDir"]:
         print(f"Backups: {plan['backupDir']}")
+    for directory in plan["forcedBackupDirs"]:
+        print(f"Customized skill copies are saved in {directory}; removal never prunes them, delete them by hand when you no longer need them")
     if all(item["op"] == "unchanged" for item in plan["files"]):
         print("No changes planned.")
     for note in output["notes"]:

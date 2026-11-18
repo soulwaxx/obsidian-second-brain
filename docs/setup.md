@@ -323,7 +323,7 @@ or the selected config, and when the bin is not on `PATH` the
 gives the same result.
 
 `doctor --json` also reports a `connect` section (additive; schema version unchanged): the
-state of agents wired by `obsidian-second-brain connect` as `connected`, `stale`,
+state of agents wired by `obsidian-second-brain connect` as `connected`, `newer-package-available` (advisory), `stale`,
 `absent` or `manual-only`, read from the install manifest next to the selected config.
 Doctor only reads it; see [Connect agents to the wiki](agents.md#doctor-and-stale-connections).
 

@@ -304,7 +304,7 @@ network call at agent start), upserts a marked rules block, and copies the six
 portable skills, recording everything in a manifest next to the selected config.
 It writes user-level files only, never into the vault or a project repository, and
 `doctor` reports connected, stale (after an upgrade or move), absent and
-manual-only agents without repairing them. See [the agent guide](docs/agents.md).
+manual-only agents, and advises when a newer package is installed elsewhere, without repairing them. See [the agent guide](docs/agents.md).
 
 | Agent | Mechanism | Status |
 | --- | --- | --- |

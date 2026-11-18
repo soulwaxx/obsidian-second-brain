@@ -476,19 +476,27 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
 
 
 def connect_state(config_file: Path) -> dict[str, Any]:
-    """Read-only `connect` wiring state (connected, stale, absent, manual-only); suggestions are never run."""
+    """Read-only `connect` wiring state (connected, stale, absent, manual-only, advisory newer-package-available); suggestions are never run."""
     state = load_source("obsidian_cli_connect", str(Path(__file__).with_name("connect.py"))).status(config_file)
     cli = str(PACKAGE_ROOT / "scripts/obsidian-second-brain.py")
     env = {"OBSIDIAN_AGENT_CONFIG": str(config_file)}
     broken = {"interpreter-missing", "interpreter-unsuitable"}
+
+    def reconnect(name: str, agent: dict[str, Any]) -> list[str]:
+        codes = {reason["code"] for reason in agent["reasons"]}
+        # Keep the recorded interpreter and node while they still work, so the repair does not silently switch environments.
+        return ([sys.executable, cli, "connect", name]
+                + (["--python", agent["interpreter"]] if not broken & codes else [])
+                + (["--node", agent["node"]] if "node-missing" not in codes and os.access(agent["node"], os.X_OK) else []))
+
     state["nextActions"] = [
         _action("reconnect-agent", f"Preview the reviewed reconnect for {name}; it repairs the stale wiring only after you apply its plan hash.",
-                "doctor-and-stale-connections",
-                [sys.executable, cli, "connect", name]
-                # Keep the recorded interpreter while it still works, so the repair does not silently switch environments.
-                + (["--python", agent["interpreter"]] if not broken & {reason["code"] for reason in agent["reasons"]} else []),
-                doc=AGENTS_DOC, env=env, review=True)
-        for name, agent in state["agents"].items() if agent["state"] == "stale"]
+                "doctor-and-stale-connections", reconnect(name, agent), doc=AGENTS_DOC, env=env, review=True)
+        for name, agent in state["agents"].items() if agent["state"] == "stale"
+    ] + [
+        _action("reconnect-newer-package", f"A newer package than the one {name} runs is installed here; preview a reconnect with this install (advisory, nothing is broken).",
+                "doctor-and-stale-connections", reconnect(name, agent), doc=AGENTS_DOC, env=env, review=True)
+        for name, agent in state["agents"].items() if agent["state"] == "newer-package-available"]
     return state
 
 
