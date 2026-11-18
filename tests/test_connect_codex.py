@@ -461,6 +461,22 @@ class ForeignEditTests(CodexCase):
         self.assertEqual(self.refused("codex", "--remove")["refusals"][0]["code"], "entry-modified")
         self.assertEqual(before, snapshot(self.home))
 
+    def test_an_always_allow_approval_codex_saved_blocks_update_and_removal_with_an_explanation(self):
+        text = self.connected()
+        end = "# obsidian-second-brain:end\n"
+        # Codex "Always allow" persists a per-tool approval as a subtable of our server (mcp_tool_call.rs).
+        saved = '\n[mcp_servers.obsidian-wiki.tools.wiki_batch_apply]\napproval_mode = "approve"\n'
+        self.config_toml.write_text(text[:-len(end)] + saved + end, encoding="utf-8")
+        before = snapshot(self.home)
+        self.assertEqual(self.refused("codex", "--remove")["refusals"][0]["code"], "entry-modified")
+        other = self.root / "other-node"
+        other.write_text("#!/bin/sh\necho v24.1.0\n", encoding="utf-8")
+        other.chmod(0o755)
+        refusal = self.refused("codex", "--node", str(other))["refusals"][0]
+        self.assertEqual(refusal["code"], "entry-differs")
+        self.assertIn("that connect wrote was changed afterwards", refusal["message"])
+        self.assertEqual(before, snapshot(self.home))
+
     def test_update_replaces_a_table_that_codex_moved_and_leaves_its_neighbours(self):
         text = self.connected()
         end = "# obsidian-second-brain:end\n"

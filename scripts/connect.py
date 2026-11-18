@@ -498,8 +498,10 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
         return dump_config(fmt, doc, text)
     if current == entry:
         return text
-    if current is not None and (owned is None or entry_hash(current) != owned):
+    if current is not None and owned is None:
         raise Refusal("entry-differs", f"{path or 'config'}: an entry named {name!r} already exists and differs; connect only manages its own entry", path)
+    if current is not None and entry_hash(current) != owned:
+        raise Refusal("entry-differs", f"{path or 'config'}: the entry {name!r} that connect wrote was changed afterwards (by hand or by the agent, for example a saved tool approval); connect will not overwrite it, so update or remove it by hand", path)
     if fmt == "toml":
         block = toml_block(key_path, name, entry)
         body = text or ""
