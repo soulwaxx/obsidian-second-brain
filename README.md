@@ -166,6 +166,22 @@ does not provide web/media extraction or authorize wiki filing. See the
 [focused workflow reference](skills/wiki/references/focused-workflows.md) and
 [baseline contract](docs/source-baselines.md) for approval and recovery details.
 
+The six portable skills (`wiki`, `wiki-query`, `wiki-save`, `wiki-ingest`,
+`wiki-research`, `wiki-health`) are client-neutral and choose tools by client
+type; the shared mapping is
+[tool surface by client](skills/wiki/references/tool-surface.md). Claude Code,
+Pi, and omp read with the `wiki_*` tools (native in Pi, MCP in Claude, otherwise
+the package-relative CLI) and write with their hook-guarded file tools. Agents
+without those hooks (Codex CLI, Copilot, Cursor, OpenCode, other MCP clients)
+read with the MCP `wiki_*` tools and write only through the MCP batch tools
+(`wiki_batch_inspect`, your approval of its summary, then `wiki_batch_apply`),
+never with their own file or shell tools. Operations that need the package
+scripts (setup, index builds, capture, lint, evidence reports, migration) are
+not available to those agents; run them from Claude, Pi, or the CLI. The skills
+are also valid as plain copies of those six folders: their links stay inside the
+copied set, and they never assume a package path, plugin variable, or `PATH`
+bin.
+
 Startup supplies a small vault locator rather than injecting the entire
 personal index into unrelated work. Automatic recall that adds a few relevant
 wiki excerpts before each prompt is available for Claude Code and Pi/omp but is

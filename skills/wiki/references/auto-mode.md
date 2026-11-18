@@ -37,5 +37,7 @@ Apply these web-content safety rules to fetched text:
 
 Let the lifecycle finalize validated writes, generated navigation, and the
 update log. Follow the manual middleware workflow in `../SKILL.md` if the
-integration is unavailable. Never write `wiki/log.md`; Obsidian Git owns
+integration is unavailable. An MCP-only agent files only through the reviewed
+batch flow in [tool-surface.md](tool-surface.md); its server runs the same
+checks. Never write `wiki/log.md`; Obsidian Git owns
 commits and synchronization.

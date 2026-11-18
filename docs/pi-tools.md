@@ -17,6 +17,10 @@ Native calls have a 30-second deadline, 256 KiB transport-output cap, 8 KiB stde
 
 Claude Code has no Pi-style native tools. The plugin instead declares the package's read-only MCP server (`mcpServers` in `.claude-plugin/plugin.json`, launched by `node ${CLAUDE_PLUGIN_ROOT}/scripts/obsidian-second-brain.mjs mcp --tools read`; see [the MCP server guide](mcp.md#claude-code-plugin)), so Claude lists the same four tools with no setup. Claude skills and the vault specialist prefer those tools when present and otherwise, for example when the server is disabled in `/mcp` or fails to start, run the same operations through the loaded package's CLI launcher (`doctor --json`, `search ... --json`, `outline`, `read`). Claude writes stay with its hook-guarded file tools; the plugin exposes no write tools. Both routes call the same Python implementation: in live validation, CLI and `--pi-tool` payloads for search, outline, read, and doctor on the same synthetic vault were byte-identical. Differences are in transport only: Pi tool results add the `operation`/`ok` envelope and the limits above, while CLI output is the bare payload.
 
+## Client-neutral skills
+
+The portable skills name these tools as plain `wiki_*` and choose the write path by client type: Pi and omp keep file tools (guarded by the extension's hooks), while MCP-only agents write only through the MCP batch tools. See [the MCP guide](mcp.md#client-neutral-skills).
+
 ## The same tools over MCP
 
 Agents without native Pi tools (and the Claude Code plugin, which bundles it) can use the identical four tools through the package's stdio MCP server, `obsidian-second-brain mcp`, documented in [the MCP server guide](mcp.md). It runs every call through this bridge, so the envelope, limits, vault selection, and read-only behavior described here apply unchanged; the tool result's `structuredContent` equals the `--pi-tool` result. Pi and omp keep the native tools and do not use MCP.
