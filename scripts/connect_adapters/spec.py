@@ -51,7 +51,7 @@ class McpTarget:
 class RulesTarget:
     """A user-level Markdown rules file that receives the marked `obsidian-second-brain` block."""
     path: Location
-    # Text (for example front matter such as VS Code's `applyTo`) written before the marked block, only when
+    # Text (for example YAML front matter) written before the marked block, only when
     # connect creates the file. It is recorded in the manifest: `--remove` deletes the file only when it still
     # holds just this header and the block, otherwise it removes only the block.
     header: str | None = None
