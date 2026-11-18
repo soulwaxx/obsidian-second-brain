@@ -23,7 +23,6 @@ from connect_adapters import copilot_cli, copilot_vscode  # noqa: E402
 from test_connect import ConnectCase, snapshot  # noqa: E402
 
 LAUNCHER = str(ROOT / "scripts/obsidian-second-brain.mjs")
-HEADER = '---\napplyTo: "**"\n---'
 BLOCK_START = "<!-- obsidian-second-brain:start -->"
 BLOCK_END = "<!-- obsidian-second-brain:end -->"
 OVERRIDES = ("COPILOT_HOME", "APPDATA", "XDG_CONFIG_HOME", "OBSIDIAN_VAULT_PATH")
@@ -52,7 +51,7 @@ class CopilotCase(ConnectCase):
         return {path for path in after if before.get(path) != after[path] and after[path][0] != "dir"}
 
     def files_under(self, root):
-        """Files left below a directory; removal leaves the (empty) directories connect created."""
+        """Files left below a directory."""
         return sorted(str(path) for path in root.rglob("*") if path.is_file()) if root.exists() else []
 
     def skill_paths(self, root):
@@ -112,6 +111,9 @@ class CopilotCliTests(CopilotCase):
         self.assertTrue(all(item["op"] == "create" for item in planned["plan"]["files"]))
         self.assertEqual(planned["snippets"], [])  # user-level rules are written, so nothing to print
         self.assertTrue(any("wiki_batch_apply" in note for note in planned["notes"]))
+        notes = " ".join(planned["notes"])
+        self.assertIn("also covers VS Code", notes)
+        self.assertIn("Dock or Finder", notes)
         self.apply("copilot-cli")
         written = {str(path) for path in self.written(before)}
         self.assertEqual(written, paths)  # nothing else under HOME, the config directory or the vault
@@ -281,25 +283,28 @@ class CopilotVscodeTests(CopilotCase):
             listed = json.loads(self.run_cli("--json", env={"APPDATA": str(appdata)})[1])
             self.assertTrue({item["name"]: item["detected"] for item in listed["agents"]}["copilot-vscode"])
 
-    def test_preview_lists_every_file_prints_project_snippets_and_writes_nothing_else(self):
+    def test_preview_lists_every_file_prints_the_repository_snippet_and_writes_nothing_else(self):
         before = snapshot(self.home, self.config.parent, self.vault)
         planned = self.preview("copilot-vscode")
         self.assertEqual(before, snapshot(self.home, self.config.parent, self.vault))
-        instructions = self.cli_dir / "instructions/obsidian-second-brain.instructions.md"
+        instructions = self.cli_dir / "copilot-instructions.md"  # the file the Copilot harness reads in every chat
         paths = {item["path"] for item in planned["plan"]["files"]}
         self.assertEqual(paths, {str(self.vscode_dir / "mcp.json"), str(instructions), str(self.manifest), *self.skill_paths(self.skills)})
         snippets = {item["destination"]: item["content"] for item in planned["snippets"]}
-        self.assertEqual(list(snippets), [".github/copilot-instructions.md", ".vscode/mcp.json"])
+        self.assertEqual(list(snippets), [".github/copilot-instructions.md"])  # no workspace MCP snippet
         self.assertIn("never edit vault files directly", snippets[".github/copilot-instructions.md"])
         self.assertNotIn("{{rules}}", snippets[".github/copilot-instructions.md"])
-        workspace = json.loads(snippets[".vscode/mcp.json"])
-        self.assertEqual(workspace["servers"]["obsidian-wiki"]["type"], "stdio")
         self.assertTrue(any("wiki_batch_apply" in note for note in planned["notes"]))
+        notes = " ".join(planned["notes"])
+        self.assertIn("connect `copilot-cli` instead", notes)  # the Copilot harness needs the CLI adapter, not this one
+        self.assertIn("deprecated Local harness", notes)
+        self.assertIn("Dock or Finder", notes)  # COPILOT_HOME only reaches VS Code when its environment has it
+        self.assertFalse((self.cli_dir / "instructions").exists())
         self.apply("copilot-vscode")
         self.assertEqual({str(path) for path in self.written(before)}, paths)
         self.assertEqual(list(self.root.rglob(".vscode")) + list(self.root.rglob(".github")), [])  # never a project file
 
-    def test_entry_header_and_skills(self):
+    def test_entry_rules_and_skills(self):
         self.apply("copilot-vscode")
         document = json.loads((self.vscode_dir / "mcp.json").read_text(encoding="utf-8"))
         self.assertEqual(list(document), ["servers"])
@@ -307,15 +312,16 @@ class CopilotVscodeTests(CopilotCase):
             "type": "stdio", "command": str(self.node),
             "args": [LAUNCHER, "mcp", "--tools", "all"],
             "env": {"PYTHON": sys.executable, "OBSIDIAN_AGENT_CONFIG": str(self.config)}})
-        rules = (self.cli_dir / "instructions/obsidian-second-brain.instructions.md").read_text(encoding="utf-8")
-        self.assertTrue(rules.startswith(f"{HEADER}\n\n{BLOCK_START}\n"))
+        rules = (self.cli_dir / "copilot-instructions.md").read_text(encoding="utf-8")
+        self.assertTrue(rules.startswith(BLOCK_START + "\n"))  # plain Markdown: no `applyTo` front matter, so every chat gets it
         self.assertTrue(rules.endswith(BLOCK_END + "\n"))
-        self.assertEqual(json.loads(self.manifest.read_text())["agents"]["copilot-vscode"]["rules"]["header"], HEADER)
+        self.assertNotIn("applyTo", rules)
+        self.assertEqual(json.loads(self.manifest.read_text())["agents"]["copilot-vscode"]["rules"]["header"], "")
+        self.assertFalse((self.cli_dir / "instructions").exists())
         sources = connect_module.skill_sources()
         copied = {str(path.relative_to(self.skills)) for path in self.skills.rglob("*") if path.is_file()}
         self.assertEqual(copied, set(sources))
         self.assertFalse((self.cli_dir / "mcp-config.json").exists())  # that file belongs to the CLI adapter
-        self.assertFalse((self.cli_dir / "copilot-instructions.md").exists())
 
     def test_linux_user_data_folder(self):
         with mock.patch.object(copilot_vscode, "_platform", return_value="linux"):
@@ -337,7 +343,7 @@ class CopilotVscodeTests(CopilotCase):
         mcp = self.vscode_dir / "mcp.json"
         mcp.write_text(json.dumps(original, indent=2) + "\n", encoding="utf-8")
         (self.vscode_dir / "settings.json").write_text('{\n  // keep\n  "editor.fontSize": 14\n}\n', encoding="utf-8")
-        instructions = self.cli_dir / "instructions/obsidian-second-brain.instructions.md"
+        instructions = self.cli_dir / "copilot-instructions.md"
         before = snapshot(self.vscode_dir)
         self.apply("copilot-vscode")
         merged = json.loads(mcp.read_text(encoding="utf-8"))
@@ -352,8 +358,8 @@ class CopilotVscodeTests(CopilotCase):
         self.assertEqual(settled, snapshot(self.home, self.config.parent))
         self.apply("copilot-vscode", extra=("--remove",))
         self.assertEqual(json.loads(mcp.read_text(encoding="utf-8")), original)
-        self.assertFalse(instructions.exists())  # connect created the header-only file, so removal deletes it
-        self.assertEqual(self.files_under(self.cli_dir), [])
+        self.assertFalse(instructions.exists())  # connect created the file with only the block, so removal deletes it
+        self.assertFalse(self.cli_dir.exists())  # and so is ~/.copilot, which connect created
         self.assertFalse(self.manifest.exists())
 
     def test_jsonc_profile_config_is_refused_and_the_snippet_printed(self):
@@ -378,31 +384,30 @@ class CopilotVscodeTests(CopilotCase):
                 self.assertIn("Add this by hand instead", err)
                 self.assertIn('"servers"', err)
 
-    def test_rules_header_is_written_only_when_connect_creates_the_file(self):
-        rules = self.cli_dir / "instructions/obsidian-second-brain.instructions.md"
+    def test_user_text_in_copilot_instructions_is_kept(self):
+        rules = self.cli_dir / "copilot-instructions.md"
         # A file the user already has gets only the block and keeps its content on removal.
         rules.parent.mkdir(parents=True)
         rules.write_text("# mine\n", encoding="utf-8")
         self.apply("copilot-vscode")
-        self.assertNotIn("applyTo", rules.read_text(encoding="utf-8"))
-        self.assertEqual(json.loads(self.manifest.read_text())["agents"]["copilot-vscode"]["rules"]["header"], "")
+        self.assertTrue(rules.read_text(encoding="utf-8").startswith("# mine\n\n" + BLOCK_START))
         self.apply("copilot-vscode", extra=("--remove",))
         self.assertEqual(rules.read_text(encoding="utf-8"), "# mine\n")
-        # A file connect created and the user then extended keeps the header and the user's text.
+        self.assertTrue(self.cli_dir.is_dir())  # it existed before connect
+        # A file connect created and the user then extended keeps the user's text.
         rules.unlink()
         self.apply("copilot-vscode")
-        self.assertTrue(rules.read_text(encoding="utf-8").startswith(HEADER))
         with rules.open("a", encoding="utf-8") as stream:
             stream.write("\nmy own instruction\n")
         self.apply("copilot-vscode", extra=("--remove",))
-        self.assertEqual(rules.read_text(encoding="utf-8"), HEADER + "\n\nmy own instruction\n")
+        self.assertEqual(rules.read_text(encoding="utf-8"), "\nmy own instruction\n")
 
     def test_copilot_home_moves_rules_and_skills_but_not_the_profile_file(self):
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
         env = {"COPILOT_HOME": str(elsewhere)}
         self.apply_with(env, "copilot-vscode")
-        self.assertTrue((elsewhere / "instructions/obsidian-second-brain.instructions.md").is_file())
+        self.assertTrue((elsewhere / "copilot-instructions.md").is_file())
         self.assertTrue((elsewhere / "skills/wiki/SKILL.md").is_file())
         self.assertTrue((self.vscode_dir / "mcp.json").is_file())
         self.assertFalse(self.cli_dir.exists())
@@ -417,12 +422,58 @@ class CopilotVscodeTests(CopilotCase):
         self.assertFalse((self.vscode_dir / "mcp.json").exists())
         self.assertTrue((self.cli_dir / "mcp-config.json").exists())  # the other adapter stays connected
         self.assertTrue((self.skills / "wiki/SKILL.md").exists())  # still used by copilot-cli
-        self.assertEqual(self.files_under(self.cli_dir / "instructions"), [])
+        self.assertIn("obsidian-second-brain:start", (self.cli_dir / "copilot-instructions.md").read_text(encoding="utf-8"))  # still used by copilot-cli
         self.assertEqual(self.doctor_state("copilot-cli")["state"], "connected")
         self.assertEqual(self.doctor_state("copilot-vscode")["state"], "absent")
         self.apply("copilot-cli", extra=("--remove",))
         self.assertEqual(self.files_under(self.cli_dir), [])
         self.assertFalse(self.manifest.exists())
+
+    def test_the_rules_file_and_skills_are_shared_and_removed_with_the_last_owner_in_either_order(self):
+        rules = self.cli_dir / "copilot-instructions.md"
+        for sequential in (False, True):
+            for removal in (("copilot-cli", "copilot-vscode"), ("copilot-vscode", "copilot-cli")):
+                with self.subTest(sequential=sequential, removal=removal):
+                    if sequential:
+                        self.apply("copilot-cli")
+                        self.apply("copilot-vscode")
+                    else:
+                        self.apply("copilot-cli", "copilot-vscode")
+                    self.assertEqual(rules.read_text(encoding="utf-8").count(BLOCK_START), 1)  # written once
+                    self.apply(removal[0], extra=("--remove",))
+                    self.assertEqual(rules.read_text(encoding="utf-8").count(BLOCK_START), 1)
+                    self.assertTrue((self.skills / "wiki/SKILL.md").is_file())
+                    self.apply(removal[1], extra=("--remove",))
+                    self.assertFalse(rules.exists())
+                    self.assertFalse(self.skills.exists())
+                    self.assertFalse(self.cli_dir.exists())
+                    self.assertFalse(self.manifest.exists())
+
+    def test_preview_warns_about_duplicate_registration_when_both_are_selected_or_connected(self):
+        def warnings(planned):
+            return [note for note in planned["notes"] if "register the same MCP server" in note]
+
+        self.assertEqual(warnings(self.preview("copilot-cli")), [])
+        self.assertEqual(warnings(self.preview("copilot-vscode")), [])
+        both = warnings(self.preview("copilot-cli", "copilot-vscode"))
+        self.assertEqual(len(both), 1)
+        self.assertIn("copilot-cli and copilot-vscode (selected together)", both[0])
+        self.apply("copilot-cli")
+        self.assertEqual(len(warnings(self.preview("copilot-vscode"))), 1)
+        self.assertEqual(warnings(self.preview("copilot-cli", "copilot-vscode", extra=("--remove",))), [])
+
+    def test_removing_the_vscode_adapter_leaves_no_detection_behind(self):
+        # Connecting copilot-vscode creates ~/.copilot (rules, skills); after removal neither agent may look detected.
+        self.vscode_dir.mkdir(parents=True)
+        self.assertEqual(self.doctor_state("copilot-cli")["state"], "absent")
+        self.assertFalse(self.doctor_state("copilot-cli")["detected"])
+        self.apply("copilot-vscode")
+        self.assertTrue(self.doctor_state("copilot-cli")["detected"])
+        self.apply("copilot-vscode", extra=("--remove",))
+        cli = self.doctor_state("copilot-cli")
+        self.assertEqual((cli["state"], cli["detected"]), ("absent", False))
+        self.assertFalse(self.cli_dir.exists())
+        self.assertTrue(self.vscode_dir.is_dir())  # VS Code's own folder existed before connect and stays
 
     def test_doctor_reports_connected_and_stale(self):
         self.vscode_dir.mkdir(parents=True)
@@ -430,7 +481,7 @@ class CopilotVscodeTests(CopilotCase):
         self.apply("copilot-vscode")
         state = self.doctor_state("copilot-vscode")
         self.assertEqual((state["state"], state["reasons"], state["detected"]), ("connected", [], True))
-        rules = self.cli_dir / "instructions/obsidian-second-brain.instructions.md"
+        rules = self.cli_dir / "copilot-instructions.md"
         rules.write_text(rules.read_text(encoding="utf-8").replace("planHash", "changed"), encoding="utf-8")
         (self.skills / "wiki/SKILL.md").write_text("old\n", encoding="utf-8")
         mcp = self.vscode_dir / "mcp.json"
@@ -492,6 +543,8 @@ class LinuxEndToEndTests(CopilotLinuxCase):
         self.assertEqual(self.user_json(self.vscode_dir / "mcp.json", "servers")["command"], str(self.node))
         self.apply("copilot-cli", "copilot-vscode", extra=("--remove",))
         self.assertEqual(self.files_under(self.cli_dir) + self.files_under(self.vscode_dir), [])
+        self.assertFalse(self.cli_dir.exists())
+        self.assertFalse(self.vscode_dir.exists())  # connect created Code/User, so it removes it again
 
 
 if __name__ == "__main__":

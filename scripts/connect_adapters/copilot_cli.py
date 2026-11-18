@@ -37,6 +37,9 @@ ADAPTER = Adapter(
     skills=SkillsTarget(path=lambda home, env: copilot_home(home, env) / "skills"),
     notes=(
         "Start a new Copilot CLI session so it loads the MCP server, the instructions and the skills (`/skills reload` loads skills in a running session).",
+        "VS Code's Copilot harness reads this same `mcp-config.json`, `copilot-instructions.md` and skills folder, so this one connection also covers VS Code; `connect copilot-vscode` is only for the deprecated Local harness and would register the server twice if Copilot CLI discovery is on.",
+        "`COPILOT_HOME` reaches VS Code only when VS Code's own environment has it; an editor launched from the Dock or Finder does not inherit your shell's variables, so it reads `~/.copilot`. Whether VS Code honors it is not live-verified (#72).",
         "Copilot CLI asks before it calls an MCP tool unless you allow it (`--allow-all`, `--allow-tool` or a saved approval). Keep `wiki_batch_apply` on approval; do not allow the whole `obsidian-wiki` server.",
     ),
+    duplicates_with=("copilot-vscode",),
 )

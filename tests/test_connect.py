@@ -580,6 +580,9 @@ class HardeningTests(ConnectCase):
             broken(node=None),
             broken(interpreter=3),
             broken(version=1),
+            broken(createdDirs="/tmp/x"),
+            broken(createdDirs=["relative/dir"]),
+            broken(createdDirs=[3]),
         ]
         for manifest in cases:
             with self.subTest(manifest=manifest):
@@ -982,6 +985,197 @@ class HardeningTests(ConnectCase):
         self.assertNotIn("adopted", record["skills"])
         self.apply("fixture-json")  # a repeat run does not turn our own files into adopted ones
         self.assertNotIn("adopted", json.loads(self.manifest.read_text())["agents"]["fixture-json"]["mcp"])
+
+
+class DirectoryTests(ConnectCase):
+    """Directories connect creates are recorded per agent and removed with the agent, only while empty."""
+
+    def setUp(self):
+        super().setUp()
+        connect_fixture_adapter.register(type("R", (), {"REGISTRY": self.registry}), (connect_fixture_adapter.TWIN,))
+        self.twin_dir = self.home / ".fixture-twin"
+
+    def created_dirs(self, agent):
+        return json.loads(self.manifest.read_text(encoding="utf-8"))["agents"][agent].get("createdDirs", [])
+
+    def detected(self, agent):
+        return self.status()["agents"][agent]["detected"]
+
+    def test_remove_deletes_the_directories_connect_created_and_detection_returns_to_absent(self):
+        self.assertFalse(self.detected("fixture-json"))
+        planned = self.preview("fixture-json")
+        self.assertEqual([(d["op"], d["path"]) for d in planned["plan"]["directories"]], [("create", str(self.json_dir))])
+        self.apply("fixture-json")
+        self.assertEqual(self.created_dirs("fixture-json"), [str(self.json_dir)])
+        self.assertTrue(self.detected("fixture-json"))
+        removal = self.preview("fixture-json", extra=("--remove",))
+        self.assertEqual([(d["op"], d["path"]) for d in removal["plan"]["directories"]], [("remove", str(self.json_dir))])
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertFalse(self.json_dir.exists())
+        self.assertFalse(self.detected("fixture-json"))
+        self.assertEqual(self.status()["agents"]["fixture-json"]["state"], "absent")
+        self.assertTrue(self.home.is_dir())
+
+    def test_nested_directories_go_deepest_first_and_a_pre_existing_parent_stays(self):
+        env = {"FIXTURE_CUSTOM_HOME": str(self.home / "outer/inner/agent")}
+        planned = json.loads(self.run_cli("fixture-custom", "--json", env=env)[1])
+        self.assertEqual([d["path"] for d in planned["plan"]["directories"]],
+                         [str(self.home / "outer"), str(self.home / "outer/inner"), str(self.home / "outer/inner/agent")])
+        code, out, err = self.run_cli("fixture-custom", "--apply", "--confirm", planned["planHash"], "--json", env=env)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(len(self.created_dirs("fixture-custom")), 3)
+        self.run_remove(env, "fixture-custom")
+        self.assertFalse((self.home / "outer").exists())
+        # A directory that existed before connect is never recorded or removed.
+        (self.home / "outer/inner").mkdir(parents=True)
+        planned = json.loads(self.run_cli("fixture-custom", "--json", env=env)[1])
+        self.assertEqual([d["path"] for d in planned["plan"]["directories"]], [str(self.home / "outer/inner/agent")])
+        self.run_apply(env, "fixture-custom")
+        self.assertEqual(self.created_dirs("fixture-custom"), [str(self.home / "outer/inner/agent")])
+        self.run_remove(env, "fixture-custom")
+        self.assertTrue((self.home / "outer/inner").is_dir())
+        self.assertFalse((self.home / "outer/inner/agent").exists())
+
+    def run_apply(self, env, *agents, extra=()):
+        planned = json.loads(self.run_cli(*agents, *extra, "--json", env=env)[1])
+        code, out, err = self.run_cli(*agents, *extra, "--apply", "--confirm", planned["planHash"], "--json", env=env)
+        self.assertEqual(code, 0, out + err)
+
+    def run_remove(self, env, *agents):
+        self.run_apply(env, *agents, extra=("--remove",))
+
+    def test_pre_existing_and_foreign_content_directories_are_never_removed(self):
+        self.json_dir.mkdir()
+        self.apply("fixture-json")
+        self.assertEqual(self.created_dirs("fixture-json"), [])
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertTrue(self.json_dir.is_dir())
+        self.assertEqual(list(self.json_dir.iterdir()), [])
+        # A directory connect created keeps any file it did not write.
+        self.json_dir.rmdir()
+        self.apply("fixture-json")
+        (self.json_dir / "notes.txt").write_text("mine\n", encoding="utf-8")
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertEqual([item.name for item in self.json_dir.iterdir()], ["notes.txt"])
+        self.assertFalse(self.manifest.exists())
+
+    def test_a_directory_two_agents_share_goes_with_the_last_agent_in_either_order(self):
+        for first, second in (("fixture-json", "fixture-twin"), ("fixture-twin", "fixture-json")):
+            with self.subTest(first=first):
+                self.apply(first)
+                self.apply(second)
+                # The second agent writes into the first one's directory, so it records it as well.
+                self.assertIn(str(self.json_dir), self.created_dirs(second))
+                self.apply(first, extra=("--remove",))
+                self.assertTrue(self.json_dir.is_dir())  # the other agent still owns the rules block and skills in it
+                self.apply(second, extra=("--remove",))
+                self.assertFalse(self.json_dir.exists())
+                self.assertFalse(self.twin_dir.exists())
+                self.assertFalse(self.manifest.exists())
+
+    def test_one_plan_for_both_agents_and_removing_both_together(self):
+        self.apply("fixture-json", "fixture-twin")
+        self.assertEqual(self.created_dirs("fixture-json"), [str(self.json_dir)])
+        self.assertEqual(self.created_dirs("fixture-twin"), [str(self.json_dir), str(self.twin_dir)])
+        self.apply("fixture-json", "fixture-twin", extra=("--remove",))
+        self.assertFalse(self.json_dir.exists() or self.twin_dir.exists())
+
+    def test_the_config_directory_connect_created_goes_with_the_last_agent(self):
+        shutil.rmtree(self.config.parent)
+        self.config = self.root / "fresh/cfg/properties.json"
+        self.manifest = self.config.parent / "connect-manifest.json"
+        self.apply("fixture-json")
+        self.assertTrue(self.manifest.is_file())
+        self.apply("fixture-twin")
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertTrue(self.manifest.is_file())  # the twin is still connected
+        self.apply("fixture-twin", extra=("--remove",))
+        self.assertFalse((self.root / "fresh").exists())
+        self.assertTrue(self.root.is_dir())
+
+    def test_a_manifest_without_the_record_keeps_the_earlier_behaviour(self):
+        self.apply("fixture-json")
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        del manifest["agents"]["fixture-json"]["createdDirs"]
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        removal = self.preview("fixture-json", extra=("--remove",))
+        self.assertEqual(removal["plan"]["directories"], [])
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertTrue(self.json_dir.is_dir())  # empty, but nothing says connect created it
+        self.assertFalse(self.manifest.exists())
+
+    def test_a_directory_that_appears_after_the_preview_makes_the_plan_stale(self):
+        planned = self.preview("fixture-json")
+        self.json_dir.mkdir()
+        code, out, _ = self.run_cli("fixture-json", "--apply", "--confirm", planned["planHash"], "--json")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(json.loads(out)["code"], "stale-plan")
+        self.assertEqual(list(self.json_dir.iterdir()), [])
+
+    def test_repeat_apply_keeps_the_record_and_writes_nothing(self):
+        self.apply("fixture-json")
+        before = snapshot(self.home, self.config.parent)
+        again = self.preview("fixture-json")
+        self.assertTrue(all(item["op"] == "unchanged" for item in again["plan"]["files"]))
+        self.assertEqual(again["plan"]["directories"], [])
+        self.apply("fixture-json")
+        self.assertEqual(before, snapshot(self.home, self.config.parent))
+        self.assertEqual(self.created_dirs("fixture-json"), [str(self.json_dir)])
+
+
+class SharedRulesTests(ConnectCase):
+    """One rules file, skills directory and block owned by two adapters."""
+
+    def setUp(self):
+        super().setUp()
+        connect_fixture_adapter.register(type("R", (), {"REGISTRY": self.registry}), (connect_fixture_adapter.TWIN,))
+        self.rules = self.json_dir / "RULES.md"
+        self.skill = self.json_dir / "skills/wiki/SKILL.md"
+
+    def blocks(self):
+        return self.rules.read_text(encoding="utf-8").count("<!-- obsidian-second-brain:start -->")
+
+    def test_block_is_written_once_and_removed_with_the_last_owner_in_either_order(self):
+        for sequential in (False, True):
+            for removal in (("fixture-json", "fixture-twin"), ("fixture-twin", "fixture-json")):
+                with self.subTest(sequential=sequential, removal=removal):
+                    if sequential:
+                        self.apply("fixture-json")
+                        self.apply("fixture-twin")
+                    else:
+                        self.apply("fixture-json", "fixture-twin")
+                    self.assertEqual(self.blocks(), 1)
+                    self.apply(removal[0], extra=("--remove",))
+                    self.assertEqual(self.blocks(), 1)
+                    self.assertTrue(self.skill.exists())
+                    self.apply(removal[1], extra=("--remove",))
+                    self.assertFalse(self.rules.exists())  # connect created it, so the last owner deletes it
+                    self.assertFalse((self.json_dir / "skills").exists())
+                    self.assertFalse(self.manifest.exists())
+
+    def test_a_rules_file_the_user_had_keeps_its_text_after_both_agents_are_removed(self):
+        self.json_dir.mkdir()
+        self.rules.write_text("# mine\n", encoding="utf-8")
+        self.apply("fixture-json")
+        self.apply("fixture-twin")
+        self.apply("fixture-json", extra=("--remove",))
+        self.apply("fixture-twin", extra=("--remove",))
+        self.assertEqual(self.rules.read_text(encoding="utf-8"), "# mine\n")
+
+    def test_preview_warns_about_duplicate_registration_only_when_both_are_involved(self):
+        def duplicate_notes(planned):
+            return [note for note in planned["notes"] if "register the same MCP server" in note]
+
+        self.assertEqual(duplicate_notes(self.preview("fixture-json")), [])
+        self.assertEqual(duplicate_notes(self.preview("fixture-twin")), [])
+        together = duplicate_notes(self.preview("fixture-json", "fixture-twin"))
+        self.assertEqual(len(together), 1)
+        self.assertIn("fixture-json and fixture-twin (selected together)", together[0])
+        self.apply("fixture-json")
+        connected = duplicate_notes(self.preview("fixture-twin"))
+        self.assertEqual(len(connected), 1)
+        self.assertIn("one is already connected", connected[0])
+        self.assertEqual(duplicate_notes(self.preview("fixture-json", "fixture-twin", extra=("--remove",))), [])
 
 
 class CliProcessTests(ConnectCase):

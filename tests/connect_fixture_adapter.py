@@ -52,6 +52,15 @@ CUSTOM = Adapter(
 MANUAL = Adapter(name="fixture-manual", title="Fixture manual agent", detect=(".fixture-manual",),
                  snippets=(Snippet("Settings", "settings UI", "paste in the UI"),))
 ALL = (JSON, TOML, YAML, SHARED, MANUAL, CUSTOM)
+# Not in ALL: shares the JSON agent's rules file and skills directory (as Copilot's two adapters share
+# `copilot-instructions.md`) and declares that it duplicates the JSON agent's registration.
+TWIN = Adapter(
+    name="fixture-twin", title="Fixture twin agent", detect=(".fixture-twin",),
+    mcp=McpTarget(path=".fixture-twin/mcp.json", format="json", key_path=("mcpServers",)),
+    rules=RulesTarget(path=".fixture-json/RULES.md"),
+    skills=SkillsTarget(path=".fixture-json/skills"),
+    duplicates_with=("fixture-json",),
+)
 
 
 def register(connect_adapters, adapters=ALL):

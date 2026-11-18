@@ -616,6 +616,10 @@ RECORD_FIELDS = {
 }
 
 
+def _dirs_valid(value: Any) -> bool:
+    return _strings(value) and all(os.path.isabs(item) for item in value)
+
+
 def manifest_problem(manifest: Any) -> str | None:
     """The first structural problem of a manifest, or None; every reader may then trust the record shapes."""
     if not isinstance(manifest, dict) or manifest.get("schemaVersion") != MANIFEST_SCHEMA or not isinstance(manifest.get("agents"), dict):
@@ -626,6 +630,8 @@ def manifest_problem(manifest: Any) -> str | None:
         for field_name, valid in RECORD_FIELDS.items():
             if field_name not in record or not valid(record[field_name]):
                 return f"agent {name!r} has a missing or malformed {field_name!r}"
+        if not _dirs_valid(record.get("createdDirs", [])):  # optional: manifests from before directory cleanup lack it
+            return f"agent {name!r} has a malformed 'createdDirs'"
     return None
 
 
@@ -789,6 +795,7 @@ class Context:
     notes: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
     claims: dict[tuple[str, str], tuple[bool, bool]] = field(default_factory=dict)  # (path, name) -> (adopted, createdFile) of the MCP entries planned so far
+    directories: list[dict[str, Any]] = field(default_factory=list)  # {path, op: create|remove, agents}: directories connect creates, or removes when empty
 
     def place(self, location: Location, directory: bool = False) -> Path:
         """The real path of an adapter location; a symlinked parent shows up in the plan as `requestedPath`."""
@@ -903,7 +910,11 @@ def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, 
     else:
         assert adapter.rules is not None
         path = ctx.place(adapter.rules.path)
-    created = old["createdFile"] if old else read_file(path) is None
+    # A rules file that another record owns is shared: it inherits that owner's file creation, so the last agent removed deletes it.
+    shared_created = not old and any(
+        other["rules"]["createdFile"] for agent, other in ctx.manifest["agents"].items()
+        if agent != adapter.name and other["rules"] and other["rules"]["path"] == str(path))
+    created = old["createdFile"] if old else shared_created or read_file(path) is None
     text = read_text(planner, path)
     if text is None:
         created = True  # absent now (new, or deleted since an earlier connect): connect creates it, so removal may delete it
@@ -1028,6 +1039,42 @@ def plan_agent(adapter: Adapter, ctx: Context, planner: Planner, others: dict[st
     return None if ctx.remove else record
 
 
+def plan_directories(ctx: Context, planner: Planner, names: list[str], records: dict[str, dict[str, Any] | None], manifest_path: Path) -> None:
+    """Directories connect creates, recorded per agent in the manifest (`createdDirs`); on removal, the recorded ones to delete when empty.
+
+    A directory that already existed is never recorded. One that an earlier record created and that this agent also
+    writes into is recorded for it too (like a shared file), so the last agent removed deletes it. A record without
+    `createdDirs` (an older manifest) simply keeps the earlier behaviour: nothing is deleted.
+    """
+    agents = ctx.manifest["agents"]
+    if ctx.remove:
+        kept = {d for agent, record in agents.items() if agent not in names for d in record.get("createdDirs", [])}
+        removable: dict[str, list[str]] = {}
+        for name in names:
+            for directory in agents.get(name, {}).get("createdDirs", []):
+                if directory not in kept:
+                    removable.setdefault(directory, []).append(name)
+        ctx.directories = [{"path": d, "op": "remove", "agents": sorted(a)} for d, a in sorted(removable.items())]
+        return
+    recorded = {d for record in agents.values() for d in record.get("createdDirs", [])}
+    owners: dict[str, set[str]] = {}
+    for name in names:  # directories an agent's earlier record created stay recorded while they exist
+        owners.update({d: owners.get(d, set()) | {name} for d in agents.get(name, {}).get("createdDirs", []) if Path(d).is_dir()})
+    writes = [(op.path, op.agents, op.detail.get("root")) for op in planner.ops.values() if op.after is not None] + [(manifest_path, names, None)]
+    for path, agents_of, skills_root in writes:
+        for parent in path.parents:
+            if skills_root and parent.is_relative_to(skills_root):
+                continue  # the skills directory and its folders are removed with the skill copies themselves
+            if not parent.exists() or str(parent) in recorded:
+                owners.setdefault(str(parent), set()).update(agents_of)
+    created = sorted(d for d in owners if not Path(d).exists())
+    ctx.directories = [{"path": d, "op": "create", "agents": sorted(owners[d])} for d in created]
+    for name in names:
+        if record := records[name]:
+            if mine := sorted(d for d, a in owners.items() if name in a):
+                record["createdDirs"] = mine
+
+
 def build_plan(names: list[str], *, remove: bool, force: bool, python: str | None, node: str | None, home: Path,
                config_file: Path) -> tuple[Context, Planner, list[Adapter]]:
     registered, _ = load_adapters()
@@ -1079,6 +1126,14 @@ def build_plan(names: list[str], *, remove: bool, force: bool, python: str | Non
         raise ConnectError("connect-refused", "; ".join(f"{r.agent}: {r}" for r in refusals), refusals=[
             {"agent": r.agent, "code": r.code, "message": str(r), "path": str(r.path) if r.path else None, "snippet": r.snippet}
             for r in refusals])
+    plan_directories(ctx, planner, names, records, manifest_path)
+    if not remove:
+        pairs = {frozenset((name, other)): other in selected for name in names for other in by_name[name].duplicates_with
+                 if other in selected or other in manifest["agents"]}
+        for pair, together in pairs.items():
+            first, second = sorted(pair)
+            ctx.notes.append(f"{first} and {second} ({'selected together' if together else 'one is already connected'}) register the same "
+                             "MCP server for overlapping clients, so a client can list it twice; keep only one (see docs/agents.md)")
     agents = copy.deepcopy(manifest["agents"])
     for name, record in records.items():
         if record is None:
@@ -1102,6 +1157,7 @@ def core_plan(ctx: Context, planner: Planner, names: list[str]) -> dict[str, Any
     return {"operation": "connect", "remove": ctx.remove, "force": ctx.force, "agents": sorted(names),
             "packageRoot": str(ctx.package_root), "version": ctx.version, "interpreter": ctx.interpreter, "node": ctx.node,
             "config": str(ctx.config_file),
+            "directories": ctx.directories,
             "files": [{"agents": sorted(op.agents), "role": op.role, "path": str(op.path), "op": op.op,
                        **({"requestedPath": str(ctx.requested(op.path))} if ctx.requested(op.path) != op.path else {}),
                        "beforeSha256": None if op.before is None else sha256(op.before),
@@ -1165,6 +1221,9 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str, agents: list[str]
     for op in changed:
         if read_file(op.path) != op.before:
             raise ConnectError("destination-changed", f"{op.path} changed after review; preview again")
+    for item in ctx.directories:
+        if item["op"] == "create" and Path(item["path"]).exists():
+            raise ConnectError("destination-changed", f"{item['path']} appeared after review; preview again")
     written: list[tuple[Path, bytes | None, bytes | None, int]] = []
     created_dirs: list[Path] = []
 
@@ -1240,6 +1299,12 @@ def apply_plan(ctx: Context, planner: Planner, plan_hash: str, agents: list[str]
                     break
     if ctx.remove:
         prune_backups(ctx, [agent for agent in agents if agent in ctx.manifest["agents"]], plan_hash)
+        # Directories connect created, deepest first; rmdir only ever removes an empty one, so foreign content keeps it.
+        for item in sorted((d for d in ctx.directories if d["op"] == "remove"), key=lambda d: len(Path(d["path"]).parts), reverse=True):
+            try:
+                os.rmdir(item["path"])
+            except OSError:
+                pass
     return [str(op.path) for op in changed]
 
 
@@ -1492,6 +1557,8 @@ def _print_plan(output: dict[str, Any], names: list[str], args: argparse.Namespa
             print("  rules block:\n" + "\n".join("    " + line for line in item["block"].splitlines()))
     for root, items in skills.items():
         print(f"Create skill copies ({len(items)} files, JSON lists each): {root}")
+    for item in plan["directories"]:
+        print(("Create directory: " if item["op"] == "create" else "Remove directory connect created, if empty: ") + item["path"])
     if plan["backupDir"]:
         print(f"Backups: {plan['backupDir']}")
     for directory in plan["forcedBackupDirs"]:
