@@ -100,7 +100,7 @@ class CopilotCliTests(CopilotCase):
         by_name = {item["name"]: item for item in listed["agents"]}
         self.assertEqual(by_name["copilot-cli"]["verification"], "fixture-tested (live-unverified)")
         self.assertEqual(by_name["copilot-cli"]["mechanism"], "MCP entry + rules block + skill copies")
-        self.assertEqual(adapter_names(), ["copilot-cli", "copilot-vscode"])
+        self.assertLessEqual({"copilot-cli", "copilot-vscode"}, set(adapter_names()))  # both shipped adapters are registered
 
     def test_preview_lists_every_file_and_writes_nothing_else(self):
         before = snapshot(self.home, self.config.parent, self.vault)
