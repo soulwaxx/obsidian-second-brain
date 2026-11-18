@@ -175,10 +175,10 @@ Test an adapter with `tests/connect_fixture_adapter.py` and `tests/test_connect.
 
 | Piece | Target | Source |
 | --- | --- | --- |
-| MCP entry | `~/.cursor/mcp.json`, strict JSON, under `mcpServers`: `{"type": "stdio", "command": "<absolute node>", "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"], "env": {"PYTHON": "<interpreter>"}}` (`OBSIDIAN_AGENT_CONFIG` is added when a non-default config is selected) | [MCP: `mcp.json`, STDIO configuration, global configuration](https://cursor.com/docs/context/mcp) |
-| Skill copies | `~/.cursor/skills/<name>/SKILL.md` plus `~/.cursor/skills/wiki/references/*.md` (a user-level skills directory; Cursor reads each `SKILL.md`, whose `name` must equal its folder) | [Agent Skills: skill directories](https://cursor.com/docs/context/skills) |
-| User rules | none: Cursor user rules are set in Customize > Rules and are not stored as a file, so `connect` writes no rules block. The server's MCP `initialize` instructions carry the wiki rules | [Rules: User Rules](https://cursor.com/docs/context/rules) |
-| Project rule | printed as a snippet for `.cursor/rules/obsidian-second-brain.mdc` (`alwaysApply: true`); never written | [Rules: project rules](https://cursor.com/docs/context/rules) |
+| MCP entry | `~/.cursor/mcp.json`, strict JSON, under `mcpServers`: `{"type": "stdio", "command": "<absolute node>", "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"], "env": {"PYTHON": "<interpreter>"}}` (`OBSIDIAN_AGENT_CONFIG` is added when it is set at connect time) | [MCP: `mcp.json`, STDIO configuration, global configuration](https://cursor.com/docs/mcp) |
+| Skill copies | `~/.cursor/skills/<name>/SKILL.md` plus `~/.cursor/skills/wiki/references/*.md` (a user-level skills directory; Cursor reads each `SKILL.md`, whose `name` must equal its folder) | [Agent Skills: skill directories](https://cursor.com/docs/skills) |
+| User rules | none: Cursor user rules are set in Customize > Rules and are not stored as a file, so `connect` writes no rules block. The server's MCP `initialize` instructions carry the wiki rules | [Rules: User Rules](https://cursor.com/docs/rules) |
+| Project rule | printed as a snippet for `.cursor/rules/obsidian-second-brain.mdc` (`alwaysApply: true`); never written | [Rules: project rules](https://cursor.com/docs/rules) |
 
 Notes:
 

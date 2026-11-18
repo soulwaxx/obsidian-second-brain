@@ -41,7 +41,7 @@ class McpTarget:
     key_path: tuple[str, ...]                     # object/table holding named servers, e.g. ("mcpServers",)
     name: str = SERVER_NAME                       # key of our entry inside that object
     # Build the entry from the argv list (`<absolute node> <root>/scripts/obsidian-second-brain.mjs mcp --tools all`)
-    # and the env mapping (`PYTHON`, plus `OBSIDIAN_AGENT_CONFIG` when a non-default config is selected). Any
+    # and the env mapping (`PYTHON`, plus `OBSIDIAN_AGENT_CONFIG` when it is set at connect time). Any
     # JSON-like shape works: the command may stay an array and the env may use another key, for example
     # OpenCode's `{"type": "local", "command": command, "environment": env, "enabled": True}`.
     entry: Callable[[list[str], dict[str, str]], dict] = standard_entry

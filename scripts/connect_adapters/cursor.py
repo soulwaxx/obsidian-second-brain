@@ -2,12 +2,12 @@
 
 Locations and formats verified against Cursor's current documentation:
 - MCP: `~/.cursor/mcp.json` holds user-wide servers under `mcpServers`; a stdio server has `type`, `command`,
-  `args` and `env` (https://cursor.com/docs/context/mcp, "Using mcp.json", "STDIO server configuration",
+  `args` and `env` (https://cursor.com/docs/mcp, "Using mcp.json", "STDIO server configuration",
   "Configuration locations").
 - Skills: `~/.cursor/skills/<name>/SKILL.md` is a user-level skills directory (it also reads `~/.agents/skills`);
-  optional `references/` folders are allowed (https://cursor.com/docs/context/skills, "Skill directories").
+  optional `references/` folders are allowed (https://cursor.com/docs/skills, "Skill directories").
 - Rules: User Rules are defined in Cursor's Customize -> Rules settings and are not stored on the file system
-  (https://cursor.com/docs/context/rules, "User Rules"; the skills page repeats it), so there is no user-level rules
+  (https://cursor.com/docs/rules, "User Rules"; the skills page repeats it), so there is no user-level rules
   file for `connect` to write. Project rules are `.cursor/rules/*.mdc` files with `description`/`alwaysApply`
   front matter (same page, "Project rules"); they live in a project repository, so they are printed only.
 Detection is the config directory only; the `cursor` binary is never run.

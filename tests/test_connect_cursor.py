@@ -2,11 +2,14 @@
 """The Cursor `connect` adapter, exercised through the real framework in a temporary HOME.
 
 Nothing here touches the real home directory, Cursor, Git or the network. Shapes follow
-https://cursor.com/docs/context/mcp (~/.cursor/mcp.json, `mcpServers`) and
-https://cursor.com/docs/context/skills (~/.cursor/skills).
+https://cursor.com/docs/mcp (~/.cursor/mcp.json, `mcpServers`) and
+https://cursor.com/docs/skills (~/.cursor/skills).
 """
+import contextlib
+import io
 import json
 import os
+from unittest import mock
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +18,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests")]
 import connect as connect_module  # noqa: E402
+import connect_adapters  # noqa: E402
 from test_connect import SHIMMED, ConnectCase, snapshot  # noqa: E402
 
 LAUNCHER = str(ROOT / "scripts/obsidian-second-brain.mjs")
@@ -96,6 +100,26 @@ class CursorAdapterTests(CursorCase):
         self.assertEqual(os.listdir(self.project), [])
         self.assertFalse((self.cursor / "rules").exists())  # user rules are not file-based
         self.assertFalse((self.skills / "wiki/scripts").exists())
+
+    def test_default_config_entry_carries_only_the_interpreter(self):
+        # Without OBSIDIAN_AGENT_CONFIG the default config is selected and the entry pins nothing else.
+        default = self.home / ".config/obsidian-second-brain/properties.json"
+        default.parent.mkdir(parents=True)
+        default.write_text(json.dumps({"vaultPath": str(self.vault)}), encoding="utf-8")
+
+        def run(*argv):
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {"HOME": str(self.home), "OSB_NODE": str(self.node)}), \
+                    mock.patch.object(connect_adapters, "REGISTRY", self.registry), contextlib.redirect_stdout(out):
+                os.environ.pop("OBSIDIAN_AGENT_CONFIG", None)
+                os.environ.pop("OBSIDIAN_VAULT_PATH", None)
+                self.assertEqual(connect_module.main(list(argv)), 0)
+            return json.loads(out.getvalue())
+
+        planned = run("cursor", "--json")
+        run("cursor", "--apply", "--confirm", planned["planHash"], "--json")
+        self.assertEqual(self.entry()["env"], {"PYTHON": sys.executable})
+        self.assertTrue((default.parent / "connect-manifest.json").is_file())
 
     def test_skill_copies_are_placed_in_the_cursor_skills_directory(self):
         other = self.skills / "my-own-skill"
