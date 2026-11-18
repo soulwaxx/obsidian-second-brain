@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Claude Code | Plugin: hooks, skills, inline read-only MCP server | live-validated (the Claude contract tests run the real CLI when it is installed; see [the MCP guide](mcp.md#verification-status)) |
 | Pi | Package: extension with native `wiki_*` tools, hooks, skills | live-validated (`npm run test:pi-runtime`) |
-| Codex CLI | `connect` adapter (planned, #66): MCP entry in TOML, rules, skills | planned adapter |
+| Codex CLI (`codex`) | `connect` adapter: MCP entry in `~/.codex/config.toml`, rules in `~/.codex/AGENTS.md`, skills in `~/.agents/skills` ([details](#codex-cli)) | fixture-tested (live-unverified) |
 | GitHub Copilot CLI (`copilot-cli`) | `connect` adapter (planned, #67): MCP entry in `~/.copilot/mcp-config.json`, rules, skills | planned adapter |
 | GitHub Copilot in VS Code (`copilot-vscode`) | `connect` adapter (planned, #67): MCP entry in the VS Code user `mcp.json`, instructions file with `applyTo` front matter | planned adapter |
 | Cursor | `connect` adapter (planned, #68): MCP entry, skills; project rules as a printed snippet | planned adapter |
@@ -168,6 +168,20 @@ REGISTRY: list[str] = [
 Separate comment lines keep each adapter's edit on its own line, so adapter changes merge without conflicts. A module that fails to import or has an invalid `ADAPTER` is reported by `connect` and, as `adapterErrors`, by doctor.
 
 Test an adapter with `tests/connect_fixture_adapter.py` and `tests/test_connect.py` as the model: run the real `connect` code against a temporary `HOME` and `OBSIDIAN_AGENT_CONFIG`, assert the exact paths, entry shape, preservation of unrelated entries, preview-without-writes, apply, repeat no-op, removal, and a doctor round trip. Never touch the real home directory or run the agent. When the tests pass, change the agent's row in the table above and in the README from "planned adapter" to "fixture-tested (live-unverified)"; live validation (#72) is a separate step. `tests/connect_fixture_adapter.py` has fixtures for each target shape (`fixture-custom`: environment-dependent location functions, an OpenCode-like entry and a rules header).
+
+## Codex CLI
+
+`obsidian-second-brain connect codex` (status: fixture-tested (live-unverified); #72 records the live run). Paths and keys were checked against OpenAI's Codex documentation: [MCP](https://developers.openai.com/codex/mcp), [config basics](https://developers.openai.com/codex/config-basic), [AGENTS.md](https://developers.openai.com/codex/guides/agents-md) and [skills](https://developers.openai.com/codex/skills). `CODEX_HOME` is honored as Codex does (default `~/.codex`; an empty value counts as unset).
+
+| Piece | Target | Notes |
+| --- | --- | --- |
+| Detection | the `$CODEX_HOME` directory (`~/.codex`) | The `codex` binary is never run. |
+| MCP entry | `$CODEX_HOME/config.toml`, table `[mcp_servers.obsidian-wiki]` with `command`, `args` and an `env` table | Appended inside `# obsidian-second-brain:start`/`end` comment markers and verified by re-parsing; the rest of the file (comments, floats such as `startup_timeout_sec = 20.0`, other servers, `[[skills.config]]`) is untouched, and removal deletes exactly the appended bytes. An existing different `obsidian-wiki` table, an inline `mcp_servers = { … }`, or an unparseable file is refused with the exact table to paste. The Codex CLI, desktop app and IDE extension share this file. |
+| Rules block | `$CODEX_HOME/AGENTS.md` (global instructions) | If `$CODEX_HOME/AGENTS.override.md` exists and is not empty, Codex reads it instead of `AGENTS.md`; the preview notes say so, and you add the block there by hand. |
+| Skill copies | `~/.agents/skills/<skill>/SKILL.md` (+ `wiki/references/*.md`) | Codex's user skills directory is `$HOME/.agents/skills`, not under `CODEX_HOME`. Other agents that read it share the copies (the framework removes them with the last agent). Codex detects skill changes itself; restart it if one does not appear. |
+| Project snippet | printed, never written | Optional: paste the rules into a project's root `AGENTS.md` if that project should always use the wiki. |
+
+The entry carries the absolute node, the absolute package root and `env.PYTHON` as described above, plus `env.OBSIDIAN_AGENT_CONFIG` when you selected a non-default config. Codex starts the server when a session starts, so restart it after connecting. Hooks and a Codex plugin are out of scope. MCP-only writes follow the batch flow: the agent shows the `wiki_batch_inspect` summary and waits for your approval; Codex's own approval prompts for MCP tools still apply.
 
 ## Generic MCP snippets
 
