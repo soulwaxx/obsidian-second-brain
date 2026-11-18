@@ -34,13 +34,31 @@ trailing `wiki_*` name. Claude Code lists the plugin's tools as
 | --- | --- | --- |
 | **Pi / omp** with the package extension | Native `wiki_*` read tools; otherwise the package CLI | The client's file tools, guarded by the vault hook (omp through the Pi extension; runtime unverified) |
 | **Claude Code** with the plugin | The plugin's MCP read tools when listed; otherwise the package-relative CLI | The client's file tools, guarded by the vault hook |
-| **MCP-only agents** (no vault hook) | MCP read tools | MCP `wiki_batch_*` tools only, and only when the server runs with `--tools all` |
+| **MCP-only agents** (copied skills, no package hook) | MCP read tools | MCP `wiki_batch_*` tools only, and only when the server runs with `--tools all` |
 
-Decide the class from your session: you are hook-guarded only when you are
-Claude Code or Pi/omp and this package's hook or extension is active (it supplies
-the wiki locator at startup and protects file-tool destinations). In every other
-client, treat yourself as MCP-only. When unsure whether a guard is active, take
-the MCP-only route.
+Classify the session by the client application and how the skill was installed,
+never by what is in your context:
+
+- **Package install** means you are Claude Code with this plugin, or Pi/omp with
+  this package, and this skill was loaded from the package: its directory is
+  `<package>/skills/<name>` and `<package>/scripts/obsidian-second-brain.mjs`
+  and `<package>/hooks/obsidian-session.sh` exist beside it. Write with the
+  client's file tools when the package hook is active, which the session-start
+  context shows with the hook's locator ("writes are guarded and validated").
+  When it is not active (no vault is configured yet, as in setup or init, or
+  hooks are disabled), you are still a package session and never read-only:
+  follow the manual guard, validate, and sync order in the wiki skill, and use
+  setup, the CLI, and the package scripts.
+- **Copy** means every other client, and any skill installed by
+  `obsidian-second-brain connect` or otherwise copied without a package root:
+  treat yourself as MCP-only, whatever model you run on.
+
+Your model's identity ("I am Claude") and the MCP server's locator are not
+evidence of a package install or an active guard. The MCP server's
+`initialize` instructions also begin `Configured Obsidian wiki: "<vault>/wiki"`,
+and Copilot, Cursor, and other clients can run a Claude model. Only the
+client application with the package hook or extension counts; the hook's
+locator says "writes are guarded and validated" and the MCP locator never does.
 
 ## Reading
 
@@ -63,7 +81,8 @@ extension already uses the configured one.
 **Hook-guarded clients (Claude Code, Pi, omp).** Write with the client's file
 tools; the hook authorizes the destination, validates the page, and finalizes
 navigation and logging. Shell writes are not guarded and follow the guard,
-validate, and sync order in the wiki skill. A reviewed batch is optional for a
+validate, and sync order in the wiki skill; without an active hook, that
+order applies to file-tool writes too. A reviewed batch is optional for a
 larger coordinated change, through the package CLI.
 
 **MCP-only agents.** Change the wiki only through the batch tools:
@@ -78,7 +97,8 @@ larger coordinated change, through the package CLI.
    client would auto-approve the call.
 4. Call `wiki_batch_apply` with the identical operations and that `planHash`.
 5. If an apply fails, times out, or is cancelled, call `wiki_batch_recover` with
-   the same `planHash` (or a `batchId` from `wiki_doctor`) before retrying. On a
+   the same `planHash` (or a `batchId` from `wiki_doctor` whose entry is not
+   `cliOnly`) before retrying. On a
    `batch-refused` recovery conflict, report it and stop: rollback is not an MCP
    tool.
 

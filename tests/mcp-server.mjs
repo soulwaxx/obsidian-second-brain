@@ -123,6 +123,7 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   assert.match(init.result.instructions, /wiki_doctor/);
   assert.ok(init.result.instructions.includes(`Configured Obsidian wiki: ${JSON.stringify(`${fs.realpathSync(vault)}/wiki`)} (OKF v0.2; selected integration config: ${JSON.stringify(config)})`), "instructions carry the resolved wiki locator");
   assert.match(init.result.instructions, /WIKI\.md/);
+  assert.doesNotMatch(init.result.instructions, /writes are guarded/, "the MCP locator never claims the hook's write guard");
   const overridden = open({ env: { OBSIDIAN_VAULT_PATH: path.join(vault, "wiki") } });
   assert.ok((await overridden.initialize()).result.instructions.includes(`Configured Obsidian wiki: ${JSON.stringify(`${fs.realpathSync(path.join(vault, "wiki"))}/wiki`)}`), "OBSIDIAN_VAULT_PATH overrides the config vaultPath");
   await overridden.close();

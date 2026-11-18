@@ -35,6 +35,15 @@ These skills run in Claude Code, Pi, omp, and MCP-only agents, so route by the
 capabilities you actually have; [tool surface by client](references/tool-surface.md)
 is the single mapping.
 
+- **Which class you are:** the client application plus how this skill was
+  installed decide it, not your model name and not the MCP server's wiki
+  locator. Claude Code with this plugin, or Pi/omp with this package (this skill
+  loaded from the package, with its scripts beside it), is hook-guarded: file
+  tools when the hook is active (its locator says "writes are guarded and
+  validated"), otherwise, for example before a vault exists, the manual
+  guard, validate, sync order below with setup and the package scripts. Every
+  other client, and any copy made by `obsidian-second-brain connect`, is
+  MCP-only.
 - **Reads:** use `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`
   when listed (native in Pi; MCP elsewhere, where the client may prefix the
   names). Only Claude Code and Pi may fall back to the package CLI.

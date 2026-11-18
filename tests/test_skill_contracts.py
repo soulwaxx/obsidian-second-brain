@@ -444,6 +444,21 @@ for boundary in ('Pi / omp', 'Claude Code', 'MCP-only agents', 'wiki_batch_inspe
                  'hook-guarded', 'match on the trailing `wiki_*` name',
                  'mcp__plugin_obsidian-second-brain_obsidian-wiki__wiki_search'):
     assert boundary in flat_surface, boundary
+# Classification is by client and install, never by hook output, model identity or the MCP locator:
+# a package session without an active hook (fresh setup/init) is not read-only and not MCP-only.
+for boundary in ('by the client application and how the skill was installed',
+                 'never read-only: follow the manual guard, validate, and sync order',
+                 'use setup, the CLI, and the package scripts',
+                 'installed by `obsidian-second-brain connect`',
+                 "Your model's identity", "the MCP server's locator are not evidence",
+                 'writes are guarded and validated" and the MCP locator never does',
+                 'whose entry is not `cliOnly`'):
+    assert boundary in flat_surface, boundary
+assert 'when unsure' not in flat_surface.lower() and 'only when you are Claude Code' not in flat_surface
+entry_classify = ' '.join(entry.split())
+for boundary in ("not your model name and not the mcp server", 'otherwise, for example before a vault exists',
+                 'copy made by `obsidian-second-brain connect`'):
+    assert boundary in entry_classify, boundary
 # Every portable skill points at the shared client mapping and names both write paths.
 for name in PORTABLE:
     text = (ROOT / 'skills' / name / 'SKILL.md').read_text()

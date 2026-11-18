@@ -106,6 +106,7 @@ subprocess.run = run
   }
   assert.ok(!Object.hasOwn(byName.wiki_batch_apply.inputSchema.properties, "vault"), "writes target only the configured vault");
   assert.match(init.result.instructions, /only way to change the wiki/);
+  assert.doesNotMatch(init.result.instructions, /writes are guarded/, "the MCP locator never claims the hook's write guard");
   assert.match(init.result.instructions, /never edit, create, move or delete vault files directly with file or shell tools/);
   assert.match(init.result.instructions, /show the user its review summary/);
   assert.match(init.result.instructions, /wait for the user's explicit approval/);
