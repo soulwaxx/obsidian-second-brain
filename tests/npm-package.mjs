@@ -116,7 +116,7 @@ try {
   fs.mkdirSync(connectHome);
   const connectList = JSON.parse(run(cli, ["connect", "--json"], { cwd: work, encoding: "utf8", env: { ...env, HOME: connectHome } }));
   assert.equal(connectList.mode, "list");
-  assert.deepEqual(connectList.agents, []);
+  assert.ok(Array.isArray(connectList.agents));
   assert.deepEqual(connectList.genericSnippets.read.args, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "mcp", "--tools", "read"]);
   assert.deepEqual(connectList.genericSnippets.all.args.slice(-2), ["--tools", "all"]);
   assert.deepEqual(fs.readdirSync(connectHome), [], "connect list must not write");

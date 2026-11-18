@@ -313,7 +313,7 @@ manual-only agents, and advises when a newer package is installed elsewhere, wit
 | Codex CLI | `connect` adapter (planned, #66) | planned adapter |
 | GitHub Copilot CLI | `connect` adapter `copilot-cli` (planned, #67) | planned adapter |
 | GitHub Copilot in VS Code | `connect` adapter `copilot-vscode` (planned, #67) | planned adapter |
-| Cursor | `connect` adapter (planned, #68) | planned adapter |
+| Cursor | `connect` adapter `cursor`: MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; no user rules file (Cursor keeps them in its settings), project rule printed as a snippet | fixture-tested (live-unverified) |
 | OpenCode | `connect` adapter (planned, #69) | planned adapter |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, other MCP clients | [Generic MCP snippets](docs/agents.md#generic-mcp-snippets) (`read` and `all`) | snippet-only |
 

@@ -1033,7 +1033,7 @@ class CliProcessTests(ConnectCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(json.loads(result.stdout)["code"], "invalid-arguments")
         listed = json.loads(self.cli("connect", "--json").stdout)
-        self.assertEqual([item["name"] for item in listed["agents"]], [a.name for a in connect_fixture_adapter.ALL])
+        self.assertEqual([item["name"] for item in listed["agents"] if item["name"].startswith("fixture-")], [a.name for a in connect_fixture_adapter.ALL])
 
     def test_doctor_survives_malformed_manifests(self):
         self.connect_apply("fixture-json")
@@ -1100,7 +1100,7 @@ class CliProcessTests(ConnectCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         listed = json.loads(result.stdout)
         self.assertEqual(listed["mode"], "list")
-        self.assertEqual(listed["agents"], [])
+        self.assertIsInstance(listed["agents"], list)  # registered adapters are listed; their own tests cover them
         self.assertEqual(sorted(listed["genericSnippets"]), ["all", "read"])
         self.assertFalse(self.manifest.exists())
 
@@ -1109,7 +1109,7 @@ class CliProcessTests(ConnectCase):
         (self.home / ".fixture-manual").mkdir()
         before = snapshot(self.home, self.config.parent, self.vault)
         report = self.doctor()["connect"]
-        self.assertEqual({name: item["state"] for name, item in report["agents"].items()},
+        self.assertEqual({name: item["state"] for name, item in report["agents"].items() if name.startswith("fixture-")},
                          {"fixture-json": "absent", "fixture-toml": "absent", "fixture-yaml": "absent",
                           "fixture-shared": "absent", "fixture-manual": "manual-only", "fixture-custom": "absent"})
         self.assertEqual(report["manifest"], {"path": str(self.manifest), "exists": False, "error": None, "code": None})
