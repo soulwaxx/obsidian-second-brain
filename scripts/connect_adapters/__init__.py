@@ -15,5 +15,5 @@ REGISTRY: list[str] = [
     #
     "connect_adapters.cursor",
     #
-    # "connect_adapters.opencode",
+    "connect_adapters.opencode",
 ]

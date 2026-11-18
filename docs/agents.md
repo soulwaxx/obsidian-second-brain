@@ -12,7 +12,7 @@
 | GitHub Copilot CLI (`copilot-cli`) | `connect` adapter (planned, #67): MCP entry in `~/.copilot/mcp-config.json`, rules, skills | planned adapter |
 | GitHub Copilot in VS Code (`copilot-vscode`) | `connect` adapter (planned, #67): MCP entry in the VS Code user `mcp.json`, instructions file with `applyTo` front matter | planned adapter |
 | Cursor | `connect` adapter `cursor` (#68): MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; [project rule snippet](#cursor) | fixture-tested (live-unverified) |
-| OpenCode | `connect` adapter (planned, #69): MCP entry, rules, skills | planned adapter |
+| OpenCode | `connect` adapter `opencode` (#69): MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills`; [approval rule snippet](#opencode) | fixture-tested (live-unverified) |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, any other MCP client | [Generic MCP snippet](#generic-mcp-snippets) | snippet-only |
 
 There are exactly three statuses. `planned adapter` in the table is a temporary row label for an adapter whose ticket (#66–#69) has not landed, not a fourth status: it becomes `fixture-tested (live-unverified)` when that adapter's tests pass.
@@ -187,6 +187,33 @@ Notes:
 - Cursor's "Sync Skills for Cloud Agents" setting moves `~/.cursor/skills` into its synced storage. After turning it on, `doctor` reports the local skill copies as missing.
 - Cursor also reads skills from `~/.agents/skills`, `~/.claude/skills` and `~/.codex/skills`; connecting several agents that write to those directories can show a skill twice.
 - Status: fixture-tested (live-unverified). `tests/test_connect_cursor.py` runs the real framework against a temporary `HOME`; a live Cursor run belongs to #72.
+
+## OpenCode
+
+`connect opencode` is detected by the `~/.config/opencode` directory (`$XDG_CONFIG_HOME/opencode` when that variable is set) only; the `opencode` binary is never run. Targets and formats were checked against OpenCode's current official documentation and source (stable 1.19.6, npm and GitHub "latest"; 2.3.2):
+
+| Piece | Target | Source |
+| --- | --- | --- |
+| MCP entry | `~/.config/opencode/opencode.json`, strict JSON, under `mcp`: `{"type": "local", "command": ["<absolute node>", "<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"], "environment": {"PYTHON": "<interpreter>"}, "enabled": true}` (`OBSIDIAN_AGENT_CONFIG` is added to `environment` when it is set at connect time). If only `opencode.jsonc` exists, that file is edited when it is strict JSON | [Config: locations, format](https://opencode.ai/docs/config/), [MCP servers: local](https://opencode.ai/docs/mcp-servers/) |
+| Rules block | `~/.config/opencode/AGENTS.md`, the global rules file | [Rules: global](https://opencode.ai/docs/rules/) |
+| Skill copies | `~/.config/opencode/skills/<name>/SKILL.md` plus `~/.config/opencode/skills/wiki/references/*.md` | [Skills: discovery](https://opencode.ai/docs/skills/) |
+| Approval rule | printed as a snippet for the `permission` object of the config; never written | [Permissions](https://opencode.ai/docs/permissions/) |
+
+Notes:
+
+- **Approval is not on by default.** OpenCode checks an MCP tool call as the permission `<server>_<tool>` and its default policy allows everything, so `wiki_batch_apply` runs without a prompt unless you add a rule (the framework's merge-only MCP entry cannot carry one, so `connect` prints it). Add to your global config, so that applying a reviewed batch and recovering one ask first:
+
+  ```json
+  { "permission": { "obsidian-wiki_wiki_batch_apply": "ask", "obsidian-wiki_wiki_batch_recover": "ask" } }
+  ```
+
+  OpenCode 2.x documents `permissions` rules instead (`{"action": "obsidian-wiki_wiki_batch_apply", "resource": "*", "effect": "ask"}`) and still migrates the `permission` form. Until you add the rule, the review step depends on the agent following the rules block and the MCP instructions.
+- **JSON versus JSONC.** OpenCode merges `opencode.json` and `opencode.jsonc` from its global directory, with the `.jsonc` file last, and writes its own changes to an existing `opencode.jsonc` first. `connect` follows that order: it edits an existing `opencode.jsonc` (and refuses it with the snippet to add by hand when it holds comments or trailing commas), otherwise `opencode.json`, which it creates when neither exists. It never creates a second global config next to an existing one. An existing different `obsidian-wiki` entry or a non-object `mcp` is refused with the snippet; other servers, providers, `permission` and other keys are kept.
+- **Config shape.** OpenCode 1.x documents servers directly under `mcp`; the 2.x documentation names them under `mcp.servers` with `disabled` instead of `enabled`. 2.x still reads the direct shape and migrates it, so the one entry works on both lines. Existing `mcp.servers` entries are left alone.
+- **Rules fall-back.** OpenCode reads `~/.claude/CLAUDE.md` only while `~/.config/opencode/AGENTS.md` does not exist. When `connect` creates that file, OpenCode stops reading your `CLAUDE.md`; move the guidance you want there into the new file. `connect` does not touch `~/.claude`.
+- **Duplicate skills.** OpenCode also reads skills from `~/.claude/skills` and `~/.agents/skills`. `connect` does not look in them, so a same-named skill installed there (by another adapter or by hand) can show up twice. OpenCode 2.x documents the `~/.config/opencode/skills` copy as taking precedence; 1.x asks for unique names. Remove one copy, or connect only the agents you use. The Claude plugin keeps its skills in the plugin, not in `~/.claude/skills`.
+- A project `opencode.json`, `OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR` (extra layers on top of the global config, not replacements for it) that defines its own `obsidian-wiki` entry overrides the global one. Restart OpenCode after connecting.
+- Status: fixture-tested (live-unverified). `tests/test_connect_opencode.py` runs the real framework against a temporary `HOME`; a live OpenCode run belongs to #72.
 
 ## Generic MCP snippets
 

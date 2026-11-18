@@ -314,7 +314,7 @@ manual-only agents, and advises when a newer package is installed elsewhere, wit
 | GitHub Copilot CLI | `connect` adapter `copilot-cli` (planned, #67) | planned adapter |
 | GitHub Copilot in VS Code | `connect` adapter `copilot-vscode` (planned, #67) | planned adapter |
 | Cursor | `connect` adapter `cursor`: MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; no user rules file (Cursor keeps them in its settings), project rule printed as a snippet | fixture-tested (live-unverified) |
-| OpenCode | `connect` adapter (planned, #69) | planned adapter |
+| OpenCode | `connect` adapter `opencode`: MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills`; OpenCode runs MCP tools without asking by default, so add the printed `permission` rule to keep wiki writes approved | fixture-tested (live-unverified) |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, other MCP clients | [Generic MCP snippets](docs/agents.md#generic-mcp-snippets) (`read` and `all`) | snippet-only |
 
 "Planned adapter" is a temporary row label, not a status; the statuses are
