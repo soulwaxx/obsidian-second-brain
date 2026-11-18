@@ -27,6 +27,7 @@ try {
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
     "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/evidence_ledger.py", "scripts/wiki_batch.py", "scripts/source_baselines.py", "scripts/source_drift.py", "scripts/retrieval_reads.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
+    "scripts/connect.py", "scripts/connect_adapters/__init__.py", "scripts/connect_adapters/spec.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
     "skills/wiki-agent/SKILL.md",
@@ -34,7 +35,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/mcp.md", "docs/source-baselines.md", "docs/source-drift.md",
+    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/mcp.md", "docs/agents.md", "docs/source-baselines.md", "docs/source-drift.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -109,6 +110,16 @@ try {
   ], { cwd: work, encoding: "utf8" }));
   assert.equal(packageRelativeDoctor.vault, fs.realpathSync(cliVault));
   assert.equal(packageRelativeDoctor.retrieval.indexExists, false, "package-relative doctor must remain read-only");
+  // The installed `connect` lists agents (none are registered by the framework alone), prints both generic MCP
+  // profiles with this package's absolute launcher path, and writes nothing to the isolated HOME.
+  const connectHome = path.join(work, "connect-home");
+  fs.mkdirSync(connectHome);
+  const connectList = JSON.parse(run(cli, ["connect", "--json"], { cwd: work, encoding: "utf8", env: { ...env, HOME: connectHome } }));
+  assert.equal(connectList.mode, "list");
+  assert.deepEqual(connectList.agents, []);
+  assert.deepEqual(connectList.genericSnippets.read.args, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "mcp", "--tools", "read"]);
+  assert.deepEqual(connectList.genericSnippets.all.args.slice(-2), ["--tools", "all"]);
+  assert.deepEqual(fs.readdirSync(connectHome), [], "connect list must not write");
   const nativeDoctor = JSON.parse(run(process.execPath, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "--pi-tool", "doctor", JSON.stringify({ vault: cliVault })], { cwd: work, encoding: "utf8" }));
   assert.equal(nativeDoctor.operation, "doctor");
   assert.equal(nativeDoctor.payload.vault, fs.realpathSync(cliVault), "packed native tool uses explicit vault without npm bin lookup");

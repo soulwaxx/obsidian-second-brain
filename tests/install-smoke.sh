@@ -71,3 +71,13 @@ test -f "$setup_vault/wiki/quickstart.md"
 [[ ! -e "$setup_config" && ! -e "$setup_vault/.git" ]]
 (cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$setup_config" "${setup_cli[@]}") | jq -e '.plan.writes == [] and .plan.directories == []' >/dev/null
 printf 'Installed setup preview, confirmed apply, and no-op repeat verified.\n'
+
+# Installed connect route: the list view is read-only (no adapter ships with the framework itself),
+# prints both generic MCP profiles, and doctor reports an empty connect section. The temporary HOME stays untouched.
+home_before=$(find "$HOME" "$work/agent-config.json" -print 2>/dev/null | sort)
+installed_real=$(cd "$installed" && pwd -P)
+connect_out=$(cd "$work/outside" && node "$installed/scripts/obsidian-second-brain.mjs" connect --json)
+printf '%s\n' "$connect_out" | jq -e --arg root "$installed_real" '.mode == "list" and .agents == [] and .genericSnippets.all.args[0] == ($root + "/scripts/obsidian-second-brain.mjs") and .genericSnippets.read.args[-1] == "read"' >/dev/null
+(cd "$work/outside" && node "$installed/scripts/obsidian-second-brain.mjs" doctor --json) | jq -e '.connect.agents == {}' >/dev/null
+[[ "$home_before" == "$(find "$HOME" "$work/agent-config.json" -print 2>/dev/null | sort)" ]]
+printf 'Installed connect list, generic snippets, and read-only doctor connect section verified.\n'
