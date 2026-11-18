@@ -85,4 +85,7 @@ class Adapter:
     skills: SkillsTarget | None = None
     snippets: tuple[Snippet, ...] = ()
     notes: tuple[str, ...] = ()                   # manual steps printed with the preview
+    # Names of adapters whose MCP entry reaches some of the same clients, so connecting both registers the server twice.
+    # The preview carries a duplicate-registration note when this adapter is selected and one of them is selected or connected.
+    duplicates_with: tuple[str, ...] = ()
     verification: str = FIXTURE_TESTED

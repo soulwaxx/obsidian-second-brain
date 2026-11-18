@@ -34,7 +34,7 @@ obsidian-second-brain connect <agent>... --apply --confirm <planHash>
 obsidian-second-brain connect <agent>... --remove   # preview the removal; add --apply --confirm to apply it
 ```
 
-`connect` must be the first argument. The plan hash is the setup command's own (`bootstrap-vault.py`'s digest). It binds the exact agent selection, `--force`/`--remove`, the package root, interpreter, node and version, the selected config, and the before/after digest of every file. A different selection, an edit to any target file after the preview, or a different package makes `--apply` refuse with `stale or unconfirmed plan; preview again (hash …)`, and nothing is written. Add `--json` for machine-readable output (`planHash`, `plan.files[]` with `role`, `path`, `op` of `create`/`update`/`delete`/`unchanged`, and the entry or block that will be written).
+`connect` must be the first argument. The plan hash is the setup command's own (`bootstrap-vault.py`'s digest). It binds the exact agent selection, `--force`/`--remove`, the package root, interpreter, node and version, the selected config, and the before/after digest of every file. A different selection, an edit to any target file after the preview, or a different package makes `--apply` refuse with `stale or unconfirmed plan; preview again (hash …)`, and nothing is written. Add `--json` for machine-readable output (`planHash`, `plan.files[]` with `role`, `path`, `op` of `create`/`update`/`delete`/`unchanged`, and the entry or block that will be written; `plan.directories[]` with the directories `connect` will create or remove, see below).
 
 | Option | Meaning |
 | --- | --- |
@@ -65,7 +65,9 @@ Project-level files are never written. The preview prints them as snippets inste
 - **Rollback.** If anything fails, every file already written is restored, created directories are removed, and a file edited in the meantime is left as the user wrote it and reported.
 - **Customized skill copies.** A destination file that differs from the shipped one is overwritten only when its hash still matches the one the manifest recorded (an older, unmodified copy). Otherwise `connect` refuses and names the files; `--force` backs them up first. Removing customized copies needs `--force` too. Files that two connected agents share (for example one skills directory) stay until the last agent using them is removed.
 - **Adopted items.** An MCP entry or skill file that is already identical to what `connect` would write, and that no manifest record (and no earlier agent in the same plan) owns, is recorded with `adopted` and left in place by `--remove`, which reports it. Only what `connect` itself wrote is removed.
+- **Shared rules files.** Agents whose adapters point at the same rules file share it: the block is written once, the second agent inherits the first owner's file creation, removing one agent leaves the block for the others, and the last agent removed removes the block and deletes the file if `connect` created it.
 - **Shared MCP entries.** Agents whose adapters point at the same file and entry name share it. The second agent records the entry without `adopted` (it inherits the first owner's `adopted` and `createdFile`), removing one agent leaves the entry for the others, and the last agent removed deletes it (and the file, if `connect` created it).
+- **Directories.** The preview lists directories that do not exist yet (`op` `create`), and the manifest records them in the agent's `createdDirs`. A directory that already existed is never recorded. A directory that another connected agent's record created and that this agent also writes into is recorded for both, like a shared file. `--remove` deletes the recorded directories deepest first (the preview lists them as `op` `remove`), but only when they are empty by then and no agent that stays connected records them; a directory that holds any file `connect` did not write, or that another connected agent still has files in, stays. This is why a removed agent returns to `absent`/not detected instead of being detected because of an empty directory left behind (for example `~/.copilot`). The directory that holds the manifest follows the same rule. The skills directory and its folders are removed with the skill copies, as before. A manifest written before this record existed has no `createdDirs`: its removal keeps the earlier behaviour and deletes no directory. A directory that appears after the preview makes the plan stale.
 - **Repeat runs.** Applying a plan that changes nothing writes nothing, not even the manifest.
 
 ### Manifest
@@ -84,13 +86,14 @@ Project-level files are never written. The preview prints them as snippets inste
       "profile": "all",
       "mcp": { "path": "…", "format": "json|toml|yaml", "keyPath": ["mcpServers"], "name": "obsidian-wiki", "entrySha256": "…", "createdFile": false, "adopted": true },
       "rules": { "path": "…", "blockSha256": "…", "createdFile": false, "header": "" },
-      "skills": { "root": "…", "files": { "wiki/SKILL.md": "<sha256>", "wiki/references/tool-surface.md": "<sha256>" }, "adopted": ["wiki/SKILL.md"] }
+      "skills": { "root": "…", "files": { "wiki/SKILL.md": "<sha256>", "wiki/references/tool-surface.md": "<sha256>" }, "adopted": ["wiki/SKILL.md"] },
+      "createdDirs": ["<absolute directory connect created, parents first>"]
     }
   }
 }
 ```
 
-`adopted` appears only when true or non-empty; `header` is the text `connect` wrote before the rules block (empty when the file already existed). Paths are the real paths. Every record is validated when the manifest is read; a manifest that is not valid JSON, has another schema version or has a malformed record is `manifest-invalid`: `doctor` reports it, and `connect` (apply and remove) refuses and writes nothing until you fix or delete the file by hand.
+`adopted` and `createdDirs` appear only when true or non-empty; `header` is the text `connect` wrote before the rules block (empty when the file already existed). Paths are the real paths. Every record is validated when the manifest is read; a manifest that is not valid JSON, has another schema version or has a malformed record is `manifest-invalid`: `doctor` reports it, and `connect` (apply and remove) refuses and writes nothing until you fix or delete the file by hand.
 
 ## Doctor and stale connections
 
@@ -153,6 +156,7 @@ Fields:
 | `skills` | no | `SkillsTarget(path)`: the user-level skills directory that receives the six skill folders. |
 | `snippets` | no | `Snippet(title, destination, content)` for project-level or manual content. `{{rules}}` expands to the shared rules text. |
 | `notes` | no | Manual notes. |
+| `duplicates_with` | no | Names of adapters whose MCP entry reaches some of the same clients (Copilot's two adapters). When one of them is selected and the other is selected or already connected, the preview carries a duplicate-registration note. |
 | `verification` | no | `LIVE_VALIDATED`, `FIXTURE_TESTED` (default) or `SNIPPET_ONLY`. |
 
 Location functions receive the home directory and a copy of the process environment, so `CODEX_HOME`, `XDG_CONFIG_HOME` and similar overrides are a one-liner: `path=lambda home, env: Path(env.get("CODEX_HOME") or home / ".codex") / "config.toml"`. Every returned path must be absolute and user-level; the framework refuses anything inside the selected vault, a symlinked final file, and files it cannot merge, and follows symlinked parent directories as described above. One adapter has one MCP target: an agent family with two config files (Copilot CLI and VS Code) is two adapters.
