@@ -9,9 +9,9 @@ without conflicts. The order here is the order `connect` lists agents.
 REGISTRY: list[str] = [
     "connect_adapters.codex",
     #
-    # "connect_adapters.copilot_cli",
+    "connect_adapters.copilot_cli",
     #
-    # "connect_adapters.copilot_vscode",
+    "connect_adapters.copilot_vscode",
     #
     "connect_adapters.cursor",
     #

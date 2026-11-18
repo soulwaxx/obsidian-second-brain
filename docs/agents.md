@@ -9,8 +9,8 @@
 | Claude Code | Plugin: hooks, skills, inline read-only MCP server | live-validated (the Claude contract tests run the real CLI when it is installed; see [the MCP guide](mcp.md#verification-status)) |
 | Pi | Package: extension with native `wiki_*` tools, hooks, skills | live-validated (`npm run test:pi-runtime`) |
 | Codex CLI (`codex`) | `connect` adapter: MCP entry in `~/.codex/config.toml`, rules in `~/.codex/AGENTS.md`, skills in `~/.agents/skills` ([details](#codex-cli)) | fixture-tested (live-unverified) |
-| GitHub Copilot CLI (`copilot-cli`) | `connect` adapter (planned, #67): MCP entry in `~/.copilot/mcp-config.json`, rules, skills | planned adapter |
-| GitHub Copilot in VS Code (`copilot-vscode`) | `connect` adapter (planned, #67): MCP entry in the VS Code user `mcp.json`, instructions file with `applyTo` front matter | planned adapter |
+| GitHub Copilot CLI (`copilot-cli`) | `connect` adapter: MCP entry in `~/.copilot/mcp-config.json`, rules, skills ([details](#github-copilot)) | fixture-tested (live-unverified) |
+| GitHub Copilot in VS Code (`copilot-vscode`) | `connect` adapter: MCP entry in the VS Code user-profile `mcp.json`, instructions file with `applyTo` front matter, skills ([details](#github-copilot)) | fixture-tested (live-unverified) |
 | Cursor | `connect` adapter `cursor` (#68): MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; [project rule snippet](#cursor) | fixture-tested (live-unverified) |
 | OpenCode | `connect` adapter (planned, #69): MCP entry, rules, skills | planned adapter |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, any other MCP client | [Generic MCP snippet](#generic-mcp-snippets) | snippet-only |
@@ -201,6 +201,41 @@ Notes:
 - Cursor's "Sync Skills for Cloud Agents" setting moves `~/.cursor/skills` into its synced storage. After turning it on, `doctor` reports the local skill copies as missing.
 - Cursor also reads skills from `~/.agents/skills`, `~/.claude/skills` and `~/.codex/skills`; connecting several agents that write to those directories can show a skill twice.
 - Status: fixture-tested (live-unverified). `tests/test_connect_cursor.py` runs the real framework against a temporary `HOME`; a live Cursor run belongs to #72.
+
+## GitHub Copilot
+
+Copilot is two adapters, because one adapter has one MCP file: `connect copilot-cli` and `connect copilot-vscode`. Each is previewed, applied and removed on its own, and both can be selected together. Both are fixture-tested (live-unverified): `tests/test_connect_copilot.py` runs them in a temporary `HOME`; neither the `copilot` binary nor VS Code is run, and detection only checks that the configuration directory exists. Paths and keys were checked against the official documentation in November 2026 (live runs are recorded by #72).
+
+| | `copilot-cli` | `copilot-vscode` |
+| --- | --- | --- |
+| Detected by | `$COPILOT_HOME`, else `~/.copilot` | VS Code user data folder: `~/Library/Application Support/Code/User` (macOS), `~/.config/Code/User` (Linux), `%APPDATA%\Code\User` (Windows, untested) |
+| MCP file | `<COPILOT_HOME or ~/.copilot>/mcp-config.json`, key `mcpServers` | `<user data>/mcp.json`, key `servers` |
+| MCP entry | `{"type": "local", "command": <node>, "args": [<root>/scripts/obsidian-second-brain.mjs, "mcp", "--tools", "all"], "env": {"PYTHON": …}, "tools": ["*"]}` | `{"type": "stdio", "command": <node>, "args": […], "env": {"PYTHON": …}}` |
+| Rules file | `<COPILOT_HOME or ~/.copilot>/copilot-instructions.md`, no front matter | `<COPILOT_HOME or ~/.copilot>/instructions/obsidian-second-brain.instructions.md`, with `---`, `applyTo: "**"`, `---` written only when `connect` creates the file |
+| Skills | `<COPILOT_HOME or ~/.copilot>/skills/` | the same directory, shared with `copilot-cli` |
+| Printed snippets | none (user-level rules are written) | `.github/copilot-instructions.md` (the rules) and an optional `.vscode/mcp.json` entry, never written |
+
+`env` also carries `OBSIDIAN_AGENT_CONFIG` when that variable selects a non-default config; without it `env` holds only `PYTHON`. `tools: ["*"]` makes every tool of the server available and, per the VS Code documentation, does not bypass approvals.
+
+Sources:
+
+- Copilot CLI MCP: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers> and <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#mcp-server-configuration> (`mcpServers`; local servers take `type` `local` or `stdio`, `command`, `args` and a required `tools`; `env` supports `$VAR` expansion).
+- Copilot CLI instructions: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions> (`$HOME/.copilot/copilot-instructions.md` and `$HOME/.copilot/instructions/**/*.instructions.md`; `COPILOT_HOME` replaces `$HOME/.copilot` for both).
+- Copilot CLI skills and directory: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills> (`~/.copilot/skills/`) and <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference> (`COPILOT_HOME` overrides the whole configuration directory, which lists `skills/`). The skills pages themselves do not spell out `COPILOT_HOME`; `connect` applies it to skills by that directory reference.
+- VS Code MCP: <https://code.visualstudio.com/docs/agents/reference/mcp-configuration> (`servers`, `type: "stdio"`) and <https://code.visualstudio.com/docs/configure/settings#_settings-file-locations> (the user data folder per OS; the profile `mcp.json` sits in it, and **MCP: Open User Configuration** opens it).
+- VS Code instructions and skills: <https://code.visualstudio.com/docs/agents/reference/custom-instructions-reference#_user-instructions> (`~/.copilot/instructions/**/*.instructions.md`, `applyTo`) and <https://code.visualstudio.com/docs/agent-customization/agent-skills> (`~/.copilot/skills/`).
+
+What the documentation changes about "VS Code":
+
+- VS Code now has a **Copilot harness** and a deprecated **Local harness** (removal announced for February 2027). The Copilot harness reads `~/.copilot/mcp-config.json` itself, the file `copilot-cli` wires, so a `copilot-cli` connection already reaches VS Code's Copilot harness. The profile `mcp.json` with `servers` is the Local harness's editor-managed format; VS Code forwards eligible entries from it to the Copilot harness (ours has no `${input:...}`), so the `copilot-vscode` entry works in both. Plan for `copilot-vscode` to become redundant once the Local harness is gone.
+- The Local harness keeps user instructions in a profile folder that the documentation does not name (the VS Code team says that folder is internal), so `connect` writes no user instructions there. The Copilot harness's documented user instruction folder is used instead, and the repository-level `.github/copilot-instructions.md` (read by both harnesses) is printed as a snippet for you to paste into a repository.
+- No XDG override is documented for VS Code's user data folder, so `copilot-vscode` uses `~/.config/Code/User` on Linux regardless of `XDG_CONFIG_HOME`. VS Code Insiders (`Code - Insiders`) and profiles other than the default are not wired; paste the printed entry there by hand.
+- Connecting both adapters puts two copies of the rules in front of Copilot CLI (`copilot-instructions.md` and `instructions/*.instructions.md`); the CLI only removes identical copies of the first kind. They do not conflict.
+- `applyTo: "**"` follows the documented syntax; VS Code documents that for Copilot sessions `applyTo` matches files the agent works with, so the rules may not load in a chat that touches no file. The rules are also in the MCP server's own instructions.
+
+JSONC: VS Code opens `mcp.json` as JSON with Comments, so comments and trailing commas are valid there and not rare. `connect` follows the framework rule and refuses a file that is not strict JSON (`config-unparseable`), writes nothing for the whole selection, and prints the exact `servers` entry to add by hand. The official pages above do not state that `mcp.json` accepts comments; this comes from VS Code's JSON-with-Comments file handling and is not live-verified.
+
+Approvals: both clients ask before they call an MCP tool by default (Copilot CLI: MCP tool calls follow the session's permission rules; VS Code: Manual permissions, unless a tool is pre-approved). Apply is therefore guarded by the client prompt as well as the rules block, but a broad approval removes it: `--allow-all`/`--allow-tool` in the CLI, and **Allow all**, **Autopilot**, or trusting the whole `obsidian-wiki` server (**Chat: Manage Tool Approval**) in VS Code. Keep `wiki_batch_apply` on manual approval. Whether the real clients prompt for these tools is the claim of their documentation and is not live-verified (#72).
 
 ## Generic MCP snippets
 
