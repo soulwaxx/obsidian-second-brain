@@ -62,14 +62,17 @@ locator says "writes are guarded and validated" and the MCP locator never does.
 
 ## Reading
 
-Use `wiki_search`, `wiki_outline`, and `wiki_read` when they are listed, and
-`wiki_doctor` to verify the selected vault, config, and readiness. Do not set the
+Use `wiki_search`, `wiki_outline`, and `wiki_read`, and `wiki_doctor` to verify
+the selected vault, config, and readiness. If Pi does not list them directly,
+use an available `codemode` (`tools.wiki_search(...)`, with `searchTools` or
+`describeTool` for discovery) or use `tool_search` to load the needed tool first.
+Do not set the
 `vault` input unless the user selected a different vault; the server or
 extension already uses the configured one.
 
 - Pi, omp, and Claude Code may run the package CLI through the package-relative
   launcher procedure in [focused workflows](focused-workflows.md#run-the-package-cli)
-  only when the read tools are not listed (for example the server is disabled).
+  only when the read tools cannot be reached (for example the server is disabled).
 - An MCP-only agent has no CLI fallback and no package path. If the read tools
   are not listed, say the wiki server is not connected and stop; do not read or
   search vault files with the client's own tools. Reserved `index.md` pages are

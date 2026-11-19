@@ -207,6 +207,26 @@ search is unavailable or unhelpful. See the
 [focused workflow reference](../skills/wiki/references/focused-workflows.md)
 for scope boundaries.
 
+## Pi tool exposure
+
+Pi 1.5 or later can keep the four read-only wiki tools out of the initial model
+loadout. To opt in, merge this into the selected `properties.json` (not Pi's
+`settings.json`), preserving its other fields:
+
+```json
+{ "pi": { "toolExposure": "deferred" } }
+```
+
+`direct` (the default) declares the tools as before; `codemode` lists them under
+`obsidian-wiki` inside Pi's `codemode`; `deferred` keeps them out of that list
+until discovered. Enable `"defaultTools": ["+codemode"]` or
+`"defaultTools": ["+tool_search"]` in Pi settings, preserving any existing
+entries. Reload the extension or restart Pi after changing the exposure. If
+neither discovery tool is available to the session, the extension falls back
+to direct access for permitted wiki tools and issues a notice. This is unrelated
+to automatic recall and does not change Claude Code or MCP tool availability.
+See [Pi tool exposure and diagnostics](pi-tools.md#choose-tool-exposure).
+
 ## Automatic recall (opt-in)
 
 Automatic recall adds a few relevant wiki excerpts to the agent's context before

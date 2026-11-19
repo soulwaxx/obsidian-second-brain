@@ -37,7 +37,7 @@ try {
   const handlers = new Map();
   const registeredTools = [];
   const { default: extension } = await import(pathToFileURL(path.join(tmp, "extensions", "obsidian.ts")));
-  extension(register(handlers, registeredTools));
+  await extension(register(handlers, registeredTools));
   assert.deepEqual(registeredTools.map((tool) => tool.name), ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"]);
   for (const tool of registeredTools) {
     assert.equal(tool.exposure, undefined, "default direct exposure leaves user's other selection alone");
@@ -138,7 +138,7 @@ try {
     process.env.OBSIDIAN_AGENT_CONFIG = "~/properties.json";
     delete process.env.OBSIDIAN_VAULT_PATH;
     const tildeHandlers = new Map();
-    (await import(pathToFileURL(tildeCopy))).default(register(tildeHandlers));
+    await (await import(pathToFileURL(tildeCopy))).default(register(tildeHandlers));
     assert.match((await tildeHandlers.get("before_agent_start")({}, ctx)).message.content, /Configured Obsidian wiki:/);
     assert.match(execFileSync("bash", [hook, "start"], { cwd: tmp, encoding: "utf8", env: process.env }), /Configured Obsidian wiki:/);
   } finally {
@@ -181,7 +181,7 @@ try {
   fs.writeFileSync(repairCopy, fixtureSource);
   const repairHandlers = new Map();
   const { default: repairExtension } = await import(pathToFileURL(repairCopy));
-  repairExtension(register(repairHandlers));
+  await repairExtension(register(repairHandlers));
   const otherCwd = path.join(tmp, "outside");
   fs.mkdirSync(otherCwd);
   const outsideDiagnostic = await repairHandlers.get("before_agent_start")({}, { cwd: otherCwd });
@@ -235,7 +235,7 @@ try {
     fs.writeFileSync(copy, fixtureSource);
     const { default: invalidExtension } = await import(pathToFileURL(copy));
     const invalidHandlers = new Map();
-    invalidExtension(register(invalidHandlers));
+    await invalidExtension(register(invalidHandlers));
     const warnings = [];
     await invalidHandlers.get("session_start")({}, { ...ctx, ui: { notify: (message) => warnings.push(message) } });
     assert.match(warnings.join(" "), /(?:cannot load|invalid) .*properties\.json/);
@@ -252,7 +252,7 @@ try {
   fs.writeFileSync(reloadCopy, fixtureSource);
   const reloadHandlers = new Map();
   const { default: reloadExtension } = await import(pathToFileURL(reloadCopy));
-  reloadExtension(register(reloadHandlers));
+  await reloadExtension(register(reloadHandlers));
   assert.equal(await reloadHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { guard: true } }));
   assert.equal((await reloadHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx))?.block, true);
@@ -262,7 +262,7 @@ try {
   fs.writeFileSync(featureCopy, fixtureSource);
   const featureHandlers = new Map();
   const { default: featureExtension } = await import(pathToFileURL(featureCopy));
-  featureExtension(register(featureHandlers));
+  await featureExtension(register(featureHandlers));
   assert.equal(await featureHandlers.get("tool_call")({ toolName: "write", input: { path: "wiki/index.md" } }, ctx), undefined);
   assert.equal((await featureHandlers.get("tool_call")({ toolCallId: "guard-off-secret", toolName: "write", input: { path: secretPage, content: `key ${fakeToken}` } }, ctx))?.block, true,
     "the secret check does not depend on the guard feature");
@@ -508,7 +508,7 @@ try {
   delete process.env.OBSIDIAN_VAULT_PATH;
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: vault, features: { retrievalRefresh: false } }));
   const reselectHandlers = new Map();
-  featureExtension(register(reselectHandlers));
+  await featureExtension(register(reselectHandlers));
   const reselectWarnings = [];
   const reselectCtx = { ...ctx, cwd: otherCwd, ui: { notify: (message) => reselectWarnings.push(message) } };
   await reselectHandlers.get("session_start")({}, reselectCtx);
@@ -538,7 +538,7 @@ try {
   process.env.OBSIDIAN_VAULT_PATH = vault;
 
   const readerHandlers = new Map();
-  featureExtension(register(readerHandlers));
+  await featureExtension(register(readerHandlers));
   const readerNotifications = [];
   const readerCtx = { ...ctx, sessionManager: { getSessionId: () => "pi-reader-session" }, ui: { notify: (message) => readerNotifications.push(message) } };
   const lifecycleStatePath = path.join(vault, ".vault-meta/lifecycle/state.json");
@@ -812,7 +812,7 @@ try {
   process.env.OBSIDIAN_VAULT_PATH = refreshVault;
   fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: refreshVault }));
   const refreshHandlers = new Map();
-  featureExtension(register(refreshHandlers));
+  await featureExtension(register(refreshHandlers));
   const refreshWarnings = [];
   const refreshCtx = { ...ctx, ui: { notify: (message) => refreshWarnings.push(message) } };
   await refreshHandlers.get("session_start")({}, refreshCtx);
@@ -845,7 +845,7 @@ try {
   const recallPrompt = "how does the quokka gateway migrate";
   const recallSnapshot = () => execFileSync("find", [recallVault, "-type", "f", "-exec", "shasum", "{}", "+"], { encoding: "utf8" });
   const recallHandlers = new Map();
-  featureExtension(register(recallHandlers));
+  await featureExtension(register(recallHandlers));
   let recallSession = 0;
   const freshSession = () => { const id = `recall-session-${++recallSession}`; return { ...ctx, sessionManager: { getSessionId: () => id } }; };
   const writeRecallConfig = (features) => fs.writeFileSync(process.env.OBSIDIAN_AGENT_CONFIG, JSON.stringify({ vaultPath: recallVault, ...(features === null ? {} : { features }) }));
@@ -915,7 +915,7 @@ try {
   process.env.OBSIDIAN_VAULT_PATH = spyVault;
   const spyHandlers = new Map();
   const { default: spyExtension } = await import(pathToFileURL(path.join(spyRoot, "extensions/obsidian.ts")));
-  spyExtension(register(spyHandlers));
+  await spyExtension(register(spyHandlers));
   const spyCtx = { ...ctx, cwd: path.join(spyVault, "wiki/topic") };
   const spied = async (target, id) => {
     fs.rmSync(spyLog, { force: true });

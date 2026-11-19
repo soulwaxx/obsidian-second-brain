@@ -45,8 +45,9 @@ is the single mapping.
   other client, and any copy made by `obsidian-second-brain connect`, is
   MCP-only.
 - **Reads:** use `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`
-  when listed (native in Pi; MCP elsewhere, where the client may prefix the
-  names). Only Claude Code and Pi may fall back to the package CLI.
+  through the available route in [tool surface by client](references/tool-surface.md),
+  including Pi discovery for tools not directly listed. Only Claude Code and Pi
+  may fall back to the package CLI.
 - **Writes, hook-guarded clients (Claude Code, Pi, omp):** the client's file
   tools, authorized and validated by the vault hook, as described below.
 - **Writes, every other client (MCP-only):** only `wiki_batch_inspect`, then
@@ -71,7 +72,7 @@ absolute paths are appropriate for runtime filesystem access.
 `OBSIDIAN_AGENT_CONFIG` selects that config; its default is
 `~/.config/obsidian-second-brain/properties.json`. Verify the selected vault
 before wiki work. If the locator is absent or needs verification, use the read-only
-`wiki_doctor` tool when listed, otherwise (Claude Code and Pi only) the loaded
+`wiki_doctor` tool via the same route, otherwise (Claude Code and Pi only) the loaded
 package's `doctor --json` via the package-relative launcher procedure below,
 without `--vault` or `--config` overrides. Its `vault` and `config.path`
 identify the effective selection; never read the default config instead of an
@@ -171,7 +172,7 @@ Pi registers native read-only `wiki_search`, `wiki_outline`, `wiki_read`, and
 `wiki_doctor` tools (package doc `docs/pi-tools.md`); the Claude Code plugin
 bundles the same four read-only tools as an MCP server, and MCP-only agents get
 them from the same server (package doc `docs/mcp.md`). Prefer these tools when
-listed; only Claude Code and Pi fall back to the package-owned
+reachable; only Claude Code and Pi fall back to the package-owned
 `obsidian-second-brain` CLI, which provides read-only diagnostics
 (`doctor --json`) and structured search (`search "query terms" --json`). An
 MCP-only agent has no CLI fallback and no package path.
@@ -523,7 +524,7 @@ procedure: [references/auto-mode.md](references/auto-mode.md).
 Answer from the wiki first. The wiki has already done the synthesis work. Read
 strategically, not exhaustively:
 
-1. Run `wiki_search` when listed, otherwise (Claude Code and Pi) `search "query
+1. Run `wiki_search` when reachable, otherwise (Claude Code and Pi) `search "query
    terms" --json` through the package-relative launcher procedure described
    above. Rank candidate pages, then read the top-ranked candidates. Search is
    read-only and does not build the index. Retrieval failures, unavailable CLI,

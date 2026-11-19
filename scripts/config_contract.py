@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 KNOWN_FLAGS = ("guard", "toc", "autoCommit", "retrievalRefresh")
+PI_TOOL_EXPOSURES = ("direct", "codemode", "deferred")
 # features.autoRecall is opt-in prompt-time recall. Hooks (jq), the Pi extension
 # (TypeScript) and doctor all consume auto_recall_settings() through this module,
 # so every reader interprets the value identically.
@@ -119,6 +120,22 @@ def auto_recall_settings(config: dict[str, Any] | None) -> dict[str, Any]:
     return {**settings, "valid": True, "error": None}
 
 
+def pi_tool_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize Pi-only tool exposure without invalidating shared vault settings."""
+    pi = config.get("pi") if config is not None else None
+    exposure = "direct"
+    error = None
+    if pi is not None and not isinstance(pi, dict):
+        error = "pi must be an object or null"
+    elif isinstance(pi, dict):
+        value = pi.get("toolExposure", "direct")
+        if value in PI_TOOL_EXPOSURES:
+            exposure = value
+        else:
+            error = "pi.toolExposure must be direct, codemode, or deferred"
+    return {"toolExposure": exposure, "valid": error is None, "error": f"{error}; using direct exposure" if error else None}
+
+
 def repair_target(config_path: str | Path, target_path: str, cwd: str) -> bool:
     """Accept only the selected, existing regular config file, without symlinks."""
     import os
@@ -149,7 +166,8 @@ def main() -> int:
     parser.add_argument("--cwd", default=os.getcwd())
     args = parser.parse_args()
     value, error = load_config(args.config)
-    result = {"config": value, "error": error, "autoRecall": auto_recall_settings(None if error else value)}
+    usable = None if error else value
+    result = {"config": value, "error": error, "autoRecall": auto_recall_settings(usable), "pi": pi_tool_settings(usable)}
     if args.repair_target is not None:
         result["repairTarget"] = repair_target(args.config, args.repair_target, args.cwd)
     print(json.dumps(result))

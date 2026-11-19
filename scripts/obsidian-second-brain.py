@@ -13,7 +13,7 @@ import sys
 import shutil
 from typing import Any
 
-from config_contract import auto_recall_settings, load_config, obsidian_git_diagnostics, symlinked_config_component
+from config_contract import auto_recall_settings, load_config, obsidian_git_diagnostics, pi_tool_settings, symlinked_config_component
 from module_loading import load_source
 
 INDEX_MODULE = load_source("obsidian_cli_bm25", str(Path(__file__).with_name("bm25-index.py")))
@@ -471,6 +471,7 @@ def add_readiness(checks: dict[str, Any], config_file: Path, config: dict[str, A
     recall["reason"] = (recall["error"] if not recall["valid"] else
                         None if not recall["enabled"] or recall["ready"] else retrieval["reason"])
     checks["autoRecall"] = recall
+    checks["pi"] = pi_tool_settings(config if config_error is None else None)
     checks["connect"] = connect_state(config_file)
     return checks
 
@@ -1136,6 +1137,11 @@ def main() -> int:
                                          f"on, {recall['maxResults']} results, {recall['tokenBudget']} tokens" + ("" if recall["ready"] else f" (not ready: {recall['reason']})")))
             if recall["error"]:
                 print(recall["error"], file=sys.stderr)
+            pi = output["pi"]
+            if pi["toolExposure"] != "direct" or not pi["valid"]:
+                print(f"Pi tool exposure: {pi['toolExposure']}")
+            if pi["error"]:
+                print(pi["error"], file=sys.stderr)
             print(f"Cache exclusions: {output['cacheExclusions']['detail']}")
             readiness = output["readiness"]
             print(f"Stage: {readiness['stage']}" + (f" ({readiness['reason']})" if readiness["reason"] else ""))
