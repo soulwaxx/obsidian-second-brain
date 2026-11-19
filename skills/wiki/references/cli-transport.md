@@ -1,5 +1,9 @@
 # Obsidian CLI Transport
 
+Not available to MCP-only agents (it needs the running Obsidian app and a
+shell); use `wiki_search`, `wiki_outline`, and `wiki_read` instead. See
+[tool surface by client](tool-surface.md).
+
 `obsidian-cli` is an optional command-line client available with supported
 Obsidian releases. Installation and command names vary by platform; consult the
 official Obsidian documentation and probe the command available on this

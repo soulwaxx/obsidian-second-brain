@@ -167,7 +167,8 @@ class SetupTests(unittest.TestCase):
 
     def test_null_selection_configure_parity_and_apply(self):
         self.vault.mkdir()
-        self.write_config({"vaultPath": None, "custom": 1, "features": {"mystery": 7}})
+        auto_recall = {"enabled": True, "maxResults": 2, "tokenBudget": 400}
+        self.write_config({"vaultPath": None, "custom": 1, "features": {"mystery": 7, "autoRecall": auto_recall}})
         settings = self.install_plugin({"unknown": "kept", "autoSaveInterval": 12, "autoPullInterval": 3,
                                         "disablePush": True, "squashCommitsBeforePush": True})
         scaffold = self.assert_parity()
@@ -183,7 +184,8 @@ class SetupTests(unittest.TestCase):
         self.apply(preview, "--configure")
         config = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual((config["vaultPath"], config["features"], config["custom"]),
-                         (str(self.vault), {"mystery": 7, "autoCommit": False}, 1))
+                         (str(self.vault), {"mystery": 7, "autoRecall": auto_recall, "autoCommit": False}, 1),
+                         "reviewed configure preserves the user's autoRecall setting")
         profile = json.loads(settings.read_text(encoding="utf-8"))
         self.assertEqual((profile["unknown"], profile["autoSaveInterval"], profile["autoPullInterval"], profile["disablePush"]),
                          ("kept", 12, 3, True), "schedules and disabled-push intent are preserved")

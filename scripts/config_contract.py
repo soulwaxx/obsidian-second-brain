@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 KNOWN_FLAGS = ("guard", "toc", "autoCommit", "retrievalRefresh")
+# features.autoRecall is opt-in prompt-time recall. Hooks (jq), the Pi extension
+# (TypeScript) and doctor all consume auto_recall_settings() through this module,
+# so every reader interprets the value identically.
+AUTO_RECALL_DEFAULTS = {"enabled": False, "maxResults": 3, "tokenBudget": 800}
+AUTO_RECALL_BOUNDS = {"maxResults": (1, 5), "tokenBudget": (200, 2000)}
 OBSIDIAN_GIT_ID = "obsidian-git"
 OBSIDIAN_GIT_MINIMUM = (2, 39, 0)
 
@@ -84,6 +89,36 @@ def load_config(path: str | Path) -> tuple[dict[str, Any] | None, str | None]:
     return value, None
 
 
+def auto_recall_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize ``features.autoRecall``; never raises and never invalidates the config.
+
+    Absent or null means the default (disabled). Any invalid value (non-object,
+    non-boolean ``enabled``, non-integer or out-of-bounds count/budget) disables
+    recall and reports why; the rest of the config stays usable for wiki writes.
+    """
+    features = config.get("features") if isinstance(config, dict) else None
+    raw = features.get("autoRecall") if isinstance(features, dict) else None
+    disabled = {**AUTO_RECALL_DEFAULTS, "valid": True, "error": None}
+    if raw is None:
+        return disabled
+    invalid = lambda message: {**AUTO_RECALL_DEFAULTS, "valid": False, "error": f"features.autoRecall {message}; automatic recall is disabled"}
+    if not isinstance(raw, dict):
+        return invalid("must be an object or null")
+    settings = dict(AUTO_RECALL_DEFAULTS)
+    if raw.get("enabled") is not None:
+        if not isinstance(raw["enabled"], bool):
+            return invalid("enabled must be a boolean")
+        settings["enabled"] = raw["enabled"]
+    for name, (low, high) in AUTO_RECALL_BOUNDS.items():
+        value = raw.get(name)
+        if value is None:
+            continue
+        if type(value) is not int or not low <= value <= high:
+            return invalid(f"{name} must be an integer from {low} to {high}")
+        settings[name] = value
+    return {**settings, "valid": True, "error": None}
+
+
 def repair_target(config_path: str | Path, target_path: str, cwd: str) -> bool:
     """Accept only the selected, existing regular config file, without symlinks."""
     import os
@@ -114,7 +149,7 @@ def main() -> int:
     parser.add_argument("--cwd", default=os.getcwd())
     args = parser.parse_args()
     value, error = load_config(args.config)
-    result = {"config": value, "error": error}
+    result = {"config": value, "error": error, "autoRecall": auto_recall_settings(None if error else value)}
     if args.repair_target is not None:
         result["repairTarget"] = repair_target(args.config, args.repair_target, args.cwd)
     print(json.dumps(result))

@@ -1,7 +1,7 @@
 # Native Pi wiki read tools
 
 The package's Pi extension registers four direct, default-active, read-only tools:
-`wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`. They do not add wiki text to prompts, replace the user's active-tool selection, write vault/config files, build indexes, settle lifecycle captures, or expose evidence-report and write operations. Their annotations are non-destructive, idempotent, read-only, and closed-world hints, not permission enforcement.
+`wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`. They do not add wiki text to prompts (the separate, off-by-default `features.autoRecall` setting in the extension's `before_agent_start` handler can, see [Automatic recall](setup.md#automatic-recall-opt-in)), replace the user's active-tool selection, write vault/config files, build indexes, settle lifecycle captures, or expose evidence-report and write operations. Their annotations are non-destructive, idempotent, read-only, and closed-world hints, not permission enforcement.
 
 Each result has an `operation` and `ok` state, plus the existing CLI response in `payload` when available. Failures can include bounded `code`, `message`, and `processStatus`. A result with `ok: false` is returned as a tool error while retaining structured diagnostics. Search keeps BM25 ranking, read references, fallback, semantic errors, and freshness as reported by the existing retrieval code; empty results, pending refreshes, and fallback are not verified evidence. `wiki_doctor` reports invalid config details in `payload.config.error` without attempting repair. Its payload includes the doctor's `capabilities` and `readiness` (stage and `nextActions`); suggestions are never executed by the tool. See [readiness and next steps](setup.md#readiness-and-next-steps).
 
@@ -15,7 +15,17 @@ Native calls have a 30-second deadline, 256 KiB transport-output cap, 8 KiB stde
 
 ## Equivalent access in Claude Code
 
-Claude Code has no native wiki tools; this is by design, and no MCP server is shipped. Claude skills and the vault specialist run the same operations through the loaded package's CLI launcher (`doctor --json`, `search ... --json`, `outline`, `read`). Both routes call the same Python implementation: in live validation, CLI and `--pi-tool` payloads for search, outline, read, and doctor on the same synthetic vault were byte-identical. Differences are in transport only: Pi tool results add the `operation`/`ok` envelope and the limits above, while CLI output is the bare payload.
+Claude Code has no Pi-style native tools. The plugin instead declares the package's read-only MCP server (`mcpServers` in `.claude-plugin/plugin.json`, launched by `node ${CLAUDE_PLUGIN_ROOT}/scripts/obsidian-second-brain.mjs mcp --tools read`; see [the MCP server guide](mcp.md#claude-code-plugin)), so Claude lists the same four tools with no setup. Claude skills and the vault specialist prefer those tools when present and otherwise, for example when the server is disabled in `/mcp` or fails to start, run the same operations through the loaded package's CLI launcher (`doctor --json`, `search ... --json`, `outline`, `read`). Claude writes stay with its hook-guarded file tools; the plugin exposes no write tools. Both routes call the same Python implementation: in live validation, CLI and `--pi-tool` payloads for search, outline, read, and doctor on the same synthetic vault were byte-identical. Differences are in transport only: Pi tool results add the `operation`/`ok` envelope and the limits above, while CLI output is the bare payload.
+
+## Client-neutral skills
+
+The portable skills name these tools as plain `wiki_*` and choose the write path by client type: Pi and omp keep file tools (guarded by the extension's hooks), while MCP-only agents write only through the MCP batch tools. See [the MCP guide](mcp.md#client-neutral-skills).
+
+## The same tools over MCP
+
+Agents without native Pi tools (and the Claude Code plugin, which bundles it) can use the identical four tools through the package's stdio MCP server, `obsidian-second-brain mcp`, documented in [the MCP server guide](mcp.md). It runs every call through this bridge, so the envelope, limits, vault selection, and read-only behavior described here apply unchanged; the tool result's `structuredContent` equals the `--pi-tool` result. Pi and omp keep the native tools and do not use MCP.
+
+The same bridge also serves the MCP server's reviewed batch write tools (`--tools all`, see [the MCP guide](mcp.md#reviewed-batch-writes---tools-all)) as the operations `batch-inspect`, `batch-apply`, and `batch-recover`. They are not Pi tools and Pi never registers them (a test checks the extension source): they read their parameters as JSON on stdin instead of argv, accept no `vault` input, are limited to 48 KiB of serialized operations, and run the same `scripts/wiki_batch.py` code path as the CLI batch command. For `batch-apply` and `batch-recover` the launcher stops the 30-second deadline once the batch journal is saved, so a slow publication is not killed halfway; cancellation still terminates it and `batch-recover` resumes it.
 
 ## Optional live provider check (not part of deterministic tests)
 

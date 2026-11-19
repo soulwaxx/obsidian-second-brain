@@ -63,7 +63,7 @@ class ModuleLoadingTests(unittest.TestCase):
     def test_runtime_modules_import_with_deprecations_as_errors(self):
         paths = ["obsidian-second-brain.py", "retrieve.py", "semantic-chunks.py",
                  "benchmark-semantic-retrieval.py", "wiki_batch.py", "local_capture.py",
-                 "evidence_reports.py"]
+                 "evidence_reports.py", "connect.py"]
         code = "from module_loading import load_source\n" + "\n".join(
             f"load_source('warning_fixture_{i}', {str(ROOT / 'scripts' / path)!r})"
             for i, path in enumerate(paths))

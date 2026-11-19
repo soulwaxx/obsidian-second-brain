@@ -2,7 +2,9 @@
 
 Build the wiki from scratch for a new repository or project.
 
-**Vault setup (optional).** For a new or existing vault, first preview the
+**Vault setup (optional; Claude Code, Pi, and the CLI only; an MCP-only agent
+reports it as not available here and suggests running it from Claude, Pi or the
+CLI).** For a new or existing vault, first preview the
 scaffold through the active package's launcher
 ([Run the package CLI](focused-workflows.md#run-the-package-cli)) with
 `obsidian-second-brain setup --vault /absolute/path/to/vault --json`, review its
@@ -32,7 +34,8 @@ Other optional Obsidian plugins are described in
 2. **Plan.** List intended pages, evidence sources, relationship edges, and
    open questions. Use a temporary `wiki/_plan.md` when it helps track a large
    pass (see Planning Discipline in
-   [authoring-standards.md](authoring-standards.md)).
+   [authoring-standards.md](authoring-standards.md)); an MCP-only agent keeps
+   the plan in working context because batch writes refuse `_plan.md`.
 
 3. **Entry point.** Follow the existing vault's entry-point convention. For a
    new vault, `wiki/quickstart.md` gives an overview, links, and a `## Backlog`.
@@ -47,7 +50,9 @@ Other optional Obsidian plugins are described in
 
 5. **Middleware.** Follow pre-write authorization, post-write validation, and
    batch finalization in `SKILL.md`. Supported file tools use the lifecycle;
-   without it, run the manual middleware checks. Repair invalid changed pages
+   without it, run the manual middleware checks. An MCP-only agent writes
+   through the reviewed batch flow in [tool-surface.md](tool-surface.md)
+   instead. Repair invalid changed pages
    before publishing their batch. Obsidian Git owns version control.
 
 6. **Cleanup.** Delete any temporary `_plan.md`. Run the Coverage Self-Check in

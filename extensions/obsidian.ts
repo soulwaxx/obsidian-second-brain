@@ -12,6 +12,8 @@ const configPath = path.resolve(resolveHome(process.env.OBSIDIAN_AGENT_CONFIG?.t
 type Config = { vaultPath?: string | null; features?: { guard?: boolean | null; autoCommit?: boolean | null; toc?: boolean | null; retrievalRefresh?: boolean | null } };
 let config: Config = {};
 let configError: string | null = null;
+// features.autoRecall as normalized by scripts/config_contract.py (the one shared reader).
+let autoRecallEnabled = false;
 let knownVault: string | null = null;
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_HELPER = path.join(REPO, "scripts/config_contract.py");
@@ -138,7 +140,8 @@ async function refreshConfig(): Promise<void> {
 	const invocationOverride = process.env.OBSIDIAN_VAULT_PATH?.trim() || null;
 	try {
 		const { stdout } = await execFileAsync("python3", [CONFIG_HELPER, configPath], { encoding: "utf8" });
-		const result = JSON.parse(stdout) as { config: Config | null; error: string | null };
+		const result = JSON.parse(stdout) as { config: Config | null; error: string | null; autoRecall?: { enabled?: boolean } };
+		autoRecallEnabled = !result.error && result.autoRecall?.enabled === true;
 		if (!result.error) {
 			config = result.config ?? {};
 			const selected = invocationOverride ?? resolveHome(config.vaultPath);
@@ -150,6 +153,7 @@ async function refreshConfig(): Promise<void> {
 			knownVault = canonicalDirectory(invocationOverride ?? resolveHome(possible) ?? knownVault);
 		}
 	} catch (err) {
+		autoRecallEnabled = false;
 		configError = `cannot load ${configPath}: ${(err as Error).message}`;
 		knownVault = canonicalDirectory(invocationOverride ?? knownVault);
 	}
@@ -222,6 +226,42 @@ function wikiWriteCandidate(rawPath: unknown, cwd: string): string | null {
 	return target;
 }
 
+// Whether the secret check must run for this write destination. Names are never compared as
+// strings (JS lowercasing, Python casefolding, and filesystem Unicode normalization disagree). The
+// nearest existing ancestor of the destination is resolved through symlinks, and the destination
+// is a wiki path when that real path or any of its ancestors is the wiki directory by (device,
+// inode). That covers symlinks, case and normalization aliases, and files not yet created.
+// Anything that cannot be resolved cleanly (a dangling symlink, an unreadable entry) is sent to
+// the hook, as is a missing wiki/ and a case-different spelling of wiki/ (the guard's policy on
+// case-sensitive filesystems).
+function mayBeWikiTarget(vault: string, target: string): boolean {
+	const wikiDir = path.join(vault, "wiki");
+	let wiki: fs.BigIntStats;
+	try { wiki = fs.statSync(wikiDir, { bigint: true }); } catch { return true; }
+	const lowered = target.toLowerCase();
+	if (lowered === wikiDir.toLowerCase() || lowered.startsWith(wikiDir.toLowerCase() + path.sep)) return true;
+	let existing = target;
+	for (;;) {
+		try {
+			fs.statSync(existing);
+			break;
+		} catch {
+			// Missing is fine (the write creates it); a dangling symlink or unreadable entry is not.
+			try { fs.lstatSync(existing); return true; } catch { /* not present */ }
+		}
+		const parent = path.dirname(existing);
+		if (parent === existing) return false;
+		existing = parent;
+	}
+	try {
+		for (let current = fs.realpathSync(existing); ; current = path.dirname(current)) {
+			const stat = fs.statSync(current, { bigint: true });
+			if (stat.dev === wiki.dev && stat.ino === wiki.ino) return true;
+			if (path.dirname(current) === current) return false;
+		}
+	} catch { return true; }
+}
+
 function isNavigationPath(target: string, vault: string): boolean {
 	if (path.basename(target).toLowerCase() !== "index.md") return false;
 	const wiki = path.join(vault, "wiki");
@@ -256,16 +296,21 @@ function touchedWikiPath(rawPath: unknown, cwd: string): string | null {
 	return target;
 }
 
-async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverride = knownVault): Promise<{ output: string; error?: string; retrievalPending?: boolean }> {
+async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverride = knownVault, stdin?: string): Promise<{ output: string; error?: string; retrievalPending?: boolean }> {
 	if (!HOOK) return { output: "", error: "hook is not configured" };
 	if (!fs.existsSync(HOOK)) return { output: "", error: `hook is missing at ${HOOK}` };
 	try {
-		const { stdout } = await execFileAsync("bash", [HOOK, sub, ...args], {
+		const running = execFileAsync("bash", [HOOK, sub, ...args], {
 			cwd,
 			env: { ...process.env, OBSIDIAN_VAULT_PATH: vaultOverride ?? "" },
 			encoding: "utf8",
 			timeout: 15000,
 		});
+		if (stdin !== undefined) {
+			running.child.stdin?.on("error", () => { /* the hook exited without reading; its status reports the result */ });
+			running.child.stdin?.end(stdin);
+		}
+		const { stdout } = await running;
 		const output = stdout.trim();
 		return output === "synced-retrieval-pending"
 			? { output: "synced", retrievalPending: true }
@@ -277,6 +322,30 @@ async function runHook(sub: string, cwd: string, args: string[] = [], vaultOverr
 			output: detail,
 			error: detail || (typeof result.message === "string" ? result.message : "hook failed"),
 		};
+	}
+}
+
+const RECALL_TIMEOUT_MS = 5000;
+
+// Opt-in recall: the hook reads the existing BM25 index only. Any failure or
+// timeout yields no recall, so it can never block or delay the prompt beyond the bound.
+async function runRecall(prompt: string, cwd: string, vault: string): Promise<string> {
+	if (!fs.existsSync(HOOK)) return "";
+	try {
+		const pending = execFileAsync("bash", [HOOK, "recall"], {
+			cwd,
+			env: { ...process.env, OBSIDIAN_VAULT_PATH: vault },
+			encoding: "utf8",
+			timeout: RECALL_TIMEOUT_MS,
+			maxBuffer: 64 * 1024,
+		});
+		pending.child.stdin?.on("error", () => { /* hook exited before reading the prompt */ });
+		pending.child.stdin?.end(JSON.stringify({ prompt }));
+		const { stdout } = await pending;
+		const context = (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: unknown } }).hookSpecificOutput?.additionalContext;
+		return typeof context === "string" ? context : "";
+	} catch {
+		return "";
 	}
 }
 
@@ -337,7 +406,7 @@ export default function (pi: ExtensionAPI) {
 		if (result.error) ctx.ui.notify(`obsidian start hook failed: ${result.error}`, "warning");
 	});
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		await refreshConfig();
 		if (configError && knownVault) {
 			const diagnostic = configDiagnosticKey();
@@ -354,10 +423,15 @@ export default function (pi: ExtensionAPI) {
 			if (result.error) ctx.ui.notify(`obsidian start hook failed: ${result.error}`, "warning");
 		}
 		const owner = sessionIdentity(ctx);
-		if (!owner || toc.length === 0) return;
-		if (injectedLocators.get(owner) === knownVault) return;
-		injectedLocators.set(owner, knownVault);
-		return { message: { customType: "obsidian-toc", content: "Obsidian wiki locator (load wiki/WIKI.md and relevant wiki/index.md only when this task needs the wiki):\n\n" + toc, display: false } };
+		let locator = "";
+		if (owner && toc.length > 0 && injectedLocators.get(owner) !== knownVault) {
+			injectedLocators.set(owner, knownVault);
+			locator = "Obsidian wiki locator (load wiki/WIKI.md and relevant wiki/index.md only when this task needs the wiki):\n\n" + toc;
+		}
+		const prompt = "prompt" in event ? event.prompt : undefined;
+		const recall = autoRecallEnabled && typeof prompt === "string" && prompt.trim() ? await runRecall(prompt, ctx.cwd, knownVault) : "";
+		if (!locator && !recall) return;
+		return { message: { customType: locator ? "obsidian-toc" : "obsidian-recall", content: [locator, recall].filter(Boolean).join("\n\n"), display: false } };
 	});
 
 	pi.on("session_compact", (_event, ctx) => {
@@ -434,6 +508,17 @@ export default function (pi: ExtensionAPI) {
 				&& !(await selectedConfigRepairTarget(rawPath, ctx.cwd))) {
 				if (pendingId) pendingWikiWrites.delete(pendingId);
 				return { block: true, reason: `Obsidian configuration needs repair: ${configError}` };
+			}
+		}
+		// Refuse likely secrets before any bytes change. This is separate from the
+		// guard feature: pages and ledger JSON under wiki/ are scanned either way.
+		// Only destinations that may be under wiki/ spawn the hook (it decides membership);
+		// mayBeWikiTarget compares filesystem identity, never name strings.
+		if (!configError && (!eventVault || mayBeWikiTarget(eventVault, path.resolve(ctx.cwd, rawPath)))) {
+			const scanned = await runHook("secret-check", ctx.cwd, [rawPath], eventVault, JSON.stringify(event.input));
+			if (scanned.error) {
+				if (pendingId) pendingWikiWrites.delete(pendingId);
+				return { block: true, reason: scanned.error };
 			}
 		}
 		if (!configError && config.features?.guard === false) {

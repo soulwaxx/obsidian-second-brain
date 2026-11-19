@@ -391,6 +391,8 @@ def _review(vault: Path, sources: list[Path], config: Path, pages: list[str] | N
         "linkedPageCount": prepared["pageCount"],
         "linkedPageHashes": [digest for _, digest in prepared["pageHashes"]],
     }
+    if batch_plan and batch_plan.get("warnings"):
+        result["warnings"] = batch_plan["warnings"]
     return {"result": result, "bundle": missing_bundle, "batchPlan": batch_plan}
 
 

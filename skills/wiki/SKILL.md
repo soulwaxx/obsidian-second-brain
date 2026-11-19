@@ -29,6 +29,36 @@ material never invalidates a pointer.
 
 ---
 
+## Client Capabilities
+
+These skills run in Claude Code, Pi, omp, and MCP-only agents, so route by the
+capabilities you actually have; [tool surface by client](references/tool-surface.md)
+is the single mapping.
+
+- **Which class you are:** the client application plus how this skill was
+  installed decide it, not your model name and not the MCP server's wiki
+  locator. Claude Code with this plugin, or Pi/omp with this package (this skill
+  loaded from the package, with its scripts beside it), is hook-guarded: file
+  tools when the hook is active (its locator says "writes are guarded and
+  validated"), otherwise, for example before a vault exists, the manual
+  guard, validate, sync order below with setup and the package scripts. Every
+  other client, and any copy made by `obsidian-second-brain connect`, is
+  MCP-only.
+- **Reads:** use `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`
+  when listed (native in Pi; MCP elsewhere, where the client may prefix the
+  names). Only Claude Code and Pi may fall back to the package CLI.
+- **Writes, hook-guarded clients (Claude Code, Pi, omp):** the client's file
+  tools, authorized and validated by the vault hook, as described below.
+- **Writes, every other client (MCP-only):** only `wiki_batch_inspect`, then
+  showing the user its summary, then explicit approval, then `wiki_batch_apply`.
+  Never edit vault files with file or shell tools, and never run the package
+  scripts, a package path, or a `PATH` bin; there is no package root.
+- Operations that need package scripts or a hook (setup, index builds, capture,
+  lint, evidence reports, migration, shell-write helpers) are **not available
+  here; run from Claude, Pi or the CLI** when you are MCP-only.
+
+---
+
 ## Canonical Location
 
 The wiki lives under `<vault>/wiki/`. The configured vault, the agent's working
@@ -40,9 +70,10 @@ absolute paths are appropriate for runtime filesystem access.
 `OBSIDIAN_VAULT_PATH` before the `vaultPath` in the selected integration config.
 `OBSIDIAN_AGENT_CONFIG` selects that config; its default is
 `~/.config/obsidian-second-brain/properties.json`. Verify the selected vault
-before wiki work. If the locator is absent or needs verification, use the loaded
-package's read-only `doctor --json` via the package-relative launcher procedure
-below, without `--vault` or `--config` overrides. Its `vault` and `config.path`
+before wiki work. If the locator is absent or needs verification, use the read-only
+`wiki_doctor` tool when listed, otherwise (Claude Code and Pi only) the loaded
+package's `doctor --json` via the package-relative launcher procedure below,
+without `--vault` or `--config` overrides. Its `vault` and `config.path`
 identify the effective selection; never read the default config instead of an
 `OBSIDIAN_AGENT_CONFIG` override. Stop on a conflict with the lifecycle locator.
 Read `wiki/WIKI.md` when present, or the vault's root convention file, and preserve
@@ -74,19 +105,27 @@ OKF v0.2 reserves exactly these two filenames at any directory level. (The
 former `wiki/toc.md` section map was retired in the v0.2 migration —
 navigation now rides the `index.md` hierarchy.)
 
-Middleware scripts referenced throughout this skill (bundled with this skill,
-not the vault — resolve relative to this skill's directory, per the skills
-convention):
+Middleware scripts referenced throughout this skill are bundled with the
+package install (Claude plugin or Pi package), not the vault and not a copied
+skill; resolve them relative to this skill's directory, per the skills
+convention. They are unavailable to MCP-only agents, whose batch tools apply the
+same guard, validation, and secret checks on the server:
 
 - `scripts/okf_mw/validate.py` — frontmatter validation
 - `scripts/okf_mw/guard.py` — write path authorization
 - `scripts/okf_mw/sync.py` — deterministic index.md generation
 - `scripts/okf_mw/lint.py` — read-only link-graph lint (vendored from
   claude-obsidian v2.0.0; see Link-Graph Lint)
+- `scripts/okf_mw/secret_scan.py` — write-path secret check (file-tool guard
+  and batch apply)
 - `scripts/okf_mw/okf_paths.py` — shared reserved-path set for the above
 
 Invoke each with its absolute path under this skill's directory; pass the
 vault root and vault-relative paths as arguments (see Middleware Invocation).
+
+Package-run operations below (setup, retrieval scripts, middleware, lint) are for
+Claude Code, Pi, and the CLI; an MCP-only agent reports them as not available
+here and suggests running them from Claude, Pi or the CLI.
 
 Vault setup is an explicit preview/apply workflow through the package CLI.
 Run it with the active package's launcher (see
@@ -106,7 +145,7 @@ integration settings with the same command plus `--configure`; review its
 selected differences before applying with its own hash. Configuration sets
 `features.autoCommit: false`, merges portable plugin defaults and ignore rules,
 and preserves unrelated settings. The legacy flag is deprecated and never
-authorizes agent commits. See [setup](../../docs/setup.md) and
+authorizes agent commits. See the package doc `docs/setup.md` and
 [Git setup](references/git-setup.md).
 
 If an existing config has null or missing `vaultPath`, explicitly select the
@@ -128,10 +167,14 @@ its own exact approval. Revalidate the effective config and vault boundary in
 the same session before resuming wiki work. If the vault/config selection is
 ambiguous, ask; do not guess.
 
-The package-owned `obsidian-second-brain` CLI provides read-only diagnostics
-(`doctor --json`) and structured search (`search "query terms" --json`). Pi also
-registers native read-only `wiki_search`, `wiki_outline`, `wiki_read`, and
-`wiki_doctor` tools, documented in [the Pi tool reference](../../docs/pi-tools.md).
+Pi registers native read-only `wiki_search`, `wiki_outline`, `wiki_read`, and
+`wiki_doctor` tools (package doc `docs/pi-tools.md`); the Claude Code plugin
+bundles the same four read-only tools as an MCP server, and MCP-only agents get
+them from the same server (package doc `docs/mcp.md`). Prefer these tools when
+listed; only Claude Code and Pi fall back to the package-owned
+`obsidian-second-brain` CLI, which provides read-only diagnostics
+(`doctor --json`) and structured search (`search "query terms" --json`). An
+MCP-only agent has no CLI fallback and no package path.
 Both CLI operations
 use the selected vault, or accept an explicit `--vault <vault-root>`; search
 does not build an index. An `obsidian-second-brain` bin on shell `PATH` may
@@ -191,7 +234,7 @@ historical lexical access. Unmarked old tables or contradictory prose are not
 resolved by projection: read temporal context and request consolidation rather
 than claiming current facts from page recall or metadata alone. Date-free
 historical intent is not inferred. Search/doctor report old-projection caches as
-stale and never rebuild them. The [private evaluation workflow](../../docs/retrieval-evaluation.md)
+stale and never rebuild them. The private evaluation workflow (package doc `docs/retrieval-evaluation.md`)
 is separate from the deterministic boundary benchmark and normal CI.
 
 BM25 indexes Markdown directly; `contextual-prefix.py` is a hook-compatible
@@ -253,13 +296,17 @@ contract tests are not live-model compliance evidence.
 
 Core behavioral rules for every operation:
 
-- Prefer filesystem tools (Read, Write, Edit) for wiki **writes**. Claude and
-  Pi authorize destinations before supported file tools run and validate the
+- Write path depends on the client. In hook-guarded clients (Claude Code, Pi,
+  omp) prefer filesystem tools (Read, Write, Edit) for wiki **writes**: they
+  authorize destinations before supported file tools run and validate the
   resulting pages. Do not duplicate manual middleware calls when those checks
   are active. Shell commands are not pre-write sandboxed: run `guard.py` before
-  every shell write and `validate.py` afterwards.
-- For reads and link-graph queries, `obsidian-cli` is available when Obsidian is
-  running and answers questions the filesystem cannot (alias-aware backlinks,
+  every shell write and `validate.py` afterwards. In every other client
+  (MCP-only) write only through `wiki_batch_inspect` → show the summary →
+  explicit user approval → `wiki_batch_apply`, and never edit vault files with
+  file or shell tools (see [tool surface by client](references/tool-surface.md)).
+- For reads and link-graph queries, `obsidian-cli` (Claude Code and Pi only) is
+  available when Obsidian is running and answers questions the filesystem cannot (alias-aware backlinks,
   orphans, Bases views). See
   [references/cli-transport.md](references/cli-transport.md). It is an
   accelerator, never a dependency: fall back to Read/ripgrep when it is absent.
@@ -297,8 +344,10 @@ in its frontmatter. It is generated by middleware (sync.py), never authored.
 ## Middleware Invocation
 
 Every wiki write requires pre-write authorization and post-write validation.
-Supported file-tool lifecycle checks perform these phases. When working without
-those checks, run the middleware explicitly:
+Supported file-tool lifecycle checks perform these phases, and the batch tools
+perform them on the server for MCP-only agents, which never run the commands
+in this section. When a hook-guarded client writes without those checks, run
+the middleware explicitly:
 
 **Write guard:**
 
@@ -344,7 +393,8 @@ write; if validation fails, repair or remove the invalid changed page.
 **Link-graph lint.** `validate.py` checks one file's frontmatter and `guard.py`
 checks one path; neither can see a link target, so a wikilink to a renamed page
 or a `#heading` fragment that no longer exists is invisible to both. `lint.py`
-is the vault-wide graph view:
+is the vault-wide graph view (Claude, Pi, or the CLI; not available to MCP-only
+agents):
 
 ```
 python3 <skill-dir>/scripts/okf_mw/lint.py <vault-root>
@@ -417,12 +467,14 @@ partially read source; they are never a startup, query, or health step.
 
 **Middleware order is mandatory.** Authorize the destination before a write,
 validate the result, then finalize generated navigation and lifecycle logging.
-Supported file-tool hooks handle this order; shell writes and sessions without
-the integration need explicit guard/validation/sync checks. Do not declare a
+Supported file-tool hooks handle this order and the batch tools handle it for
+MCP-only agents; shell writes and Claude/Pi sessions without the integration
+need explicit guard/validation/sync checks. Do not declare a
 write complete while validation or finalization is unresolved. Obsidian Git
 owns version control, not the agent.
 
-Run link-graph lint after renames or a large write pass. Also compare claims
+Run link-graph lint after renames or a large write pass (Claude, Pi, or the
+CLI; not available to MCP-only agents). Also compare claims
 against their sources: flag contradictions, superseded evidence, duplicate
 concepts, and gaps. Structural lint alone cannot verify factual grounding.
 
@@ -471,13 +523,16 @@ procedure: [references/auto-mode.md](references/auto-mode.md).
 Answer from the wiki first. The wiki has already done the synthesis work. Read
 strategically, not exhaustively:
 
-1. Run `search "query terms" --json` through the package-relative launcher
-   procedure described above. Rank candidate pages, then read the top-ranked candidates. Search is
+1. Run `wiki_search` when listed, otherwise (Claude Code and Pi) `search "query
+   terms" --json` through the package-relative launcher procedure described
+   above. Rank candidate pages, then read the top-ranked candidates. Search is
    read-only and does not build the index. Retrieval failures, unavailable CLI,
    empty results, or a missing/corrupt cache direct you to the `index.md`
-   hierarchy; use the vault contract's entry point and generated indexes when
-   search is unavailable (see Entry Point & Documentation Layout in
-   `references/authoring-standards.md`). Direct package retrieval scripts remain
+   hierarchy; Claude Code and Pi use the vault contract's entry point and
+   generated indexes when search is unavailable (see Entry Point &
+   Documentation Layout in `references/authoring-standards.md`). An MCP-only
+   agent cannot read reserved indexes through `wiki_read`: it refines the query
+   or reports what could not be located. Direct package retrieval scripts remain
    available for maintenance and lower-level retrieval.
    One BM25 refresh follows each validated finalized changed batch when enabled.
    A failed refresh retains a durable retrieval-only retry; do not confuse
@@ -540,6 +595,24 @@ checked when it was not.
   `.raw/` sources and vault settings as read-only during wiki work. An approved
   setup/configuration repair is a separate, narrowly scoped operation. These
   wiki rules do not prevent an agent's unrelated source-repository work.
+- The write-path secret check (`secret_scan.py`) refuses agent writes under
+  `wiki/` whose added text contains a likely secret: private key blocks,
+  well-known token formats (`sk-`, `sk-ant-`, `ghp_`, `github_pat_`, `xox*`,
+  `AKIA`, `AIza`, `glpat-`, `npm_`), JWTs, credentials in URLs, and
+  `api_key`/`password`/`token`-style assignments with real-looking values. It
+  applies to file tools and to batch inspect/apply, for pages and evidence
+  ledger JSON. It reports file, line, and pattern type, never the value.
+  When refused, remove the value and reference an environment variable or
+  secret manager; do not retry with an encoded or split value. Only a page that
+  documents token formats may carry `secretScan: allow` in its frontmatter, and
+  only when the user asked for such a page. An edit reads the opt-out from the
+  page already on disk, so add it in a separate, earlier edit (accepted
+  limitation of the per-page design). Only findings new relative to the page's
+  current text are refused, so a legacy page that already matches stays
+  editable, but replacing a placeholder with a real value is refused. Source captures under
+  `.raw/agent-captures/` get an advisory warning, not a refusal. Pattern
+  matching misses unknown formats and shell writes are unguarded, so it does not
+  replace not pasting secrets.
 - The middleware guard.py enforces path bounds and blocks reserved `index.md`
   and `log.md` at any wiki depth. Do not attempt to bypass it.
 
@@ -579,7 +652,7 @@ agent prepend based on a stale read can lose lifecycle entries.
 
 A separate, explicitly approved lifecycle-owned command can migrate reviewed
 historical destinations without changing other history bytes. Follow
-[reviewed link migration](../../docs/link-migration.md) for its preview, exact
+reviewed link migration (package doc `docs/link-migration.md`) for its preview, exact
 hash approval, and recovery steps. Ordinary agent file tools remain prohibited
 from editing reserved logs at every depth; normal finalization never performs
 this migration implicitly.

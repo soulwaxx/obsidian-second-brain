@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import fcntl
 import hashlib
 import json
@@ -23,8 +24,10 @@ LIFECYCLE = load_source("wiki_batch_lifecycle", str(Path(__file__).with_name("wi
 CONFIG = load_source("wiki_batch_config", str(Path(__file__).with_name("config_contract.py")))
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MIDDLEWARE = PACKAGE_ROOT / "skills/wiki/scripts/okf_mw"
+SECRETS = load_source("wiki_batch_secret_scan", str(MIDDLEWARE / "secret_scan.py"))
 BM25_SCRIPT = PACKAGE_ROOT / "scripts/bm25-index.py"
 AUTHORITIES = {"wiki-page", "source-capture", "wiki-ledger"}
+REVIEW_DIFF_CHARS = 1500  # per-path excerpt in review(); keeps the MCP inspect summary far below the 64 KiB result cap
 
 
 class BatchError(RuntimeError):
@@ -197,8 +200,34 @@ def _read_at(parent: int, name: str) -> bytes | None:
             os.close(fd)
 
 
-def _validate_draft(vault: Path, op: dict, authority: str) -> None:
+_CURRENT = object()  # _validate_draft: read the destination's current bytes on demand
+
+
+def _current_bytes(vault: Path, op: dict, authority: str) -> bytes | None:
+    _, parent, name = _target(vault, op["path"], authority, allow_missing=True)
+    try:
+        return _read_at(parent, name) if parent is not None else None
+    finally:
+        if parent is not None:
+            os.close(parent)
+
+
+def _validate_draft(vault: Path, op: dict, authority: str, preimage: bytes | None | object = _CURRENT) -> None:
+    """Validate a draft. `preimage` is the destination's text before the batch (default: read it now)."""
     content = op["content"]
+    if authority in {"wiki-page", "wiki-ledger"}:
+        # Refuse before approval and again before publication/recovery; apply,
+        # recover, and every client wrapper reach this function. Only findings new
+        # relative to the current destination are refused, so migrating or
+        # re-baselining a legacy page that already matches is not blocked.
+        page = authority == "wiki-page"
+        if SECRETS.refusal_for_content(op["path"], content, page=page):
+            if preimage is _CURRENT:
+                preimage = _current_bytes(vault, op, authority)
+            baseline = preimage.decode("utf-8", errors="replace") if preimage is not None else None
+            refusal = SECRETS.refusal_for_content(op["path"], content, page=page, baseline=baseline)
+            if refusal:
+                raise BatchError(refusal)
     if authority == "wiki-page":
         if not (vault / "wiki").is_dir() or (vault / "wiki").is_symlink():
             raise BatchError("wiki directory is missing or symlinked")
@@ -746,9 +775,111 @@ def _plan(vault: Path, bundle: dict, config: Path, authority: str) -> dict:
 
 def inspect(vault: Path, bundle: dict, config: Path, authority: str = "wiki-page") -> dict:
     planned = _plan(vault, bundle, config, authority)
-    return {"plan": planned["plan"], "planHash": planned["planHash"],
-            "targets": [op["path"] for op in planned["plan"]["bundle"]["operations"]],
-            "authority": authority}
+    result = {"plan": planned["plan"], "planHash": planned["planHash"],
+              "targets": [op["path"] for op in planned["plan"]["bundle"]["operations"]],
+              "authority": authority}
+    if authority == "source-capture":
+        # Captures are verbatim, user-selected sources: warn, never refuse. The
+        # warnings are review output only and are not part of the plan hash.
+        warnings = [message for op in planned["plan"]["bundle"]["operations"]
+                    if (message := SECRETS.advisory_for_content(op["path"], op["content"]))]
+        if warnings:
+            result["warnings"] = warnings
+    return result
+
+
+def review(vault: Path, bundle: dict, config: Path, authority: str = "wiki-page") -> dict:
+    """Bounded review summary for the MCP inspect tool: the same plan hash as inspect(), without echoing the bundle."""
+    planned = _plan(vault, bundle, config, authority)
+    operations = []
+    for op, before in zip(planned["plan"]["bundle"]["operations"], planned["preimages"]):
+        after = op["content"].encode("utf-8")
+        old = before.decode("utf-8", errors="replace").splitlines(keepends=True) if before is not None else []
+        diff = "".join(difflib.unified_diff(old, op["content"].splitlines(keepends=True),
+                                            f"a/{op['path']}" if before is not None else "/dev/null", f"b/{op['path']}", n=2))
+        operations.append({
+            "path": op["path"],
+            "operation": "create" if before is None else "no-change" if before == after else "update",
+            "beforeBytes": len(before) if before is not None else None, "afterBytes": len(after),
+            "beforeHash": op["expectedHash"], "afterHash": sha(after),
+            "validation": "passed",  # _plan refuses (raises) on a failed path, OKF or secret check
+            "diff": diff[:REVIEW_DIFF_CHARS], "diffTruncated": len(diff) > REVIEW_DIFF_CHARS})
+    return {"planHash": planned["planHash"], "authority": authority,
+            "targets": [item["path"] for item in operations], "operations": operations}
+
+
+def batch_status(vault: Path, limit: int = 20) -> dict:
+    """Read-only list of unfinished journals for doctor; never creates state or takes the writer lock."""
+    vault = Path(vault).resolve(strict=True)
+    try:
+        dir_fd = LIFECYCLE.secure_dir(vault / ".vault-meta/lifecycle/batches", create=False)
+    except FileNotFoundError:
+        return {"unfinished": [], "unfinishedCount": 0, "unreadable": 0}
+    try:
+        unfinished, unreadable = [], 0
+        for name in sorted(os.listdir(dir_fd)):
+            if name == "writer.lock":
+                continue
+            try:
+                journal = _load_journal(vault, name[:-5]) if name.endswith(".json") else None
+            except (OSError, ValueError, TypeError, BatchError):
+                journal = None
+            if journal is None:
+                unreadable += 1
+            elif journal["phase"] not in {"complete", "rolled-back"}:
+                unfinished.append({"batchId": journal["batchId"], "planHash": journal["planHash"], "phase": journal["phase"],
+                                   "authority": journal["authority"], "cliOnly": journal["authority"] != "wiki-page",
+                                   "paths": [e["path"] for e in journal["entries"]][:limit]})
+        return {"unfinished": unfinished[:limit], "unfinishedCount": len(unfinished), "unreadable": unreadable}
+    finally:
+        os.close(dir_fd)
+
+
+def batch_for_plan(vault: Path, plan_hash: str) -> str:
+    """Batch ID of the unique unfinished wiki-page journal for an approved plan hash (else its completed one), for MCP recovery."""
+    vault = Path(vault).resolve(strict=True)
+    try:
+        dir_fd = LIFECYCLE.secure_dir(vault / ".vault-meta/lifecycle/batches", create=False)
+    except OSError as exc:
+        raise BatchError("no batch journal exists for this plan hash") from exc
+    try:
+        names = sorted(name for name in os.listdir(dir_fd) if name.endswith(".json"))
+    finally:
+        os.close(dir_fd)
+    matches = []
+    for name in names:
+        try:
+            journal = _load_journal(vault, name[:-5])
+        except (OSError, ValueError, TypeError, BatchError):
+            continue
+        if journal["planHash"] == plan_hash and journal["authority"] == "wiki-page":
+            matches.append(journal)
+    unfinished = [item for item in matches if item["phase"] not in {"complete", "rolled-back"}]
+    if len(unfinished) > 1:
+        raise BatchError("several unfinished batches share this plan hash; recover one by batchId")
+    chosen = unfinished or [item for item in matches if item["phase"] == "complete"][:1]
+    if not chosen:
+        raise BatchError("no recoverable batch journal exists for this plan hash")
+    return chosen[0]["batchId"]
+
+
+def _remove_batch_temps(vault: Path, journal: dict) -> None:
+    """Delete this batch's interrupted `.batch-<id>-<hex>.tmp` publication copies from its target directories.
+
+    Only exact batch-ID matches are removed, through no-follow directory descriptors; a symlink with such a name is
+    unlinked itself, never followed. The caller holds the writer lock, so no live publication owns these names.
+    """
+    pattern = re.compile(rf"\.batch-{re.escape(journal['batchId'])}-[0-9a-f]{{32}}\.tmp")
+    for entry in journal["entries"]:
+        _, parent, _ = _target(vault, entry["path"], journal["authority"], allow_missing=True)
+        if parent is None:
+            continue
+        try:
+            for name in os.listdir(parent):
+                if pattern.fullmatch(name) and not stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode):
+                    os.unlink(name, dir_fd=parent)
+        finally:
+            os.close(parent)
 
 
 def _require_approved_config(journal: dict, selected: Path | None = None) -> Path:
@@ -974,7 +1105,7 @@ def _publish(vault: Path, journal: dict, finalize: bool = True,
 
 
 def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: str = "wiki-page",
-          *, cli_binding: dict | None = None, cli_plan_hash: str | None = None) -> dict:
+          *, cli_binding: dict | None = None, cli_plan_hash: str | None = None, on_persisted=None) -> dict:
     vault = Path(vault).resolve(strict=True)
     bundle = validate_bundle(bundle)
     # Bind identity/content before locking; inspect target preconditions after
@@ -1027,19 +1158,24 @@ def apply(vault: Path, bundle: dict, config: Path, plan_hash: str, authority: st
             journal["cliPlanHash"] = cli_plan_hash
         _require_approved_config(journal, config)
         _save_journal(vault, journal)
+        if on_persisted is not None:
+            on_persisted()  # the journal exists: the MCP bridge lifts its deadline, and recover() can resume from here
         _publish(vault, journal, selected_config=config)
         return {"batchId": batch_id, "planHash": plan_hash, "phase": journal["phase"], "noop": False}
 
 
-def recover(vault: Path, batch_id: str, config: Path | None = None) -> dict:
+def recover(vault: Path, batch_id: str, config: Path | None = None, *, on_locked=None) -> dict:
     vault = Path(vault).resolve(strict=True)
     initial = _load_journal(vault, batch_id)
     require_valid_config(config or Path(initial["config"]["path"]))
     _require_approved_config(initial, config)
     with _locked(vault):
+        if on_locked is not None:
+            on_locked()  # the writer lock is held: the MCP bridge lifts its deadline only after any lock wait
         journal = _load_journal(vault, batch_id)
         require_valid_config(config or Path(journal["config"]["path"]))
         approved_config = _require_approved_config(journal, config)
+        _remove_batch_temps(vault, journal)
         if journal["phase"] == "complete":
             _verify_postimages(vault, journal)
             if journal["authority"] == "wiki-ledger":
@@ -1054,8 +1190,9 @@ def recover(vault: Path, batch_id: str, config: Path | None = None) -> dict:
             _validate_ledger_operations(vault, journal["bundle"]["operations"], publication=True,
                                         original_preimages=_journal_preimages(journal),
                                         current_batch_id=journal["batchId"])
+        preimages = _journal_preimages(journal)
         for op in journal["bundle"]["operations"]:
-            _validate_draft(vault, op, journal["authority"])
+            _validate_draft(vault, op, journal["authority"], preimages.get(op["path"]))
         _publish(vault, journal, selected_config=approved_config)
         return {"batchId": batch_id, "phase": journal["phase"], "applied": True, "noop": False}
 

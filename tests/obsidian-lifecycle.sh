@@ -360,4 +360,62 @@ result=$(cd "$caller" && jq -nc --arg p "$caller/code.py" '{tool_name:"Write",to
 [ -z "$result" ]
 [ -z "$(find "$work/external-state" -mindepth 1 -print -quit)" ]
 
+# Likely secrets are refused before any wiki bytes change, independent of the guard feature.
+# Synthetic values are assembled at runtime so no credential-shaped literal is committed.
+secret_vault=$work/secret-vault
+mkdir -p "$secret_vault/wiki/topic"
+secret_token="gh""p_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jK5"
+secret_page=$secret_vault/wiki/topic/secret-page.md
+secret_prewrite() {
+  local tool=$1 input=$2 target=${3:-$secret_page}
+  (cd "$caller" && jq -nc --arg p "$target" --arg id "secret-$RANDOM" --arg tool "$tool" --argjson input "$input" '{session_id:"secret-session",tool_use_id:$id,tool_name:$tool,tool_input:({file_path:$p,notebook_path:$p}+$input)}' | OBSIDIAN_AGENT_CONFIG=${SECRET_CONFIG:-$work/none.json} OBSIDIAN_VAULT_PATH=$secret_vault WIKI_MIDDLEWARE_DIR=$middleware bash "$hook" prewrite)
+}
+printf '%s\n' '---' 'type: note' '---' 'body' >"$secret_page"
+secret_before=$(cat "$secret_page")
+for case in \
+  'Write|{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}' \
+  'Edit|{"old_string":"body","new_string":"key '"$secret_token"'"}' \
+  'MultiEdit|{"edits":[{"old_string":"body","new_string":"fine"},{"old_string":"fine","new_string":"key '"$secret_token"'"}]}' \
+  'NotebookEdit|{"new_source":"key '"$secret_token"'"}'; do
+  result=$(secret_prewrite "${case%%|*}" "${case#*|}")
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("GitHub token") and contains("secret-page.md"))' >/dev/null
+  case "$result" in *"$secret_token"*) echo "secret value echoed" >&2; exit 1 ;; esac
+done
+[ "$(cat "$secret_page")" = "$secret_before" ]
+[ ! -e "$secret_vault/.vault-meta" ]
+result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\napi_key=<your-key>\n"}')
+[ -z "$result" ]
+result=$(secret_prewrite Write '{"content":"---\ntype: note\nsecretScan: allow\n---\nformat '"$secret_token"'\n"}')
+[ -z "$result" ]
+result=$(secret_prewrite Write '{"content":"key '"$secret_token"'\n"}' "$caller/code.py")
+[ -z "$result" ]
+SECRET_CONFIG=$work/secret-guard-off.json
+printf '{"vaultPath":"%s","features":{"guard":false}}\n' "$secret_vault" >"$SECRET_CONFIG"
+result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}')
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+# A case-different wiki/ spelling is still the wiki, even without the guard feature.
+result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}' "$secret_vault/WIKI/topic/alias.md")
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("GitHub token"))' >/dev/null
+result=$(secret_prewrite Edit '{"old_string":"x","new_string":"key '"$secret_token"'"}' "$secret_vault/Wiki/alias.md")
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+unset SECRET_CONFIG
+# Replacing a placeholder value in place is judged against the page's current text.
+printf '%s\n' '---' 'type: note' '---' 'api_key = <your-key>' >"$secret_page"
+secret_before=$(cat "$secret_page")
+result=$(secret_prewrite Edit '{"old_string":"<your-key>","new_string":"abc123def456ghi789"}')
+printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("credential assignment"))' >/dev/null
+case "$result" in *abc123def456ghi789*) echo "secret value echoed" >&2; exit 1 ;; esac
+[ "$(cat "$secret_page")" = "$secret_before" ]
+# A Unicode-normalization alias of the vault path (APFS) is the same wiki; identity, not spelling, decides.
+nfc_name=$(printf 'Caf\303\251')
+nfd_name=$(printf 'Cafe\314\201')
+mkdir -p "$work/unicode/$nfc_name/wiki/topic"
+if [ -d "$work/unicode/$nfd_name" ]; then
+  alias_vault=$secret_vault
+  secret_vault=$work/unicode/$nfc_name
+  result=$(secret_prewrite Write '{"content":"---\ntype: note\n---\nkey '"$secret_token"'\n"}' "$work/unicode/$nfd_name/wiki/topic/alias.md")
+  printf '%s' "$result" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("GitHub token"))' >/dev/null
+  secret_vault=$alias_vault
+fi
+
 printf 'vault lifecycle checks PASS\n'

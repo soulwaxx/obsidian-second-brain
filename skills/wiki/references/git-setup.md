@@ -26,7 +26,7 @@ Never stage unrelated notes or secrets to make lifecycle checks pass.
 ## New Repository
 
 Create a minimal scaffold using the reviewed procedure in
-[setup](../../../docs/setup.md). Open it in Obsidian and deliberately initialize
+setup (package doc `docs/setup.md`). Open it in Obsidian and deliberately initialize
 or clone its repository through the owner-controlled Git workflow. Review
 ignore rules before the first backup. Authentication, Git identity, remotes,
 and any first commit are separate owner actions, not setup side effects.

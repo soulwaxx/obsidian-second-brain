@@ -39,6 +39,10 @@ PY
 node "$repo/tests/npm-plugin.mjs" "$work"
 IFS= read -r installed < "$work/claude-installed-path"
 
+# The Claude-installed plugin declares its read-only MCP server from its own root;
+# real Claude (when present) connects it and lists the four tools.
+node "$repo/tests/claude-mcp-contract.mjs" "$installed"
+
 # Startup from another cwd supplies a locator without touching the temporary vault.
 config="$work/agent-config.json"
 printf '{"vaultPath":"%s"}\n' "$work/vault" >"$config"
@@ -67,3 +71,14 @@ test -f "$setup_vault/wiki/quickstart.md"
 [[ ! -e "$setup_config" && ! -e "$setup_vault/.git" ]]
 (cd "$work/outside" && OBSIDIAN_AGENT_CONFIG="$setup_config" "${setup_cli[@]}") | jq -e '.plan.writes == [] and .plan.directories == []' >/dev/null
 printf 'Installed setup preview, confirmed apply, and no-op repeat verified.\n'
+
+# Installed connect route: the list view is read-only, lists exactly the registered adapters (none connected),
+# prints both generic MCP profiles, and doctor reports them all absent with no manifest. The temporary HOME stays untouched.
+home_before=$(find "$HOME" "$work/agent-config.json" -print 2>/dev/null | sort)
+installed_real=$(cd "$installed" && pwd -P)
+registered=$(cd "$installed/scripts" && python3 -B -c 'import importlib, json, connect_adapters; print(json.dumps([importlib.import_module(m).ADAPTER.name for m in connect_adapters.REGISTRY]))')
+connect_out=$(cd "$work/outside" && node "$installed/scripts/obsidian-second-brain.mjs" connect --json)
+printf '%s\n' "$connect_out" | jq -e --arg root "$installed_real" --argjson registered "$registered" '.mode == "list" and (.agents | map(.name)) == $registered and all(.agents[]; .state == "absent") and .genericSnippets.all.args[0] == ($root + "/scripts/obsidian-second-brain.mjs") and .genericSnippets.read.args[-1] == "read"' >/dev/null
+(cd "$work/outside" && node "$installed/scripts/obsidian-second-brain.mjs" doctor --json) | jq -e --argjson registered "$registered" '(.connect.agents | keys) == ($registered | sort) and all(.connect.agents[]; .state == "absent") and .connect.manifest.exists == false' >/dev/null
+[[ "$home_before" == "$(find "$HOME" "$work/agent-config.json" -print 2>/dev/null | sort)" ]]
+printf 'Installed connect list, generic snippets, and read-only doctor connect section verified.\n'

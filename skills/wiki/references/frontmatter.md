@@ -110,6 +110,12 @@ drop a key just because the spec does not name it:
 - `related`, `aliases`, `recall_triggers`, `category`, `domain`, `status`,
   `confidence`, `source_url` (legacy), `timestamp` (legacy).
 
+- `secretScan: allow` — opts this one page out of the write-path secret check
+  (see SKILL.md, Security & Privacy). Use it only on pages that document token
+  formats, and never to store a real credential. Edits read it from the page
+  already on disk, so add it in its own earlier edit. Writes to other pages are
+  unaffected; there is no global switch.
+
 ### Source dates
 
 These source-date fields are optional, producer-defined conventions, not new

@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { startMcp } from "./mcp-client.mjs";
 import { parseNpmArchive } from "./npm-pack.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,10 +23,11 @@ try {
     ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
     "extensions/obsidian.ts", "hooks/obsidian-session.sh", "hooks/hooks.json",
     "agents/pi/wiki-vault.md", "agents/pi/nicobailon/wiki-vault.md", "agents/wiki-vault.md",
-    "scripts/module_loading.py", "scripts/config_contract.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
+    "scripts/module_loading.py", "scripts/config_contract.py", "scripts/auto_recall.py", "scripts/wiki_lifecycle.py", "scripts/bootstrap-vault.py",
     "scripts/bm25-index.py", "scripts/retrieve.py", "scripts/contextual-prefix.py", "scripts/evaluate-retrieval.py", "scripts/retrieval_projection.py",
     "scripts/obsidian-second-brain.py", "scripts/obsidian-second-brain.mjs", "scripts/pi_wiki_tools.py", "scripts/evidence_reports.py", "scripts/evidence_ledger.py", "scripts/wiki_batch.py", "scripts/source_baselines.py", "scripts/source_drift.py", "scripts/retrieval_reads.py",
     "scripts/obsidian_compat.py", "scripts/wiki_migrate.py", "scripts/wiki_history.py",
+    "scripts/connect.py", "scripts/connect_adapters/__init__.py", "scripts/connect_adapters/spec.py",
     "skills/wiki/SKILL.md", "skills/wiki-query/SKILL.md", "skills/wiki-save/SKILL.md",
     "skills/wiki-ingest/SKILL.md", "skills/wiki-research/SKILL.md", "skills/wiki-health/SKILL.md",
     "skills/wiki-agent/SKILL.md",
@@ -33,7 +35,7 @@ try {
     "skills/wiki/scripts/okf_mw/guard.py", "skills/wiki/scripts/okf_mw/validate.py",
     "skills/wiki/scripts/okf_mw/sync.py", "skills/wiki/scripts/okf_mw/lint.py",
     "skills/wiki/scripts/okf_mw/okf_paths.py", "skills/wiki/scripts/okf_mw/ownership.py",
-    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/source-baselines.md", "docs/source-drift.md",
+    "docs/setup.md", "docs/link-migration.md", "docs/pi-tools.md", "docs/mcp.md", "docs/agents.md", "docs/source-baselines.md", "docs/source-drift.md",
   ]) {
     assert.ok(files.has(resource), `missing npm resource: ${resource}`);
   }
@@ -84,6 +86,9 @@ try {
   assert.equal(claudePlugin.name, "obsidian-second-brain");
   assert.equal(claudePlugin.userConfig.vault_agent_effort.default, "inherit");
   assert.deepEqual(claudePlugin.userConfig.vault_agent_effort.options, ["inherit", "low", "medium", "high", "xhigh", "max"]);
+  // The archive's plugin manifest declares the read-only MCP server from the plugin root; the
+  // installed server started below is that same launcher (tests/claude-mcp-contract.mjs runs it against Claude).
+  assert.deepEqual(claudePlugin.mcpServers, { "obsidian-wiki": { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "read"] } });
   for (const name of [...expectedSkills, "wiki-agent"]) {
     const skill = fs.readFileSync(path.join(installed, `skills/${name}/SKILL.md`), "utf8");
     assert.match(skill, new RegExp(`^name: ${name}$`, "m"), `Claude skill metadata: ${name}`);
@@ -105,10 +110,51 @@ try {
   ], { cwd: work, encoding: "utf8" }));
   assert.equal(packageRelativeDoctor.vault, fs.realpathSync(cliVault));
   assert.equal(packageRelativeDoctor.retrieval.indexExists, false, "package-relative doctor must remain read-only");
+  // The installed `connect` lists exactly the registered adapters, prints both generic MCP
+  // profiles with this package's absolute launcher path, and writes nothing to the isolated HOME.
+  const connectHome = path.join(work, "connect-home");
+  fs.mkdirSync(connectHome);
+  // Adapter location overrides (CI runners set XDG_CONFIG_HOME) would point detection at the real home.
+  const connectEnv = { ...env, HOME: connectHome };
+  for (const name of ["XDG_CONFIG_HOME", "CODEX_HOME", "COPILOT_HOME", "APPDATA", "OPENCODE_CONFIG_DIR"]) delete connectEnv[name];
+  const connectList = JSON.parse(run(cli, ["connect", "--json"], { cwd: work, encoding: "utf8", env: connectEnv }));
+  assert.equal(connectList.mode, "list");
+  // Exactly the adapters the installed registry lists, in its order, all absent in an empty HOME.
+  const registered = JSON.parse(run(process.env.PYTHON || "python3", ["-B", "-c",
+    "import importlib, json, connect_adapters; print(json.dumps([importlib.import_module(m).ADAPTER.name for m in connect_adapters.REGISTRY]))"],
+    { cwd: path.join(installed, "scripts"), encoding: "utf8" }));
+  assert.deepEqual(connectList.agents.map((agent) => agent.name), registered);
+  assert.ok(connectList.agents.every((agent) => agent.state === "absent"), "an empty HOME has no connected agents");
+  assert.deepEqual(connectList.genericSnippets.read.args, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "mcp", "--tools", "read"]);
+  assert.deepEqual(connectList.genericSnippets.all.args.slice(-2), ["--tools", "all"]);
+  assert.deepEqual(fs.readdirSync(connectHome), [], "connect list must not write");
   const nativeDoctor = JSON.parse(run(process.execPath, [path.join(installed, "scripts/obsidian-second-brain.mjs"), "--pi-tool", "doctor", JSON.stringify({ vault: cliVault })], { cwd: work, encoding: "utf8" }));
   assert.equal(nativeDoctor.operation, "doctor");
   assert.equal(nativeDoctor.payload.vault, fs.realpathSync(cliVault), "packed native tool uses explicit vault without npm bin lookup");
   assert.equal(nativeDoctor.payload.schemaVersion, 1, "packed native doctor passes readiness through");
+  // The installed MCP server runs from a cwd outside package and vault with the same payloads as the bridge.
+  const mcpClient = startMcp({ launcher: path.join(installed, "scripts/obsidian-second-brain.mjs"), cwd: work, env });
+  try {
+    const mcpInit = await mcpClient.initialize();
+    assert.match(mcpInit.result.instructions, /wiki changes follow the client's own wiki skill/);
+    assert.equal(mcpInit.result.serverInfo.version, manifest.version);
+    const mcpTools = (await mcpClient.request("tools/list")).result.tools;
+    assert.deepEqual(mcpTools.map((tool) => tool.name), ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"]);
+    assert.ok(mcpTools.every((tool) => tool.annotations.readOnlyHint === true));
+    const mcpDoctor = await mcpClient.callTool("wiki_doctor", { vault: cliVault });
+    assert.equal(mcpDoctor.result.isError, false);
+    assert.deepEqual(mcpDoctor.result.structuredContent, nativeDoctor, "installed MCP doctor equals the installed --pi-tool result");
+  } finally {
+    assert.equal((await mcpClient.close()).code, 0, "installed MCP server exits on stdin EOF");
+  }
+  const allClient = startMcp({ launcher: path.join(installed, "scripts/obsidian-second-brain.mjs"), args: ["mcp", "--tools", "all"], cwd: work, env });
+  try {
+    await allClient.initialize();
+    assert.deepEqual((await allClient.request("tools/list")).result.tools.map((tool) => tool.name),
+      ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor", "wiki_batch_inspect", "wiki_batch_apply", "wiki_batch_recover"], "the installed package ships the all profile");
+  } finally {
+    assert.equal((await allClient.close()).code, 0);
+  }
   // Installed readiness discovery from a cwd outside both package and vault,
   // with space/Unicode paths: suggestions are anchored at the installed root.
   const installedRoot = fs.realpathSync(installed);

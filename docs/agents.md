@@ -1,0 +1,315 @@
+# Connect agents to the wiki
+
+`obsidian-second-brain connect` wires an agent to the wiki the way setup scaffolds a vault: it previews every file change with a plan hash, applies only the plan you confirm, and can undo it. It is for agents that have no package plugin: they get the [MCP server](mcp.md) (`--tools all`), a marked rules block, and the six portable skills as plain copies. Claude Code (plugin) and Pi/omp (package) do not need it.
+
+## Support status
+
+| Agent | Mechanism | Status |
+| --- | --- | --- |
+| Claude Code | Plugin: hooks, skills, inline read-only MCP server | live-validated (the Claude contract tests run the real CLI when it is installed; see [the MCP guide](mcp.md#verification-status)) |
+| Pi | Package: extension with native `wiki_*` tools, hooks, skills | live-validated (`npm run test:pi-runtime`) |
+| Codex CLI (`codex`) | `connect` adapter: MCP entry in `~/.codex/config.toml`, rules in `~/.codex/AGENTS.md`, skills in `~/.agents/skills` ([details](#codex-cli)) | fixture-tested (live-unverified) |
+| GitHub Copilot CLI and VS Code's Copilot harness (`copilot-cli`) | `connect` adapter: MCP entry in `~/.copilot/mcp-config.json`, rules in `~/.copilot/copilot-instructions.md`, skills in `~/.copilot/skills`; one connection covers Copilot CLI and VS Code ([details](#github-copilot)) | fixture-tested (live-unverified) |
+| VS Code's deprecated Local harness (`copilot-vscode`) | `connect` adapter, only for the Local harness when Copilot CLI discovery is off: MCP entry in the VS Code user-profile `mcp.json`, the same rules file and skills as `copilot-cli`; do not connect both ([details](#github-copilot)) | fixture-tested (live-unverified) |
+| Cursor | `connect` adapter `cursor` (#68): MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; [project rule snippet](#cursor) | fixture-tested (live-unverified) |
+| OpenCode | `connect` adapter `opencode` (#69): MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills`, `ask` rules for the wiki write tools written into the config ([details](#opencode)) | fixture-tested (live-unverified) |
+| Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, any other MCP client | [Generic MCP snippet](#generic-mcp-snippets) | snippet-only |
+
+There are exactly three statuses. A `connect` adapter is `fixture-tested (live-unverified)` once its tests pass in a temporary home, and moves to `live-validated` only with a recorded live run (see [the live validation record](#live-validation-record-72)).
+
+Statuses mean:
+
+- **live-validated**: a real client was run against the package and the result is recorded.
+- **fixture-tested (live-unverified)**: the adapter's file changes are covered by tests in a temporary `HOME` against synthetic files; the real agent has not been run. Issue #72 records the live runs.
+- **snippet-only**: no adapter and no test; you paste the generic snippet by hand.
+
+omp runs the Pi extension; its runtime behavior is unverified. Windows paths are not verified: adapters may return Windows locations, but `connect` is tested on macOS and Linux only.
+
+## Use `connect`
+
+```sh
+obsidian-second-brain connect                       # list agents; writes nothing
+obsidian-second-brain connect <agent>...            # preview the exact changes and a plan hash
+obsidian-second-brain connect <agent>... --apply --confirm <planHash>
+obsidian-second-brain connect <agent>... --remove   # preview the removal; add --apply --confirm to apply it
+```
+
+`connect` must be the first argument. The plan hash is the setup command's own (`bootstrap-vault.py`'s digest). It binds the exact agent selection, `--force`/`--remove`, the package root, interpreter, node and version, the selected config, and the before/after digest of every file. A different selection, an edit to any target file after the preview, or a different package makes `--apply` refuse with `stale or unconfirmed plan; preview again (hash …)`, and nothing is written. Add `--json` for machine-readable output (`planHash`, `plan.files[]` with `role`, `path`, `op` of `create`/`update`/`delete`/`unchanged`, and the entry or block that will be written; `plan.directories[]` with the directories `connect` will create or remove, see below).
+
+| Option | Meaning |
+| --- | --- |
+| `--python PATH` | Interpreter to pin in the MCP entries. Default: the interpreter running `connect` (the one your `obsidian-second-brain` command uses). It must be Python 3.14 or newer and import `yaml`; one without `markdown-it-py` is accepted with a note, because `wiki_outline` and `wiki_read` need it. The path is stored as given, so a virtual environment stays pinned. |
+| `--node PATH` | node executable to pin in the MCP entries. Default: the node that runs the `obsidian-second-brain` launcher (it passes its `process.execPath` as `OSB_NODE`), else `node` on `PATH`. It must be an executable that answers `--version` with a Node.js version. The path is stored as given. |
+| `--force` | Replace customized skill copies after backing them up (see below). |
+| `--remove` | Plan or apply the removal of what `connect` wrote. |
+
+The config is selected as for setup: `OBSIDIAN_AGENT_CONFIG`, else `~/.config/obsidian-second-brain/properties.json`. When `OBSIDIAN_AGENT_CONFIG` is set, the MCP entry carries it in its `env` so the server selects the same config.
+
+### What it writes
+
+Per agent, only user-level files, never inside the vault or a project repository:
+
+1. **MCP entry** `obsidian-wiki`: `<absolute node> <absolute package root>/scripts/obsidian-second-brain.mjs mcp --tools all` with `env.PYTHON` set to the pinned interpreter. No `npx`, so starting the agent makes no network call and runs the reviewed installed copy, and an agent that starts with a minimal `PATH` still finds node. The node is `--node`, else the one that runs the launcher; when that launcher node is the same executable as the `node` on `PATH`, the `PATH` path is pinned instead (unresolved, for example `/opt/homebrew/bin/node` rather than the version-specific `/opt/homebrew/Cellar/node@24/<version>/bin/node`), so a Homebrew upgrade does not break the entry. If node still moves, `doctor` reports `node-missing` and rerunning `connect` repairs it.
+2. **Rules block** between `<!-- obsidian-second-brain:start -->` and `<!-- obsidian-second-brain:end -->` in the agent's user-level rules file: the wiki locator, the rule to use the wiki MCP tools and never edit vault files directly, and the inspect → approval → apply flow. Text outside the markers is never touched. An adapter may declare a `header` (for example YAML front matter that the agent's rules format requires); it is written before the block only when `connect` creates the file (also when the file was deleted after an earlier connect, so `--remove` then deletes it again).
+3. **Skill copies**: the six portable skills (`wiki`, `wiki-query`, `wiki-save`, `wiki-ingest`, `wiki-research`, `wiki-health`) as `<skills dir>/<name>/SKILL.md` plus `<skills dir>/wiki/references/*.md`, never `wiki/scripts/`. They are MCP-only skills (see `skills/wiki/references/tool-surface.md`).
+4. **Install manifest** `connect-manifest.json` next to the selected integration config (outside the vault).
+5. **Backups** of any config or rules file that changes on connect and of customized skill copies that `--force` replaces or removes, under `connect-backups/<planHash prefix>/<agent>/` next to the manifest (directories 0700, files 0600), with a `backup-index.json` per agent that maps each backup to its original path. Backups are kept for as long as the agent stays connected; a successful `--remove` deletes that agent's earlier connect-time backups. The `--force` copies of customized skills are different: they are the only copy of text you wrote, so they go in `<planHash prefix>/<agent>/forced/` (with their own `backup-index.json`), pruning never touches them, and the preview (`plan.forcedBackupDirs`, and a line in the human output) names the directory. Delete them by hand when you no longer need them.
+
+Project-level files are never written. The preview prints them as snippets instead (for example a Cursor `.mdc` rule or `.github/copilot-instructions.md`), together with each adapter's manual notes.
+
+### Write rules
+
+- **Merge only our entry.** Other servers, keys and settings are preserved. JSON is parsed strictly and rewritten with the file's detected indent (layout such as indentation and line breaks is normalized); a file with comments (JSONC), trailing commas, duplicate keys, or any value whose text a rewrite would change (numbers such as `1e5`, `1.50` or `-0`, `NaN`/`Infinity`, string escapes such as `\u00e9` or `\/`) is refused. TOML is never rewritten: our table is appended inside `# obsidian-second-brain:start`/`end` comment markers; an update or removal locates it by its table header and its own subtables (the agent may move or drop the markers) and strips our exact marker lines wherever they are, and the result is parsed again to prove that every other setting is unchanged. YAML is merged with PyYAML only when the file has no comments, anchors, aliases, merge keys or duplicate keys and no plain scalar that a rewrite would respell: YAML 1.1 booleans such as `yes` or `On`, and other non-string values whose dumped text differs (`017`, `0x1F`, `1_000`, `~`, an empty value); quoting and flow style are normalized. Any refusal prints the exact snippet to add by hand and writes nothing for the whole selection.
+- **Our entry only.** An existing `obsidian-wiki` entry that differs from ours is refused unless the manifest shows `connect` wrote it and it is unmodified (an upgrade); a modified entry is never removed either.
+- **Safe writes.** Each file is written to a temporary file in its directory, flushed, renamed, and re-read to verify. The destination is re-checked just before each write, so an edit made after the preview is refused (and the whole apply rolls back). A symlinked final file is refused. A symlinked parent directory (for example `~/.codex` pointing into a dotfiles repository) is followed: the preview and plan hash show the real path (with `requestedPath` for the path the agent uses), the temporary file and rename happen in that real directory, and retargeting the link after the preview makes the plan stale. A symlink inside the skills directory is refused.
+- **Rollback.** If anything fails, every file already written is restored, created directories are removed, and a file edited in the meantime is left as the user wrote it and reported.
+- **Customized skill copies.** A destination file that differs from the shipped one is overwritten only when its hash still matches the one the manifest recorded (an older, unmodified copy). Otherwise `connect` refuses and names the files; `--force` backs them up first. Removing customized copies needs `--force` too. Files that two connected agents share (for example one skills directory) stay until the last agent using them is removed.
+- **Adopted items.** An MCP entry or skill file that is already identical to what `connect` would write, and that no manifest record (and no earlier agent in the same plan) owns, is recorded with `adopted` and left in place by `--remove`, which reports it. Only what `connect` itself wrote is removed.
+- **Shared rules files.** Agents whose adapters point at the same rules file share it: the block is written once, the second agent inherits the first owner's file creation, removing one agent leaves the block for the others, and the last agent removed removes the block and deletes the file if `connect` created it.
+- **Shared MCP entries.** Agents whose adapters point at the same file and entry name share it. The second agent records the entry without `adopted` (it inherits the first owner's `adopted` and `createdFile`), removing one agent leaves the entry for the others, and the last agent removed deletes it (and the file, if `connect` created it).
+- **Directories.** The preview lists directories that do not exist yet (`op` `create`), and the manifest records them in the agent's `createdDirs`. A directory that already existed is never recorded. A directory that another connected agent's record created and that this agent also writes into is recorded for both, like a shared file. `--remove` deletes the recorded directories deepest first (the preview lists them as `op` `remove`), but only when they are empty by then and no agent that stays connected records them; a directory that holds any file `connect` did not write, or that another connected agent still has files in, stays. This is why a removed agent returns to `absent`/not detected instead of being detected because of an empty directory left behind (for example `~/.copilot`). The directory that holds the manifest follows the same rule. The skills directory and its folders are removed with the skill copies, as before. A manifest written before this record existed has no `createdDirs`: its removal keeps the earlier behaviour and deletes no directory. A directory that appears after the preview makes the plan stale.
+- **Repeat runs.** Applying a plan that changes nothing writes nothing, not even the manifest.
+
+### Manifest
+
+`<config dir>/connect-manifest.json` (mode 0600, no timestamps):
+
+```json
+{
+  "schemaVersion": 1,
+  "agents": {
+    "<agent>": {
+      "version": "<package version>",
+      "packageRoot": "<absolute package root>",
+      "interpreter": "<absolute interpreter>",
+      "node": "<absolute node>",
+      "profile": "all",
+      "mcp": { "path": "…", "format": "json|toml|yaml", "keyPath": ["mcpServers"], "name": "obsidian-wiki", "entrySha256": "…", "createdFile": false, "adopted": true },
+      "rules": { "path": "…", "blockSha256": "…", "createdFile": false, "header": "" },
+      "skills": { "root": "…", "files": { "wiki/SKILL.md": "<sha256>", "wiki/references/tool-surface.md": "<sha256>" }, "adopted": ["wiki/SKILL.md"] },
+      "createdDirs": ["<absolute directory connect created, parents first>"]
+    }
+  }
+}
+```
+
+`adopted` and `createdDirs` appear only when true or non-empty; `header` is the text `connect` wrote before the rules block (empty when the file already existed). Paths are the real paths. Every record is validated when the manifest is read; a manifest that is not valid JSON, has another schema version or has a malformed record is `manifest-invalid`: `doctor` reports it, and `connect` (apply and remove) refuses and writes nothing until you fix or delete the file by hand.
+
+## Doctor and stale connections
+
+`doctor` (and the MCP `wiki_doctor` tool) report a `connect` section, additive to the readiness schema, and write nothing:
+
+```json
+"connect": {
+  "manifest": { "path": "…", "exists": true, "error": null, "code": null },
+  "agents": { "<agent>": { "title": "…", "state": "connected", "detected": true, "verification": "…", "adapterRegistered": true, "version": "…", "interpreter": "…", "node": "…", "reasons": [] } },
+  "adapterErrors": [],
+  "nextActions": []
+}
+```
+
+| State | Meaning |
+| --- | --- |
+| `connected` | Recorded in the manifest and everything still matches. |
+| `newer-package-available` | Advisory, not a failure and not `stale`: everything recorded still works, but the install that runs doctor has a different package root from the recorded one and a newer version than the package at the recorded root. `reasons[0]` says which; the next action `reconnect-newer-package` previews a reconnect with this install. |
+| `stale` | Recorded, but something drifted. `reasons[].code` is one or more of `package-root-missing` (the recorded package no longer contains the launcher, for example after a move or uninstall), `version-mismatch` (the package at the recorded root is not the version that was connected, for example after an upgrade in place), `interpreter-missing`, `interpreter-unsuitable` (the pinned interpreter, run read-only with a 5 s timeout and checked once per interpreter per doctor run, is older than Python 3.14, cannot import `yaml`, or did not answer), `node-missing`, `mcp-entry-missing`, `mcp-entry-modified`, `mcp-extra-missing` / `mcp-extra-modified` (a value `connect` wrote next to the entry, such as an approval rule, is gone or changed), `mcp-config-unreadable`, `rules-block-missing`, `rules-block-modified`, `skill-missing`, `skill-modified` (hash differs from the recorded one), `skill-outdated` (the installed package ships a newer copy), `skill-elsewhere-missing` (`connect` skipped a skill because another directory the agent reads provided it, and that copy is gone; rerun `connect` for the agent), `skill-duplicated-elsewhere` (a copy `connect` installed for the agent also exists in a directory the agent reads, so the agent lists the skill twice; rerun `connect <agent>`, which removes its own copy and records the shared one). Both skill reasons are `stale`, not advisory: each is a state where the agent no longer has exactly one working copy of every skill, and rerunning `connect` for the agent is the fix. |
+| `absent` | Not connected. `detected` says whether the agent's config directory exists. |
+| `manual-only` | `connect` cannot wire it safely: the adapter has no user-level MCP target, or the detected config cannot be merged (`reasons[0].code` says why). Use the printed snippet. |
+
+Doctor never repairs. `stale` is judged against the recorded root, never against the install that runs doctor: the plugin cache and an npm global install can both exist, and the entry runs the recorded root (`version-mismatch` compares the recorded version with the package at that root). Only a different, newer doctor install yields the advisory `newer-package-available`; an older or equal one changes nothing. For a `stale` agent it adds a `reconnect-agent` next action (a preview command that is not run for you); it ends with `--python <recorded interpreter>` while that interpreter still works and `--node <recorded node>` while that node exists. Rerun `connect <agent>`, review the update, and apply its plan hash; rerunning from the new package location fixes a moved or upgraded install. The human report adds a `Connect <agent>: <state>` line for connected, stale, manual-only and detected agents.
+
+## Adapters
+
+An adapter is one file, `scripts/connect_adapters/<agent>.py`, that declares where an agent keeps its user-level files and how its MCP entry looks. It contains no file-writing code: reading, merging, hashing, backups, atomic writes, rollback, the manifest and doctor all live in `scripts/connect.py` and work for any adapter.
+
+```python
+from connect_adapters.spec import (Adapter, McpTarget, RulesTarget, SkillsTarget, Snippet, FIXTURE_TESTED)
+
+ADAPTER = Adapter(
+    name="example",                    # lowercase CLI id: `connect example`
+    title="Example Agent",
+    detect=(".example",),              # config directories (HOME-relative or functions); any existing one means "detected"
+    mcp=McpTarget(
+        path=".example/mcp.json",      # HOME-relative, or a function (home, env) -> Path (XDG, <AGENT>_HOME)
+        format="json",                 # "json" (strict), "toml" or "yaml"
+        key_path=("mcpServers",),      # object/table that holds the named servers
+        name="obsidian-wiki",          # key of our entry (default)
+        entry=lambda command, env: {"command": command[0], "args": command[1:], "env": env},  # default shape
+    ),
+    rules=RulesTarget(path=".example/AGENTS.md",      # user-level rules file; None to skip
+                      header=None),                   # optional text written before the block when connect creates the file
+    skills=SkillsTarget(path=".example/skills"),      # user-level skills directory; None to skip
+    snippets=(Snippet("Project rules", ".example/rules/wiki.md", "{{rules}}"),),  # printed, never written
+    notes=("Restart Example after connecting.",),     # manual steps printed with the preview
+    verification=FIXTURE_TESTED,       # default; the table in this file and doctor show it
+)
+```
+
+Fields:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name`, `title` | yes | CLI id (`[a-z][a-z0-9-]*`, unique) and display name. |
+| `detect` | yes | Locations (HOME-relative strings or `(home, env) -> Path` functions) whose existence as a directory marks the agent as detected. Detection never runs an agent binary. |
+| `mcp` | no | `McpTarget`. Without it the agent is `manual-only`. `entry(command, env)` receives `command` = `["<absolute node>", "<root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"]` and `env` = `{"PYTHON": …}` (plus `OBSIDIAN_AGENT_CONFIG` when set) and returns the entry in the agent's own shape: the command may stay an array and the env may use another key, for example OpenCode's `{"type": "local", "command": command, "environment": env, "enabled": True}`, or VS Code's `{"type": "stdio", "command": command[0], "args": command[1:], "env": env}`. Values must be strings, booleans, integers or lists/tables of them. `extra=(ExtraEntry(key_path, name, value, accept=()), …)` (json and yaml only) merges more values into the same file, for settings that keep the entry safe: OpenCode's `ask` rules are `ExtraEntry(("permission",), "obsidian-wiki_wiki_batch_apply", "ask", accept=("ask", "deny"))`. A new key is appended at the end of its object (order matters to agents whose last matching rule wins) and its hash is recorded per extra in the manifest (`mcp.extras`, optional, with `createdKeys` for the containers connect created: an integer from 0 to the length of the key path, the largest among extras that share a container so the last one removed takes the empty containers along; any other value makes the manifest `manifest-invalid`). An existing key whose value is in `accept` is the user's own and stays, not owned; any other value (or a container that is not an object, except a string in `accept`) refuses the agent with the whole snippet. `--remove` deletes a key only while it still matches its hash (a changed one stays, with a note) and the containers connect created once they are empty; doctor reports `mcp-extra-missing` and `mcp-extra-modified`. |
+| `rules` | no | `RulesTarget(path, header=None, create_unless=None)`: the user-level rules file that receives the marked block. `header` (for example `---\napplyTo: "**"\n---`) is written before the block only when `connect` creates the file; the manifest records it so `--remove` deletes the file only when it holds nothing but header and block, and otherwise removes just the block. `create_unless` is a location the agent reads only while the rules file is absent (OpenCode: `~/.claude/CLAUDE.md` versus `AGENTS.md`): when the rules file does not exist and that path does, `connect` does not create the file, prints the block as a snippet with a note, and records nothing for rules (doctor reports nothing). An existing rules file is updated as always. |
+| `skills` | no | `SkillsTarget(path, also_read=())`: the user-level skills directory that receives the six skill folders. `also_read` lists directories the agent reads skills from as well (OpenCode: `~/.claude/skills`, `~/.agents/skills`; Cursor: `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`). A name for which `<dir>/<name>/SKILL.md` exists there (on disk or planned by an agent selected earlier in the same run) is not installed for this agent: the preview names the directory (`plan.skillsElsewhere`), the manifest records it (`skills.skillsElsewhere`, optional) and doctor reports `skill-elsewhere-missing` (stale; rerun `connect` for the agent) once that copy is gone. A connect copy counts as the agent's own only while its `SKILL.md` is still in the agent's directory and no also_read directory provides the name: when one does, a rerun removes the recorded files of that name (a customized file is refused unless `--force`, which backs it up; an adopted file or one another agent records stays, with a note) and records the name under `skillsElsewhere`, so deleting the own copy by hand sticks and one copy remains. A copy the agent's directory holds that `connect` never recorded is never touched. When an agent installs copies into a directory that another agent reads while that agent still has its own recorded copies of the same names, the preview carries a note naming that agent and the names (it lists them twice until `connect <agent>` is rerun); an agent that reads other agents' directories is planned after the others in one run, so it sees the copies they install. Removing copies that another connected agent records in its `skillsElsewhere` carries a note naming that agent, which should be reconnected to install its own. |
+| `snippets` | no | `Snippet(title, destination, content)` for project-level or manual content. `{{rules}}` expands to the shared rules text. |
+| `notes` | no | Manual notes. |
+| `duplicates_with` | no | Names of adapters whose MCP entry reaches some of the same clients (Copilot's two adapters). When one of them is selected and the other is selected or already connected, the preview carries a duplicate-registration note. |
+| `verification` | no | `LIVE_VALIDATED`, `FIXTURE_TESTED` (default) or `SNIPPET_ONLY`. |
+
+Location functions receive the home directory and a copy of the process environment, so `CODEX_HOME`, `XDG_CONFIG_HOME` and similar overrides are a one-liner: `path=lambda home, env: Path(env.get("CODEX_HOME") or home / ".codex") / "config.toml"`. Every returned path must be absolute and user-level; the framework refuses anything inside the selected vault, a symlinked final file, and files it cannot merge, and follows symlinked parent directories as described above. One adapter has one MCP target: an agent family with two config files (Copilot CLI and VS Code) is two adapters.
+
+To register an adapter, add its single line between the `#` separator lines in `scripts/connect_adapters/__init__.py`:
+
+```python
+REGISTRY: list[str] = [
+    "connect_adapters.example",
+]
+```
+
+Separate comment lines keep each adapter's edit on its own line, so adapter changes merge without conflicts. A module that fails to import or has an invalid `ADAPTER` is reported by `connect` and, as `adapterErrors`, by doctor.
+
+Test an adapter with `tests/connect_fixture_adapter.py` and `tests/test_connect.py` as the model: run the real `connect` code against a temporary `HOME` and `OBSIDIAN_AGENT_CONFIG`, assert the exact paths, entry shape, preservation of unrelated entries, preview-without-writes, apply, repeat no-op, removal, and a doctor round trip. Never touch the real home directory or run the agent. When the tests pass, add the agent's row to the table above and to the README as "fixture-tested (live-unverified)"; live validation is a separate, recorded step (#72). `tests/connect_fixture_adapter.py` has fixtures for each target shape (`fixture-custom`: environment-dependent location functions, an OpenCode-like entry and a rules header).
+
+## Codex CLI
+
+`obsidian-second-brain connect codex` (status: fixture-tested (live-unverified); #72 records the live run). Paths and keys were checked against OpenAI's Codex documentation: [MCP](https://developers.openai.com/codex/mcp), [config basics](https://developers.openai.com/codex/config-basic), [AGENTS.md](https://developers.openai.com/codex/guides/agents-md) and [skills](https://developers.openai.com/codex/skills). `CODEX_HOME` is honored as Codex does (default `~/.codex`; an empty value counts as unset).
+
+| Piece | Target | Notes |
+| --- | --- | --- |
+| Detection | the `$CODEX_HOME` directory (`~/.codex`) | The `codex` binary is never run. |
+| MCP entry | `$CODEX_HOME/config.toml`, table `[mcp_servers.obsidian-wiki]` with `command`, `args` and an `env` table | Appended inside `# obsidian-second-brain:start`/`end` comment markers and verified by re-parsing; the rest of the file (comments, floats such as `startup_timeout_sec = 20.0`, other servers, `[[skills.config]]`) is untouched. Codex rewrites this file itself (with `toml_edit`) and can move or drop the markers, for example when it adds `[notice]` or a trusted `[projects."…"]` table or re-renders the servers after `codex mcp add`. So an update or `--remove` finds the entry by its `[mcp_servers.obsidian-wiki]` header and its own subtables (such as `.env`), up to the next table that is not ours, and strips only our exact marker comment lines wherever they ended up. It proceeds only while the parsed entry still matches the hash recorded at connect, and the re-parsed result must equal the original settings minus (or with) our entry; an edited entry, or one written as dotted keys or an inline table, is refused and you remove it by hand. An existing different `obsidian-wiki` table, an inline `mcp_servers = { … }`, or an unparseable file is refused with the exact table to paste. The Codex CLI, desktop app and IDE extension share this file. |
+| Rules block | `$CODEX_HOME/AGENTS.md` (global instructions) | If `$CODEX_HOME/AGENTS.override.md` exists and is not empty, Codex reads it instead of `AGENTS.md`; the preview notes say so, and you add the block there by hand. |
+| Skill copies | `~/.agents/skills/<skill>/SKILL.md` (+ `wiki/references/*.md`) | Codex's user skills directory is `$HOME/.agents/skills`, not under `CODEX_HOME`. Other agents that read it share the copies (the framework removes them with the last agent). Pi also reads `~/.agents/skills`, and this package's own Pi skills (`package.json` `pi.skills`) have the same six names: Pi keeps the first one it discovers and warns about the other, so expect a name-collision warning if you use Pi too. A same-named skill that another tool put there is refused as "exists and was not installed by connect" unless you pass `--force`, which backs it up. Codex detects skill changes itself; restart it if one does not appear. |
+| Project snippet | printed, never written | Optional: paste the rules into a project's root `AGENTS.md` if that project should always use the wiki. |
+
+The server name `obsidian-wiki` is the one the Claude plugin declares, so both clients show the same tool prefix. The entry carries the absolute node, the absolute package root and `env.PYTHON` as described above, plus `env.OBSIDIAN_AGENT_CONFIG` when it is set at connect time. Codex starts the server when a session starts, so restart it after connecting. Hooks and a Codex plugin are out of scope. MCP-only writes follow the batch flow: the agent shows the `wiki_batch_inspect` summary and waits for your approval; Codex prompts before destructive MCP tool calls, and `wiki_batch_apply` advertises `destructiveHint: true`. Full access with no prompts (`approval_policy = "never"` with disabled sandboxing or full disk write, for example `--yolo`), `default_tools_approval_mode = "approve"` on the server, or a saved per-tool "Always allow" (Codex writes `[mcp_servers.obsidian-wiki.tools.<tool>]` `approval_mode = "approve"`) skip that prompt, so keep approval enabled for wiki writes; `approval_policy = "never"` under a sandbox denies the call instead of applying it. A saved approval also changes the entry connect wrote, so later `connect codex` updates and `--remove` refuse until you delete that `tools` subtable by hand ([approvals and security](https://developers.openai.com/codex/agent-approvals-security), [MCP configuration](https://developers.openai.com/codex/mcp)).
+
+## Cursor
+
+`connect cursor` is detected by the `~/.cursor` directory only; the `cursor` binary is never run. Targets and formats were checked against Cursor's current official documentation:
+
+| Piece | Target | Source |
+| --- | --- | --- |
+| MCP entry | `~/.cursor/mcp.json`, strict JSON, under `mcpServers`: `{"type": "stdio", "command": "<absolute node>", "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"], "env": {"PYTHON": "<interpreter>"}}` (`OBSIDIAN_AGENT_CONFIG` is added when it is set at connect time) | [MCP: `mcp.json`, STDIO configuration, global configuration](https://cursor.com/docs/mcp) |
+| Skill copies | `~/.cursor/skills/<name>/SKILL.md` plus `~/.cursor/skills/wiki/references/*.md` (a user-level skills directory; Cursor reads each `SKILL.md`, whose `name` must equal its folder) | [Agent Skills: skill directories](https://cursor.com/docs/skills) |
+| User rules | none: Cursor user rules are set in Customize > Rules and are not stored as a file, so `connect` writes no rules block. The server's MCP `initialize` instructions carry the wiki rules | [Rules: User Rules](https://cursor.com/docs/rules) |
+| Project rule | printed as a snippet for `.cursor/rules/obsidian-second-brain.mdc` (`alwaysApply: true`); never written | [Rules: project rules](https://cursor.com/docs/rules) |
+
+Notes:
+
+- A `~/.cursor/mcp.json` with comments, trailing commas or an existing different `obsidian-wiki` entry is refused with the snippet to add by hand. Other servers (stdio, `url`/`headers`, `auth`) and other keys are kept.
+- Restart Cursor or refresh MCP servers in Customize after connecting. Cursor asks for approval before each MCP tool call, which is where you review the batch inspect summary.
+- Cursor's "Sync Skills for Cloud Agents" setting moves `~/.cursor/skills` into its synced storage. After turning it on, `doctor` reports the local skill copies as missing.
+- Cursor also loads skills from `~/.agents/skills` and, for compatibility, `~/.claude/skills` and `~/.codex/skills` ([skill directories](https://cursor.com/docs/skills)). `connect` does not install a skill name that already exists there (for example the copies Codex installs in `~/.agents/skills`): the preview names the directory and the manifest records it, so doctor reports `skill-elsewhere-missing` when that copy goes away, and rerunning `connect cursor` installs Cursor's own.
+- Status: fixture-tested (live-unverified). `tests/test_connect_cursor.py` runs the real framework against a temporary `HOME`; a live Cursor run belongs to #72.
+
+## GitHub Copilot
+
+Copilot is two adapters, because one adapter has one MCP file: `connect copilot-cli` and `connect copilot-vscode`. **Connect `copilot-cli` for VS Code's Copilot harness**: it covers Copilot CLI and VS Code. **Use `copilot-vscode` only for VS Code's deprecated Local harness** (removal announced for February 2027) when Copilot CLI discovery is off. **Do not connect both**: the preview carries a duplicate-registration note when both are selected or one is already connected. Both are fixture-tested (live-unverified): `tests/test_connect_copilot.py` runs them in a temporary `HOME`; neither the `copilot` binary nor VS Code is run, and detection only checks that the configuration directory exists. Paths and keys were checked against the official documentation in November 2026 (live runs are recorded by #72).
+
+| | `copilot-cli` | `copilot-vscode` |
+| --- | --- | --- |
+| Use for | Copilot CLI and VS Code's Copilot harness | VS Code's deprecated Local harness, when Copilot CLI discovery is off |
+| Detected by | `$COPILOT_HOME`, else `~/.copilot` | VS Code user data folder: `~/Library/Application Support/Code/User` (macOS), `~/.config/Code/User` (Linux), `%APPDATA%\Code\User` (Windows, untested) |
+| MCP file | `<COPILOT_HOME or ~/.copilot>/mcp-config.json`, key `mcpServers` | `<user data>/mcp.json`, key `servers` |
+| MCP entry | `{"type": "local", "command": <node>, "args": [<root>/scripts/obsidian-second-brain.mjs, "mcp", "--tools", "all"], "env": {"PYTHON": …}, "tools": ["*"]}` | `{"type": "stdio", "command": <node>, "args": […], "env": {"PYTHON": …}}` |
+| Rules file | `<COPILOT_HOME or ~/.copilot>/copilot-instructions.md`, no front matter | the same file; the block is written once and removed with the last adapter that owns it |
+| Skills | `<COPILOT_HOME or ~/.copilot>/skills/` | the same directory, shared with `copilot-cli` |
+| Printed snippets | none (user-level rules are written) | `.github/copilot-instructions.md` (the rules), never written |
+
+`env` also carries `OBSIDIAN_AGENT_CONFIG` when it is set at connect time; without it `env` holds only `PYTHON`. `tools: ["*"]` makes every tool of the server available and, per the VS Code documentation, does not bypass approvals.
+
+Sources:
+
+- Copilot CLI MCP: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers> and <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#mcp-server-configuration> (`mcpServers`; local servers take `type` `local` or `stdio`, `command`, `args` and a required `tools`; `env` supports `$VAR` expansion).
+- Copilot CLI instructions: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions> (`$HOME/.copilot/copilot-instructions.md` and `$HOME/.copilot/instructions/**/*.instructions.md`; `COPILOT_HOME` replaces `$HOME/.copilot` for both).
+- Copilot CLI skills and directory: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills> (`~/.copilot/skills/`) and <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference> (`COPILOT_HOME` overrides the whole configuration directory, which lists `skills/`). The skills pages themselves do not spell out `COPILOT_HOME`; `connect` applies it to skills by that directory reference.
+- VS Code MCP: <https://code.visualstudio.com/docs/agents/reference/mcp-configuration> (native destinations `$COPILOT_HOME/mcp-config.json` or `~/.copilot/mcp-config.json` and workspace-root `.mcp.json`, both with `mcpServers`; "for new Copilot configurations, use these native destinations, not `.vscode/mcp.json` or profile `mcp.json`", which use the Local harness's `servers` format; GitHub Copilot CLI discovery, `chat.mcp.discovery.enabled`, is on by default) and <https://code.visualstudio.com/docs/configure/settings#_settings-file-locations> (the user data folder per OS; the profile `mcp.json` sits in it).
+- VS Code instructions and skills: <https://code.visualstudio.com/docs/agents/reference/custom-instructions-reference#_user-instructions> (Copilot harness: `~/.copilot/copilot-instructions.md` for general guidance and `~/.copilot/instructions/**/*.instructions.md` for modular instructions; Local: instructions in the VS Code user profile, created through the Agent Customizations editor) and <https://code.visualstudio.com/docs/agent-customization/agent-skills> (`~/.copilot/skills/`).
+
+What the documentation changes about "VS Code":
+
+- VS Code has a **Copilot harness** and a deprecated **Local harness**. The Copilot harness reads `~/.copilot/mcp-config.json` itself, the file `copilot-cli` wires, and also takes eligible entries from the profile `mcp.json` by forwarding. The Local harness reads the profile `mcp.json` and, with Copilot CLI discovery on (the default), `~/.copilot/mcp-config.json` too. So `copilot-cli` alone reaches both harnesses, and connecting both adapters registers `obsidian-wiki` twice. If you do need `copilot-vscode` (Local harness, discovery off), connect it without `copilot-cli`. Plan for `copilot-vscode` to become unnecessary once the Local harness is gone.
+- The rules go to `copilot-instructions.md`, the Copilot harness's general user instructions file, which is not scoped to the files a chat works with (an `applyTo` file would be: in Copilot sessions `applyTo` targets files the agent works with, so it can miss a wiki-only chat). The Local harness keeps its user instructions in the VS Code profile, created through the Agent Customizations editor. The documentation names no file there and `connect` writes none; paste the rules into that editor, or use the repository-level `.github/copilot-instructions.md` snippet (read by both harnesses), which `connect` prints and never writes. Without either, the rules are also in the MCP server's own instructions, which VS Code retrieves on demand.
+- There is no workspace MCP snippet. The documented workspace-level destination is a root `.mcp.json` with `mcpServers`, for server definitions shared with a team; our entry holds machine-specific paths and is written to the user-level file instead.
+- `COPILOT_HOME` moves the Copilot CLI files for sure. It applies to VS Code only when VS Code's own process environment has it: an editor launched from the Dock or Finder does not inherit variables from your shell and reads `~/.copilot`. Set it where VS Code starts (or start VS Code from that shell). Whether VS Code reads it that way is not live-verified (#72).
+- No XDG override is documented for VS Code's user data folder, so `copilot-vscode` uses `~/.config/Code/User` on Linux regardless of `XDG_CONFIG_HOME`. VS Code Insiders (`Code - Insiders`) and profiles other than the default are not wired; paste the printed entry there by hand.
+
+JSONC: VS Code opens `mcp.json` as JSON with Comments, so comments and trailing commas are valid there and not rare. `connect` follows the framework rule and refuses a file that is not strict JSON (`config-unparseable`), writes nothing for the whole selection, and prints the exact `servers` entry to add by hand. The official pages above do not state that `mcp.json` accepts comments; this comes from VS Code's JSON-with-Comments file handling and is not live-verified.
+
+Approvals: both clients ask before they call an MCP tool by default (Copilot CLI: MCP tool calls follow the session's permission rules; VS Code: Manual permissions, unless a tool is pre-approved). Apply is therefore guarded by the client prompt as well as the rules block, but a broad approval removes it: `--allow-all`/`--allow-tool` in the CLI, and **Allow all**, **Autopilot**, or trusting the whole `obsidian-wiki` server (**Chat: Manage Tool Approval**) in VS Code. Keep `wiki_batch_apply` on manual approval. Whether the real clients prompt for these tools is the claim of their documentation and is not live-verified (#72).
+
+## OpenCode
+
+`connect opencode` is detected by the OpenCode config directory only; the `opencode` binary is never run. The directory is `~/.config/opencode` (`$XDG_CONFIG_HOME/opencode` when that variable is set), or `$OPENCODE_CONFIG_DIR` when it is set and not empty (see below). Targets and formats were checked against OpenCode's current official documentation and source. There are two lines: V2 is published as `@opencode/cli` (npm `latest` 2.3.2) and the documentation labels V2 latest; `opencode-ai` (1.19.6) is V1. One entry and one rule form serve both.
+
+| Piece | Target | Source |
+| --- | --- | --- |
+| MCP entry | `<config dir>/opencode.json`, strict JSON, under `mcp`: `{"type": "local", "command": ["<absolute node>", "<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"], "environment": {"PYTHON": "<interpreter>"}, "enabled": true}` (`OBSIDIAN_AGENT_CONFIG` is added to `environment` when it is set at connect time). If only `opencode.jsonc` exists, that file is edited when it is strict JSON | [Config: locations, format](https://opencode.ai/docs/config/), [MCP servers: local](https://opencode.ai/docs/mcp-servers/) |
+| Approval rules | `ask` for `obsidian-wiki_wiki_batch_apply` and `obsidian-wiki_wiki_batch_recover` in the `permission` object of the same file, written by `connect` and removed with it | [Permissions](https://opencode.ai/docs/permissions/) |
+| Rules block | `<config dir>/AGENTS.md`, the global rules file, created only while `~/.claude/CLAUDE.md` does not exist | [Rules: global, Claude Code compatibility](https://opencode.ai/docs/rules/) |
+| Skill copies | `<config dir>/skills/<name>/SKILL.md` plus `<config dir>/skills/wiki/references/*.md`, except names already provided in `~/.claude/skills` or `~/.agents/skills` | [Skills: discovery](https://opencode.ai/docs/skills/) |
+
+Notes:
+
+- **Approval rules are written.** OpenCode checks an MCP tool call as the permission `<server>_<tool>` and its default policy allows everything, so without a rule `wiki_batch_apply` would run unprompted. `connect` therefore merges `"permission": {"obsidian-wiki_wiki_batch_apply": "ask", "obsidian-wiki_wiki_batch_recover": "ask"}` into the same file as the entry (the preview lists them with the entry; each key has its own hash in the manifest). `--remove` deletes only these keys (a key you changed after connect stays, with a note) and a `permission` object that `connect` created once it is empty.
+  - *Precedence (checked in the source).* The last matching rule wins in both lines. V1 turns the `permission` object into a rule list in key order (`Permission.fromConfig`) and evaluates it with `findLast` (v1.19.6 `permission/index.ts`); V2 combines `tools`, `permission` and the native `permissions` list in that order (`config/normalize.ts`, `[...toolRules, ...permissionRules, ...nativePermissions]`) and documents "the last matching rule wins". A `permission` object is therefore all one form needs for both lines, and `connect` appends its keys at the end of the object, so your earlier `"*": "allow"` or `"obsidian-wiki_*": "allow"` does not override them. A rule of yours that comes after them (a key placed below ours, a project config, an agent's own permissions, or a V2 `permissions` entry) still does.
+  - *Your values.* An existing `ask` or `deny` for one of those keys is already safe: it stays yours and is not recorded. `"permission": "ask"` or `"deny"` (a string, meaning every action) likewise covers the tools. An `allow`, an object value, or `"permission": "allow"` (or any other non-object) is not overridden: `connect` refuses (`extra-differs` or `config-shape`), writes nothing, and prints the whole snippet to merge by hand. Doctor reports `mcp-extra-missing` or `mcp-extra-modified` when a key it wrote is gone or changed.
+- **`OPENCODE_CONFIG_DIR`.** When it is set and not empty, `connect` uses that directory for detection, the config file, `AGENTS.md` and `skills/`, and ignores `XDG_CONFIG_HOME`: V2 replaces the global directory with it (`OPENCODE_CONFIG_DIR ?? Path.config`), and V1 loads `opencode.json`/`opencode.jsonc` and skills from it as an extra layer on top of `~/.config/opencode`. V1 reads the global `AGENTS.md` only from `~/.config/opencode`, so on V1 a rules block in `OPENCODE_CONFIG_DIR` is not read; the MCP server's instructions carry the same rules either way. The variable must be set when you run `connect` (a relative value is resolved against the current directory, as OpenCode does). `OPENCODE_CONFIG` stays an override layer, not a target.
+- **JSON versus JSONC.** OpenCode merges `opencode.json` and `opencode.jsonc` from its global directory, with the `.jsonc` file last, and writes its own changes to an existing `opencode.jsonc` first. `connect` follows that order: it edits an existing `opencode.jsonc` (and refuses it with the snippet to add by hand when it holds comments or trailing commas), otherwise `opencode.json`, which it creates when neither exists. It never creates a second global config next to an existing one. OpenCode's own default `opencode.jsonc` (just `{"$schema": "https://opencode.ai/config.json"}`) is strict JSON, so it is edited in place and `--remove` restores it exactly (the empty `mcp` and `permission` objects `connect` added are removed again). An existing different `obsidian-wiki` entry or a non-object `mcp` is refused with the snippet; other servers, providers, `permission` and other keys are kept.
+- **Config shape.** OpenCode 1.x documents servers directly under `mcp`; the 2.x documentation names them under `mcp.servers` with `disabled` instead of `enabled`. 2.x still reads the direct shape and migrates it (its migration guide and `normalize.ts`), so the one entry works on both lines. Existing `mcp.servers` entries are left alone.
+- **Rules file and `CLAUDE.md`.** OpenCode reads `~/.claude/CLAUDE.md` only while the global `AGENTS.md` does not exist, so creating `AGENTS.md` would hide it. When `AGENTS.md` does not exist and `~/.claude/CLAUDE.md` does, `connect` does not create `AGENTS.md`: the preview prints the rules block as a snippet with a note (paste it into `CLAUDE.md`, or create `AGENTS.md` yourself); the MCP server's instructions carry the same rules, and nothing is recorded for rules, so doctor does not report it. An existing `AGENTS.md` gets the block as usual. Creating `AGENTS.md` yourself later hides `CLAUDE.md`. `connect` never touches `~/.claude`.
+- **Duplicate skills.** OpenCode also reads skills from `~/.claude/skills` and `~/.agents/skills` (Codex installs the same six names in `~/.agents/skills`). For each of the six skill names that already has a `<dir>/<name>/SKILL.md` in either directory, `connect` installs no second copy: the preview says which names it skipped and in which directory, and the manifest records it. When that copy disappears (for example after `connect codex --remove`, whose preview names OpenCode as depending on it), doctor reports `skill-elsewhere-missing` (stale) and rerunning `connect opencode` installs OpenCode's own copy. The references folder belongs to the `wiki` skill and follows it. The order does not matter: if OpenCode was connected first and `connect codex` writes `~/.agents/skills` afterwards, the Codex preview warns that OpenCode will list the six skills twice, doctor reports `skill-duplicated-elsewhere` (stale) for OpenCode, and rerunning `connect opencode` removes its own copies (a customized one is refused unless `--force`) and uses Codex's. Deleting OpenCode's own copy by hand has the same result on the next `connect opencode` instead of reinstalling it. The Claude plugin keeps its skills in the plugin, not in `~/.claude/skills`.
+- A project `opencode.json` or `OPENCODE_CONFIG` that defines its own `obsidian-wiki` entry overrides the global one. Restart OpenCode after connecting.
+- Status: fixture-tested (live-unverified). `tests/test_connect_opencode.py` runs the real framework against a temporary `HOME`; a live OpenCode run belongs to #72.
+
+## Live validation record (#72)
+
+A live run follows the #72 checklist against a disposable vault with isolated agent settings: `connect <agent>` preview and apply, the agent lists the MCP tools and skills, `wiki_search` and `wiki_read` from the agent, one `wiki_batch_inspect` → approval → `wiki_batch_apply` save (summary shown, approval awaited, index and log updated, nothing committed), the rules reach the agent, and `connect <agent> --remove` restores the prior config. Fixture tests are not a substitute; the support table changes only for an agent with a recorded run.
+
+| Agent | Result | Date, host | Reason |
+| --- | --- | --- | --- |
+| Codex CLI | not run | 2026-11-19, macOS 27.2.1 arm64 | `codex` is not installed on the maintainer host |
+| GitHub Copilot CLI | not run | 2026-11-19, macOS 27.2.1 arm64 | `copilot` is not installed on the maintainer host |
+| GitHub Copilot in VS Code (Copilot and Local harness) | not run | 2026-11-19, macOS 27.2.1 arm64 | VS Code is installed, but a run needs a signed-in GitHub Copilot account (a paid provider); #72 requires the owner's approval of provider, budget and credentials first |
+| Cursor | not run | 2026-11-19, macOS 27.2.1 arm64 | Cursor is not installed on the maintainer host |
+| OpenCode | not run | 2026-11-19, macOS 27.2.1 arm64 | `opencode` is not installed on the maintainer host |
+
+Deterministic local checks on the same host (not live runs): every adapter's `tests/test_connect_<agent>.py`, the framework tests and `bash tests/install-smoke.sh` passed. Claude Code 2.1.322 and Pi 1.5.2, which use the plugin and package rather than `connect`, stay live-validated by their own checks. Add a row with agent version, OS, date and deviations when a run is recorded.
+
+## Generic MCP snippets
+
+Agents without an adapter can use the same server. Put these values in the client's MCP configuration (consult the client's documentation for the file and its schema; most use an `mcpServers` object with `command`, `args` and `env`, while some, such as Zed and Continue, nest or name them differently). These generic snippets use plain `node`, which the client resolves from its own `PATH`; `connect` pins the absolute node instead, and you can do the same by replacing `node` with the output of `command -v node`. Replace `<package root>` with the directory that contains `package.json` (for example `…/node_modules/@soulwaxx/obsidian-second-brain`) and `/path/to/python3.14` with the interpreter that has [`requirements.txt`](../requirements.txt) installed. `obsidian-second-brain connect --json` prints these two snippets with your real values under `genericSnippets`.
+
+Read-only (`read`): the four `wiki_*` read tools. Use this when the agent writes with its own guarded tools, or when you want a read-only connection.
+
+```json
+{
+  "mcpServers": {
+    "obsidian-wiki": {
+      "command": "node",
+      "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "read"],
+      "env": { "PYTHON": "/path/to/python3.14" }
+    }
+  }
+}
+```
+
+Reviewed writes (`all`): adds `wiki_batch_inspect`, `wiki_batch_apply` and `wiki_batch_recover`, the only write path for an MCP-only agent. Add the rules block from a `connect` preview to the agent's rules so it shows you the inspect summary and waits for approval before applying.
+
+```json
+{
+  "mcpServers": {
+    "obsidian-wiki": {
+      "command": "node",
+      "args": ["<package root>/scripts/obsidian-second-brain.mjs", "mcp", "--tools", "all"],
+      "env": { "PYTHON": "/path/to/python3.14" }
+    }
+  }
+}
+```
+
+If the client does not pass your shell environment, add `OBSIDIAN_AGENT_CONFIG` (and optionally `OBSIDIAN_VAULT_PATH`) to `env`, with absolute values. These entries are not tested against any client and carry the `snippet-only` status. After a package upgrade or move, update the path by hand; `connect` and `doctor` only track agents they wired.

@@ -166,8 +166,26 @@ does not provide web/media extraction or authorize wiki filing. See the
 [focused workflow reference](skills/wiki/references/focused-workflows.md) and
 [baseline contract](docs/source-baselines.md) for approval and recovery details.
 
+The six portable skills (`wiki`, `wiki-query`, `wiki-save`, `wiki-ingest`,
+`wiki-research`, `wiki-health`) are client-neutral and choose tools by client
+type; the shared mapping is
+[tool surface by client](skills/wiki/references/tool-surface.md). Claude Code,
+Pi, and omp read with the `wiki_*` tools (native in Pi, MCP in Claude, otherwise
+the package-relative CLI) and write with their hook-guarded file tools. Agents
+without those hooks (Codex CLI, Copilot, Cursor, OpenCode, other MCP clients)
+read with the MCP `wiki_*` tools and write only through the MCP batch tools
+(`wiki_batch_inspect`, your approval of its summary, then `wiki_batch_apply`),
+never with their own file or shell tools. Operations that need the package
+scripts (setup, index builds, capture, lint, evidence reports, migration) are
+not available to those agents; run them from Claude, Pi, or the CLI. The skills
+are also valid as plain copies of those six folders: their links stay inside the
+copied set, and they never assume a package path, plugin variable, or `PATH`
+bin.
+
 Startup supplies a small vault locator rather than injecting the entire
-personal index into unrelated work. The skill searches and reads relevant
+personal index into unrelated work. Automatic recall that adds a few relevant
+wiki excerpts before each prompt is available for Claude Code and Pi/omp but is
+off by default; see [Automatic recall](docs/setup.md#automatic-recall-opt-in). The skill searches and reads relevant
 pages when a task needs them. An approved ingest or research pass may update
 relevant canonical pages; ordinary questions remain read-only unless filing
 was requested. Keep one wiki writer at a time.
@@ -177,6 +195,28 @@ They protect generated `index.md` and lifecycle-owned `log.md` at every wiki
 depth, curated sources, settings, and unsafe paths. Shell writes are not
 sandboxed; follow the skill's explicit guard/validation workflow if the file
 tool lifecycle is unavailable.
+
+Agent writes under `wiki/` (pages and evidence-ledger JSON) are refused before
+they happen when the added text contains a likely secret: private key blocks,
+well-known token formats (`sk-`, `sk-ant-`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`,
+`github_pat_`, `xox*`, `AKIA`/`ASIA`, `AIza`, `glpat-`, `npm_`, Stripe live keys),
+JWTs, credentials in URLs, and `api_key`/`secret`/`password`/`token`-style
+assignments with a non-placeholder value (placeholders such as `<your-key>`,
+`${VAR}`, or `your-api-key` pass). The check runs in the file-tool guard (Claude
+`PreToolUse`, Pi `tool_call`) and in the reviewed batch inspect/apply/recover
+path, so every client that uses them inherits it. It reports file, line, and
+pattern type, never the value, and never redacts. A page that documents token
+formats can opt out with `secretScan: allow` in its frontmatter; there is no
+global switch. An edit reads the opt-out from the page already on disk, so add it
+in a separate, earlier edit (an accepted limitation of the per-page design). Only
+findings new relative to the page's current text are refused: edits are applied to
+the current text first, so replacing a placeholder with a real value is refused,
+while a legacy page that already contains a match can still be edited or
+re-baselined. Source captures under `.raw/agent-captures/` are verbatim, so
+`capture-inspect` and batch inspect only return a `warnings` entry. Existing
+untouched pages are never blocked. Pattern matching misses unknown formats and
+shell writes are unguarded; it is not a substitute for keeping secrets out of
+prompts and notes.
 
 The lifecycle validates changed pages and finalizes writing batches with
 navigation, logging, and one optional BM25 refresh per validated changed batch.
@@ -195,7 +235,20 @@ Git handles version control independently, including for legacy configs with
 Pi also registers four direct, read-only `wiki_search`, `wiki_outline`,
 `wiki_read`, and `wiki_doctor` tools. They invoke the currently installed
 package's Python retrieval/read operations and do not inject wiki content into
-prompts; see [the Pi tool contract](docs/pi-tools.md).
+prompts unless the opt-in automatic recall setting is enabled; see
+[the Pi tool contract](docs/pi-tools.md). Any MCP-capable agent can
+use the same four read-only tools through `obsidian-second-brain mcp`, a stdio
+server with no extra dependency; see [the MCP server guide](docs/mcp.md). The
+Claude Code plugin declares that server itself (read-only profile, launched from
+the plugin's own root with no `npx` or `PATH` lookup), so Claude lists the four
+tools with no extra setup; Pi and omp keep their native tools. For agents
+without lifecycle hooks, `obsidian-second-brain mcp --tools all` adds three
+reviewed write tools, `wiki_batch_inspect`, `wiki_batch_apply`, and
+`wiki_batch_recover`. They wrap the existing plan-hash batch flow: the agent
+shows you the inspect summary, you approve, and only then does apply publish
+the pages (never `index.md` or `log.md`, never a Git write). Interrupted
+applies are recovered with the plan hash. See
+[the MCP guide](docs/mcp.md#reviewed-batch-writes---tools-all).
 
 When the `obsidian-second-brain` bin is on `PATH`, use the package-owned CLI
 for read-only structured search and doctor commands from any folder:
@@ -239,6 +292,36 @@ and labels filesystem results separately from native resolver evidence.
 [Reviewed link migration](docs/link-migration.md) covers authored Markdown
 batches, opt-in lifecycle-owned historical destinations, and final graph checks.
 Neither diagnostics nor normal finalization implicitly migrate old history.
+
+## Connect other agents
+
+Claude Code and Pi load the package directly. Other MCP-capable agents are wired
+with the reviewed `connect` command: it previews the exact changes and a plan hash,
+applies only a confirmed plan (`--apply --confirm <planHash>`), and undoes them
+(`--remove`). Per agent it merges one `obsidian-wiki` MCP entry that runs the
+installed package by absolute path with the node and Python interpreters pinned (no `npx`, no
+network call at agent start), upserts a marked rules block, and copies the six
+portable skills, recording everything in a manifest next to the selected config.
+It writes user-level files only, never into the vault or a project repository, and
+`doctor` reports connected, stale (after an upgrade or move), absent and
+manual-only agents, and advises when a newer package is installed elsewhere, without repairing them. See [the agent guide](docs/agents.md).
+
+| Agent | Mechanism | Status |
+| --- | --- | --- |
+| Claude Code | Plugin: hooks, skills, read-only MCP server | live-validated |
+| Pi | Package: extension, hooks, skills | live-validated |
+| Codex CLI | `connect` adapter `codex`: MCP entry in `~/.codex/config.toml`, rules in `~/.codex/AGENTS.md`, skills in `~/.agents/skills` ([details](docs/agents.md#codex-cli)) | fixture-tested (live-unverified) |
+| GitHub Copilot CLI and VS Code's Copilot harness | `connect` adapter `copilot-cli`: MCP entry in `~/.copilot/mcp-config.json`, rules in `~/.copilot/copilot-instructions.md`, skills; one connection covers both ([details](docs/agents.md#github-copilot)) | fixture-tested (live-unverified) |
+| VS Code's deprecated Local harness | `connect` adapter `copilot-vscode`, only for the Local harness when Copilot CLI discovery is off (do not connect it together with `copilot-cli`): MCP entry in the VS Code profile `mcp.json`, same rules file and skills | fixture-tested (live-unverified) |
+| Cursor | `connect` adapter `cursor`: MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; no user rules file (Cursor keeps them in its settings), project rule printed as a snippet | fixture-tested (live-unverified) |
+| OpenCode | `connect` adapter `opencode`: MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills` (names already in `~/.claude/skills` or `~/.agents/skills` are skipped); OpenCode runs MCP tools without asking by default, so `connect` writes `ask` rules for the wiki write tools into the config | fixture-tested (live-unverified) |
+| Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, other MCP clients | [Generic MCP snippets](docs/agents.md#generic-mcp-snippets) (`read` and `all`) | snippet-only |
+
+The statuses are live-validated, fixture-tested (live-unverified) and
+snippet-only. An adapter row is "fixture-tested (live-unverified)" when its tests
+pass in a temporary home; no real agent has been run with `connect` yet, and each
+live run is recorded in [the live validation record](docs/agents.md#live-validation-record-72).
+"Snippet-only" agents are untested.
 
 ## Local retrieval
 

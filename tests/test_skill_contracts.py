@@ -414,4 +414,88 @@ for boundary in ('may still run the specialist in the background', 'wait for its
                  'do not call it complete'):
     assert boundary in delegation, boundary
 
+
+# Client-neutral portable skills (#64). Static checks of the files #65 copies into
+# MCP-only agents, not live-model compliance evidence. Tool names are checked
+# against the Pi registration and MCP tools/list in tests/skill-tool-names.mjs.
+PORTABLE = ('wiki', 'wiki-query', 'wiki-save', 'wiki-ingest', 'wiki-research', 'wiki-health')
+portable_files = [*(ROOT / 'skills' / name / 'SKILL.md' for name in PORTABLE),
+                  *sorted((ROOT / 'skills/wiki/references').glob('*.md'))]
+for name in PORTABLE:
+    frontmatter = yaml.safe_load((ROOT / 'skills' / name / 'SKILL.md').read_text().split('---\n', 2)[1])
+    # Agent Skills format: only name and description; bounded, lowercase-hyphen name.
+    assert set(frontmatter) == {'name', 'description'}, (name, frontmatter)
+    assert re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', frontmatter['name']) and len(frontmatter['name']) <= 64, name
+    assert 0 < len(frontmatter['description']) <= 1024, name
+for path in portable_files:
+    text = path.read_text()
+    # A copy has no plugin runtime: no Claude/Pi placeholders and no client-specific tool prefix,
+    # except the single prefix note in the shared tool-surface reference.
+    assert '${' not in text and 'CLAUDE_PLUGIN_ROOT' not in text, path
+    if path.name != 'tool-surface.md':
+        assert 'mcp__' not in text, path
+tool_surface = (ROOT / 'skills/wiki/references/tool-surface.md').read_text()
+flat_surface = ' '.join(tool_surface.split())
+for boundary in ('Pi / omp', 'Claude Code', 'MCP-only agents', 'wiki_batch_inspect', 'wiki_batch_apply',
+                 'wiki_batch_recover', "explicit approval", 'Never apply without it',
+                 "Never create, edit, move, or delete vault files with the client's own file or shell tools",
+                 'not available here; run it from Claude, Pi or the CLI', 'the session is read-only',
+                 'treat yourself as MCP-only', 'never relies on a package path',
+                 'hook-guarded', 'match on the trailing `wiki_*` name',
+                 'mcp__plugin_obsidian-second-brain_obsidian-wiki__wiki_search'):
+    assert boundary in flat_surface, boundary
+# Classification is by client and install, never by hook output, model identity or the MCP locator:
+# a package session without an active hook (fresh setup/init) is not read-only and not MCP-only.
+for boundary in ('by the client application and how the skill was installed',
+                 'never read-only: follow the manual guard, validate, and sync order',
+                 'use setup, the CLI, and the package scripts',
+                 'installed by `obsidian-second-brain connect`',
+                 "Your model's identity", "the MCP server's locator are not evidence",
+                 'writes are guarded and validated" and the MCP locator never does',
+                 'whose entry is not `cliOnly`'):
+    assert boundary in flat_surface, boundary
+assert 'when unsure' not in flat_surface.lower() and 'only when you are Claude Code' not in flat_surface
+entry_classify = ' '.join(entry.split())
+for boundary in ("not your model name and not the mcp server", 'otherwise, for example before a vault exists',
+                 'copy made by `obsidian-second-brain connect`'):
+    assert boundary in entry_classify, boundary
+# Every portable skill points at the shared client mapping and names both write paths.
+for name in PORTABLE:
+    text = (ROOT / 'skills' / name / 'SKILL.md').read_text()
+    assert 'tool-surface.md' in text, name
+for name in ('wiki', 'wiki-save', 'wiki-ingest', 'wiki-research'):
+    flat = ' '.join((ROOT / 'skills' / name / 'SKILL.md').read_text().split())
+    assert 'MCP-only' in flat and 'wiki_batch_inspect' in flat and 'wiki_batch_apply' in flat, name
+    assert 'explicit approval' in flat or 'explicit user approval' in flat, name
+    assert 'file or shell tools' in flat, name
+    assert 'hook-guarded' in flat, name
+for name in ('wiki-query', 'wiki-health'):
+    flat = ' '.join((ROOT / 'skills' / name / 'SKILL.md').read_text().split())
+    assert 'MCP-only agent has no launcher' in flat, name
+    assert 'only when' in flat.lower() and 'not listed' in flat, name
+entry_flat = ' '.join(entry.split())
+assert 'prefer filesystem tools' in entry_flat and 'hook-guarded clients' in entry_flat
+assert '## client capabilities' in entry
+# Claude's and Pi's tool preference is unchanged: native/MCP read tools first, then the launcher.
+assert 'package-relative launcher' in entry_flat
+
+# The copied set (each SKILL.md plus skills/wiki/references/*.md, laid out as sibling skill
+# folders) must be self-contained: no relative link may leave it or dangle in it.
+with tempfile.TemporaryDirectory() as temp:
+    copy_root = Path(temp).resolve() / 'skills'
+    for path in portable_files:
+        target = copy_root / path.relative_to(ROOT / 'skills')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(path.read_text())
+    copied = {p.resolve() for p in copy_root.rglob('*.md')}
+    assert len(copied) == len(portable_files)
+    for path in sorted(copied):
+        prose = re.sub(r'^```.*?^```$', '', path.read_text(), flags=re.S | re.M)
+        prose = re.sub(r'`[^`\n]*`', '', prose)
+        for target in re.findall(r'\]\(([^)\s]+)\)', prose):
+            if re.match(r'[a-z][a-z0-9+.-]*:', target, re.I) or target.startswith('#'):
+                continue
+            file_part = target.split('#', 1)[0]
+            assert (path.parent / file_part).resolve() in copied, (path.relative_to(copy_root), target)
+
 print('Focused wiki skill contracts PASS')
