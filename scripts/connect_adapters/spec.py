@@ -88,8 +88,9 @@ class SkillsTarget:
     path: Location
     # Directories the agent also reads skills from. A skill name that a `<dir>/<name>/SKILL.md` already provides there is
     # not installed for this agent (the agent would list it twice): the preview names the directory, the manifest records
-    # it (`skillsElsewhere`) and doctor reports it stale when that copy disappears. A name this agent's own directory
-    # already holds as a connect copy keeps being updated, with a note.
+    # it (`skillsElsewhere`) and doctor reports it stale when that copy disappears. A connect copy of such a name in this
+    # agent's own directory is removed on the next connect (a customized one is refused unless --force) and doctor reports
+    # `skill-duplicated-elsewhere` until then; a copy connect never recorded is never touched.
     also_read: tuple[Location, ...] = ()
 
 
