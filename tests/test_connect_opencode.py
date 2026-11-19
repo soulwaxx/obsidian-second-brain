@@ -441,18 +441,74 @@ class OpenCodeAdapterTests(OpenCodeCase):
         self.assertFalse(self.skills.exists())
         self.assertEqual(before.keys() - snapshot(agents, claude).keys(), {str(agents / "wiki-query"), str(agents / "wiki-query/SKILL.md")})
 
-    def test_an_existing_connect_copy_is_kept_when_the_name_now_also_exists_elsewhere(self):
+    def codex_installs(self):
+        self.registry[:] = ["connect_adapters.codex", "connect_adapters.opencode"]
+        (self.home / ".codex").mkdir(exist_ok=True)
+
+    def test_an_existing_connect_copy_is_replaced_by_the_shared_one_when_the_name_now_also_exists_elsewhere(self):
         self.apply("opencode")
-        before = snapshot(self.skills)
         agents = self.home / ".agents/skills/wiki-save"
         agents.mkdir(parents=True)
         (agents / "SKILL.md").write_bytes(connect_module.skill_sources()["wiki-save/SKILL.md"])
         planned = self.preview("opencode")
-        self.assertNotIn("skillsElsewhere", planned["plan"])
-        self.assertTrue(any("wiki-save also exists in" in note and "kept" in note for note in planned["notes"]), planned["notes"])
+        self.assertEqual(planned["plan"]["skillsElsewhere"], {"opencode": {"wiki-save": str(self.home / ".agents/skills")}})
+        self.assertEqual([item["path"] for item in planned["plan"]["files"] if item["op"] == "delete"], [str(self.skills / "wiki-save/SKILL.md")])
         self.apply("opencode")
-        self.assertEqual(before, snapshot(self.skills))  # not deleted, not changed
-        self.assertNotIn("skillsElsewhere", json.loads(self.manifest.read_text(encoding="utf-8"))["agents"]["opencode"]["skills"])
+        self.assertFalse((self.skills / "wiki-save").exists())
+        self.assertTrue((self.skills / "wiki-query/SKILL.md").is_file())
+        record = json.loads(self.manifest.read_text(encoding="utf-8"))["agents"]["opencode"]["skills"]
+        self.assertNotIn("wiki-save/SKILL.md", record["files"])
+        self.assertEqual(record["skillsElsewhere"], {"wiki-save": str(self.home / ".agents/skills")})
+
+    def test_opencode_first_then_codex_warns_and_a_second_connect_opencode_converges_to_one_copy(self):
+        self.codex_installs()
+        self.apply("opencode")
+        own = snapshot(self.skills)
+        planned = self.preview("codex")
+        note = next(note for note in planned["notes"] if "lists them twice" in note)
+        for text in ("OpenCode", str(self.skills), ", ".join(connect_module.SKILL_NAMES), "connect opencode"):
+            self.assertIn(text, note)
+        self.apply("codex")
+        self.assertEqual(own, snapshot(self.skills))  # codex never touches OpenCode's copies
+        shared = self.home / ".agents/skills"
+        self.assertTrue((shared / "wiki-save/SKILL.md").is_file())
+        # The advice: reconnect OpenCode. Its own copies go, Codex's are used, and the directory connect created is gone.
+        rerun = self.preview("opencode")
+        self.assertEqual(set(rerun["plan"]["skillsElsewhere"]["opencode"]), set(connect_module.SKILL_NAMES))
+        self.apply("opencode")
+        self.assertFalse(self.skills.exists())
+        self.assertTrue((shared / "wiki-save/SKILL.md").is_file())
+        record = json.loads(self.manifest.read_text(encoding="utf-8"))["agents"]["opencode"]["skills"]
+        self.assertEqual(record["files"], {})
+        self.assertEqual(set(record["skillsElsewhere"].values()), {str(shared)})
+        self.assertTrue(all(item["op"] == "unchanged" for item in self.apply("opencode")["plan"]["files"]))
+        # L1: removing Codex's copies names the agent that now depends on them.
+        removal = self.preview("codex", extra=("--remove",))
+        note = next(note for note in removal["notes"] if "uses instead of its own" in note)
+        for text in ("opencode", str(shared), "connect opencode"):
+            self.assertIn(text, note)
+
+    def test_a_copy_the_user_deletes_as_advised_stays_deleted_and_the_run_converges(self):
+        self.codex_installs()
+        self.apply("opencode")
+        self.apply("codex")
+        shutil.rmtree(self.skills / "wiki-query")  # what the preview note advised ("remove one set by hand")
+        planned = self.preview("opencode")
+        self.assertNotIn(str(self.skills / "wiki-query/SKILL.md"), {item["path"] for item in planned["plan"]["files"] if item["op"] != "unchanged"})
+        self.apply("opencode")
+        self.assertFalse(self.skills.exists())
+        self.assertIn("wiki-query", json.loads(self.manifest.read_text(encoding="utf-8"))["agents"]["opencode"]["skills"]["skillsElsewhere"])
+
+    def test_a_customized_opencode_copy_is_not_removed_silently_when_codex_provides_the_name(self):
+        self.codex_installs()
+        self.apply("opencode")
+        self.apply("codex")
+        (self.skills / "wiki-save/SKILL.md").write_text("my wiki-save\n", encoding="utf-8")
+        refusal = self.refused("opencode")["refusals"][0]
+        self.assertEqual(refusal["code"], "skill-customized")
+        self.assertEqual((self.skills / "wiki-save/SKILL.md").read_text(encoding="utf-8"), "my wiki-save\n")
+        self.apply("opencode", extra=("--force",))
+        self.assertFalse((self.skills / "wiki-save").exists())
 
     def test_selected_together_with_an_agent_that_installs_the_same_skills_they_are_installed_once(self):
         self.registry[:] = ["connect_adapters.codex", "connect_adapters.opencode"]
@@ -612,6 +668,23 @@ class OpenCodeDoctorTests(OpenCodeCase):
         agent = self.agent()
         self.assertEqual((agent["state"], agent["reasons"]), ("connected", []))
         self.assertTrue((self.skills / "wiki-save/SKILL.md").is_file())
+
+    def test_doctor_reports_a_duplicate_when_codex_is_connected_after_opencode_and_clears_after_the_advised_rerun(self):
+        self.connect_all("opencode")
+        self.connect_all("codex")
+        agent = self.agent()
+        self.assertEqual(agent["state"], "stale")
+        self.assertEqual([reason["code"] for reason in agent["reasons"]], ["skill-duplicated-elsewhere"])
+        detail = agent["reasons"][0]["detail"]
+        for text in ("wiki-save", str(self.home / ".agents/skills"), str(self.skills), "run connect opencode again"):
+            self.assertIn(text, detail)
+        before = snapshot(self.home, self.config.parent, self.vault)
+        self.assertIn("Connect opencode: stale (", self.cli("doctor").stdout)
+        self.assertEqual(before, snapshot(self.home, self.config.parent, self.vault))  # reported, never repaired
+        self.connect_all("opencode")
+        agent = self.agent()
+        self.assertEqual((agent["state"], agent["reasons"]), ("connected", []))
+        self.assertFalse(self.skills.exists())
 
     def test_doctor_reports_the_ask_rules_when_they_go_missing_or_change(self):
         self.connect()

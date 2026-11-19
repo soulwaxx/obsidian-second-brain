@@ -599,6 +599,12 @@ def merge_extras(fmt: str, text: str | None, extras: tuple[ExtraEntry, ...], old
                           f"{json.dumps(extra.value)} (or a stricter value) there so the wiki write tools stay user-approved; connect will not override it, so change it by hand", path)
         records.append({"keyPath": list(key_path), "name": extra.name, "valueSha256": entry_hash(extra.value),
                         **({"createdKeys": levels} if levels else {})})
+    # Extras that share a container share its created levels: whichever is removed last must take the empty containers along.
+    deepest: dict[tuple[str, ...], int] = {}
+    for record in records:
+        key_path = tuple(record["keyPath"])
+        deepest[key_path] = max(deepest.get(key_path, 0), record.get("createdKeys", 0))
+    records = [{**record, **({"createdKeys": deepest[tuple(record["keyPath"])]} if deepest[tuple(record["keyPath"])] else {})} for record in records]
     if doc == before:
         return text, records
     ensure_rewrite_safe(fmt, text, path)
@@ -681,16 +687,22 @@ def _relative(value: Any) -> bool:
     return isinstance(value, str) and bool(value) and not os.path.isabs(value) and ".." not in Path(value).parts
 
 
+def _created_keys_valid(item: dict[str, Any]) -> bool:
+    """`createdKeys` counts containers of `keyPath` that connect created: an int (never a bool) from 0 to len(keyPath)."""
+    value = item.get("createdKeys", 0)
+    return type(value) is int and 0 <= value <= len(item["keyPath"])
+
+
 def _extra_valid(item: Any) -> bool:
     return (isinstance(item, dict) and _strings(item.get("keyPath")) and bool(item.get("keyPath")) and isinstance(item.get("name"), str)
-            and isinstance(item.get("valueSha256"), str) and isinstance(item.get("createdKeys", 0), int))
+            and isinstance(item.get("valueSha256"), str) and _created_keys_valid(item))
 
 
 def _mcp_valid(item: Any) -> bool:
     return (isinstance(item, dict) and _absolute(item.get("path")) and item.get("format") in ("json", "toml", "yaml")
             and _strings(item.get("keyPath")) and bool(item.get("keyPath")) and isinstance(item.get("name"), str)
             and isinstance(item.get("entrySha256"), str) and isinstance(item.get("createdFile"), bool)
-            and isinstance(item.get("adopted", False), bool) and isinstance(item.get("createdKeys", 0), int)
+            and isinstance(item.get("adopted", False), bool) and _created_keys_valid(item)
             and isinstance(item.get("extras", []), list) and all(_extra_valid(extra) for extra in item.get("extras", [])))
 
 
@@ -901,6 +913,8 @@ class Context:
     directories: list[dict[str, Any]] = field(default_factory=list)  # {path, op: create|remove, agents}: directories connect creates, or removes when empty
     elsewhere: dict[str, dict[str, str]] = field(default_factory=dict)  # agent -> {skill name: directory that already provides it}
     snippets: list[dict[str, str]] = field(default_factory=list)  # printed, never written: content a plan decided not to write
+    adapters: dict[str, Adapter] = field(default_factory=dict)  # every registered adapter by name
+    selected: frozenset[str] = frozenset()  # the agents of this plan
 
     def place(self, location: Location, directory: bool = False) -> Path:
         """The real path of an adapter location; a symlinked parent shows up in the plan as `requestedPath`."""
@@ -1108,17 +1122,13 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
     elsewhere: dict[str, str] = {}  # skill name -> a directory this agent also reads that already provides it
     if not ctx.remove and adapter.skills and adapter.skills.also_read:
         also = [directory for directory in (ctx.place(location, directory=True) for location in adapter.skills.also_read) if directory != root]
-        own = {rel.split("/")[0] for rel in recorded}
         for skill in SKILL_NAMES:
-            for directory in also:
-                if not skill_present(planner, directory / skill / "SKILL.md"):
-                    continue
-                if skill in own:
-                    ctx.notes.append(f"{adapter.name}: skill {skill} also exists in {directory}, which {adapter.title} reads too; the copy in {root} is kept "
-                                     "(connect never deletes it), so the agent may list it twice: remove one copy")
-                else:
-                    elsewhere[skill] = str(directory)
-                break
+            # Our own copy counts only while this run keeps it, so a name that another directory provides is found elsewhere
+            # whether or not our copy is still there; the recorded files of that name are retired below.
+            directory = next((directory for directory in also if skill_present(planner, directory / skill / "SKILL.md")), None)
+            if directory is not None:
+                elsewhere[skill] = str(directory)
+    moved = [rel for rel in recorded if rel.split("/")[0] in elsewhere]
 
     def retire(rel: str, digest: str) -> None:
         path = root / rel
@@ -1141,6 +1151,15 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
     if ctx.remove:
         for rel, digest in recorded.items():
             retire(rel, digest)
+        for dependent, record in ctx.manifest["agents"].items():
+            item = record.get("skills")
+            if dependent in ctx.selected or not item:
+                continue
+            used = [name for name, directory in item.get("skillsElsewhere", {}).items()
+                    if directory == str(root) and (op := planner.ops.get(root / name / "SKILL.md")) is not None and op.after is None]
+            if used:
+                ctx.notes.append(f"{adapter.name}: {', '.join(used)} in {root} are the copies {dependent} uses instead of its own (recorded as skillsElsewhere), "
+                                 f"so {dependent} has no copy of them after this removal; reconnect it (`obsidian-second-brain connect {dependent}`) to install its own")
     else:
         for rel, data in ctx.sources.items():
             if rel.split("/")[0] in elsewhere:
@@ -1161,8 +1180,15 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
                 planner.set(path, "skill", adapter.name, data, backup=True, root=str(root))
             else:
                 (customized if str(path) in known else foreign).append(str(path))
+        for rel in moved:
+            retire(rel, recorded[rel])
+        if moved:
+            switched = sorted({rel.split("/")[0] for rel in moved if rel.endswith("/SKILL.md") and planner.current(root / rel) is None})
+            if switched:
+                ctx.notes.append(f"{adapter.name}: {', '.join(switched)} are provided by a directory {adapter.title} also reads, so connect's own copies in {root} "
+                                 "are removed and each skill is listed once")
         for rel, digest in recorded.items():
-            if rel not in ctx.sources:
+            if rel not in ctx.sources and rel not in moved:
                 path = root / rel
                 current = planner.current(path)
                 if rel in previously_adopted:
@@ -1171,13 +1197,25 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
                     planner.set(path, "skill", adapter.name, None, root=str(root))
                 elif current is not None:
                     ctx.notes.append(f"{adapter.name}: {path} is no longer shipped but was customized; left in place")
+    if files:
+        for reader, record in ctx.manifest["agents"].items():
+            item, reader_adapter = record.get("skills"), ctx.adapters.get(reader)
+            if reader == adapter.name or reader in ctx.selected or not item or Path(item["root"]) == root or not (reader_adapter and reader_adapter.skills):
+                continue
+            if root not in (resolve_path(literal_location(location, ctx.home), True) for location in reader_adapter.skills.also_read):
+                continue
+            twice = [name for name in SKILL_NAMES if f"{name}/SKILL.md" in item["files"] and f"{name}/SKILL.md" in files]
+            if twice:
+                ctx.notes.append(f"{adapter.name}: {reader_adapter.title} also reads {root} and has its own copies of {', '.join(twice)} in {item['root']}, "
+                                 f"so it lists them twice; run `obsidian-second-brain connect {reader}` after this apply to switch it to the shared copies "
+                                 "(its own are then removed), or remove one set by hand")
     if customized or foreign:
         def show(paths: list[str]) -> str:
             return ", ".join(paths[:5]) + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
 
         parts = []
         if customized:
-            parts.append(f"customized skill copies would be overwritten ({show(customized)})")
+            parts.append(f"customized skill copies would be overwritten or removed ({show(customized)})")
         if foreign:
             parts.append(f"{show(foreign)}: exists and was not installed by connect, so it would be overwritten")
         raise Refusal("skill-customized", "; ".join(parts) + "; review them, then rerun with --force to back them up and replace them")
@@ -1269,7 +1307,8 @@ def build_plan(names: list[str], *, remove: bool, force: bool, python: str | Non
     ctx = Context(home=home, config_file=config_file, config_dir=manifest_path.parent, vault=vault, package_root=PACKAGE_ROOT,
                   version=package_version(), interpreter=interpreter, node=node_path,
                   env=mcp_env(interpreter, config_file) if interpreter else {}, manifest=manifest,
-                  remove=remove, force=force, sources={} if remove else skill_sources(), notes=notes)
+                  remove=remove, force=force, sources={} if remove else skill_sources(), notes=notes,
+                  adapters=by_name, selected=frozenset(names))
     if manifest_path.parent != config_file.parent.absolute():
         ctx.aliases[str(manifest_path)] = str(config_file.parent.absolute() / MANIFEST_NAME)
     planner = Planner(ctx)
@@ -1277,7 +1316,8 @@ def build_plan(names: list[str], *, remove: bool, force: bool, python: str | Non
     others = {section: _owners(ctx, selected, section) for section in ("mcp", "rules", "skills")}
     refusals = []
     records: dict[str, dict[str, Any] | None] = {}
-    for name in names:
+    # An agent that reads other agents' skills directories is planned after them, so it sees the copies they are about to install.
+    for name in sorted(names, key=lambda name: (bool(by_name[name].skills and by_name[name].skills.also_read), name)):
         try:
             records[name] = plan_agent(by_name[name], ctx, planner, others)
         except Refusal as refusal:
@@ -1515,11 +1555,13 @@ def interpreter_problem(interpreter: str, probes: dict[str, str | None]) -> str 
     return probes[interpreter]
 
 
-def evaluate(record: dict[str, Any], probes: dict[str, str | None] | None = None) -> list[dict[str, str]]:
+def evaluate(record: dict[str, Any], probes: dict[str, str | None] | None = None, adapter: Adapter | None = None,
+             home: Path | None = None) -> list[dict[str, str]]:
     """Why a recorded connection no longer works; reads only.
 
     The entry runs the recorded package root, so that root (not the install that runs doctor, which may be
-    another copy such as the Claude plugin cache) is what must exist and match the recorded version.
+    another copy such as the Claude plugin cache) is what must exist and match the recorded version. The adapter and
+    home name the directories the agent also reads skills from.
     """
     reasons: list[dict[str, str]] = []
     root = record["packageRoot"]
@@ -1569,6 +1611,17 @@ def evaluate(record: dict[str, Any], probes: dict[str, str | None] | None = None
             elif shipped and shipped.get(rel) != digest:
                 buckets["skill-outdated"].append(str(path))
         reasons += [{"code": code, "detail": ", ".join(paths[:5])} for code, paths in buckets.items() if paths]
+    if item and item.get("files") and adapter is not None and adapter.skills and home is not None:
+        try:
+            also = [directory for directory in (resolve_path(literal_location(location, home), True) for location in adapter.skills.also_read)
+                    if directory != Path(item["root"])]
+        except Refusal:
+            also = []
+        twice = [f"{name} ({directory})" for name in SKILL_NAMES if f"{name}/SKILL.md" in item["files"] and (Path(item["root"]) / name / "SKILL.md").is_file()
+                 and (directory := next((d for d in also if (d / name / "SKILL.md").is_file()), None)) is not None]
+        if twice:
+            reasons.append({"code": "skill-duplicated-elsewhere", "detail": f"{', '.join(twice)}: connect's own copies in {item['root']} also exist in a directory the agent reads, "
+                                                                             f"so it lists them twice; run connect {adapter.name} again to switch to the shared copies"})
     if item:
         gone = [f"{name} ({directory})" for name, directory in item.get("skillsElsewhere", {}).items()
                 if not (Path(directory) / name / "SKILL.md").is_file()]
@@ -1609,7 +1662,7 @@ def _agent_status(adapter: Adapter | None, record: dict[str, Any] | None, home: 
             detected = False
     reasons: list[dict[str, str]] = []
     if record is not None:
-        reasons = evaluate(record, probes)
+        reasons = evaluate(record, probes, adapter, home)
         state = "stale" if reasons else "connected"
         if not reasons and (advisory := newer_package(record)):
             state, reasons = "newer-package-available", [advisory]  # advisory only: nothing is broken
