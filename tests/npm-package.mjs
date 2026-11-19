@@ -110,7 +110,7 @@ try {
   ], { cwd: work, encoding: "utf8" }));
   assert.equal(packageRelativeDoctor.vault, fs.realpathSync(cliVault));
   assert.equal(packageRelativeDoctor.retrieval.indexExists, false, "package-relative doctor must remain read-only");
-  // The installed `connect` lists agents (none are registered by the framework alone), prints both generic MCP
+  // The installed `connect` lists exactly the registered adapters, prints both generic MCP
   // profiles with this package's absolute launcher path, and writes nothing to the isolated HOME.
   const connectHome = path.join(work, "connect-home");
   fs.mkdirSync(connectHome);

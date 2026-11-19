@@ -59,7 +59,7 @@ Project-level files are never written. The preview prints them as snippets inste
 
 ### Write rules
 
-- **Merge only our entry.** Other servers, keys and settings are preserved. JSON is parsed strictly and rewritten with the file's detected indent (layout such as indentation and line breaks is normalized); a file with comments (JSONC), trailing commas, duplicate keys, or any value whose text a rewrite would change (numbers such as `1e5`, `1.50` or `-0`, `NaN`/`Infinity`, string escapes such as `\u00e9` or `\/`) is refused. TOML is never rewritten: our table is appended inside `# obsidian-second-brain:start`/`end` comment markers (replaced or removed by those markers), and the result is parsed again to prove that every other setting is unchanged. YAML is merged with PyYAML only when the file has no comments, anchors, aliases, merge keys or duplicate keys and no plain scalar that a rewrite would respell: YAML 1.1 booleans such as `yes` or `On`, and other non-string values whose dumped text differs (`017`, `0x1F`, `1_000`, `~`, an empty value); quoting and flow style are normalized. Any refusal prints the exact snippet to add by hand and writes nothing for the whole selection.
+- **Merge only our entry.** Other servers, keys and settings are preserved. JSON is parsed strictly and rewritten with the file's detected indent (layout such as indentation and line breaks is normalized); a file with comments (JSONC), trailing commas, duplicate keys, or any value whose text a rewrite would change (numbers such as `1e5`, `1.50` or `-0`, `NaN`/`Infinity`, string escapes such as `\u00e9` or `\/`) is refused. TOML is never rewritten: our table is appended inside `# obsidian-second-brain:start`/`end` comment markers; an update or removal locates it by its table header and its own subtables (the agent may move or drop the markers) and strips our exact marker lines wherever they are, and the result is parsed again to prove that every other setting is unchanged. YAML is merged with PyYAML only when the file has no comments, anchors, aliases, merge keys or duplicate keys and no plain scalar that a rewrite would respell: YAML 1.1 booleans such as `yes` or `On`, and other non-string values whose dumped text differs (`017`, `0x1F`, `1_000`, `~`, an empty value); quoting and flow style are normalized. Any refusal prints the exact snippet to add by hand and writes nothing for the whole selection.
 - **Our entry only.** An existing `obsidian-wiki` entry that differs from ours is refused unless the manifest shows `connect` wrote it and it is unmodified (an upgrade); a modified entry is never removed either.
 - **Safe writes.** Each file is written to a temporary file in its directory, flushed, renamed, and re-read to verify. The destination is re-checked just before each write, so an edit made after the preview is refused (and the whole apply rolls back). A symlinked final file is refused. A symlinked parent directory (for example `~/.codex` pointing into a dotfiles repository) is followed: the preview and plan hash show the real path (with `requestedPath` for the path the agent uses), the temporary file and rename happen in that real directory, and retargeting the link after the preview makes the plan stale. A symlink inside the skills directory is refused.
 - **Rollback.** If anything fails, every file already written is restored, created directories are removed, and a file edited in the meantime is left as the user wrote it and reported.
@@ -161,7 +161,7 @@ Fields:
 
 Location functions receive the home directory and a copy of the process environment, so `CODEX_HOME`, `XDG_CONFIG_HOME` and similar overrides are a one-liner: `path=lambda home, env: Path(env.get("CODEX_HOME") or home / ".codex") / "config.toml"`. Every returned path must be absolute and user-level; the framework refuses anything inside the selected vault, a symlinked final file, and files it cannot merge, and follows symlinked parent directories as described above. One adapter has one MCP target: an agent family with two config files (Copilot CLI and VS Code) is two adapters.
 
-To register an adapter, uncomment (or add) its single line (the commented lines are `codex`, `copilot_cli`, `copilot_vscode`, `cursor` and `opencode`) in `scripts/connect_adapters/__init__.py`:
+To register an adapter, add its single line between the `#` separator lines in `scripts/connect_adapters/__init__.py`:
 
 ```python
 REGISTRY: list[str] = [
@@ -220,7 +220,7 @@ Copilot is two adapters, because one adapter has one MCP file: `connect copilot-
 | Skills | `<COPILOT_HOME or ~/.copilot>/skills/` | the same directory, shared with `copilot-cli` |
 | Printed snippets | none (user-level rules are written) | `.github/copilot-instructions.md` (the rules), never written |
 
-`env` also carries `OBSIDIAN_AGENT_CONFIG` when that variable selects a non-default config; without it `env` holds only `PYTHON`. `tools: ["*"]` makes every tool of the server available and, per the VS Code documentation, does not bypass approvals.
+`env` also carries `OBSIDIAN_AGENT_CONFIG` when it is set at connect time; without it `env` holds only `PYTHON`. `tools: ["*"]` makes every tool of the server available and, per the VS Code documentation, does not bypass approvals.
 
 Sources:
 

@@ -2,7 +2,7 @@
 """Bounded bridge for Pi's four native read-only wiki tools and the MCP server's three reviewed batch tools.
 
 The batch operations (`batch-inspect`, `batch-apply`, `batch-recover`) are never Pi tools: they take their
-parameters as JSON on stdin (not argv), are wiki-page authority only, and reuse wiki_batch.py unchanged.
+parameters as JSON on stdin (not argv), are wiki-page authority only, and run the same wiki_batch.py code path as the CLI.
 """
 from __future__ import annotations
 
