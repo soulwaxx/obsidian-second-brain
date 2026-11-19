@@ -7,7 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-from connect_adapters.spec import Adapter, McpTarget, RulesTarget, SkillsTarget, Snippet
+from connect_adapters.spec import Adapter, ExtraEntry, McpTarget, RulesTarget, SkillsTarget, Snippet
 
 JSON = Adapter(
     name="fixture-json", title="Fixture JSON agent", detect=(".fixture-json",),
@@ -60,6 +60,27 @@ TWIN = Adapter(
     rules=RulesTarget(path=".fixture-json/RULES.md"),
     skills=SkillsTarget(path=".fixture-json/skills"),
     duplicates_with=("fixture-json",),
+)
+# Not in ALL: reads the JSON agent's skills directory as well as its own, writes approval rules next to its MCP entry
+# (two keys in one container, the last of which must stay last) and creates its rules file only while a fallback file is absent.
+READER = Adapter(
+    name="fixture-reader", title="Fixture reader agent", detect=(".fixture-reader",),
+    mcp=McpTarget(path=".fixture-reader/mcp.json", format="json", key_path=("mcpServers",),
+                  extra=(ExtraEntry(("policy", "rules"), "fixture-wiki_apply", "ask", accept=("ask", "deny")),
+                         ExtraEntry(("policy", "rules"), "fixture-wiki_recover", "ask", accept=("ask", "deny")))),
+    rules=RulesTarget(path=".fixture-reader/RULES.md", create_unless=".fixture-reader/FALLBACK.md"),
+    skills=SkillsTarget(path=".fixture-reader/skills", also_read=(".fixture-json/skills", ".fixture-other/skills")),
+)
+# Not in ALL: the same extra entry in a YAML file.
+READER_YAML = Adapter(
+    name="fixture-reader-yaml", title="Fixture YAML reader agent", detect=(".fixture-reader-yaml",),
+    mcp=McpTarget(path=".fixture-reader-yaml/config.yaml", format="yaml", key_path=("mcp", "servers"),
+                  extra=(ExtraEntry(("permission",), "fixture-wiki_apply", "ask", accept=("ask", "deny")),)),
+)
+BAD_TOML_EXTRA = Adapter(
+    name="fixture-bad", title="Fixture bad agent", detect=(".fixture-bad",),
+    mcp=McpTarget(path=".fixture-bad/config.toml", format="toml", key_path=("mcp_servers",),
+                  extra=(ExtraEntry(("permission",), "x", "ask"),)),
 )
 
 

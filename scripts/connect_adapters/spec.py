@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 LIVE_VALIDATED = "live-validated"
 FIXTURE_TESTED = "fixture-tested (live-unverified)"
@@ -34,6 +34,23 @@ def standard_entry(command: list[str], env: dict[str, str]) -> dict:
 
 
 @dataclass(frozen=True)
+class ExtraEntry:
+    """One more value connect sets in the MCP config file (json or yaml), next to the server entry.
+
+    `key_path` is the object that holds it and `name` its key (OpenCode: `("permission",)`,
+    `"obsidian-wiki_wiki_batch_apply"`, `"ask"`). A new key is appended at the end of its object, which matters to agents
+    whose rules are ordered (the last matching rule wins). An existing key whose value is not `value` is left alone when
+    that value is in `accept` (the user's own, already as safe as ours: not owned, never removed) and otherwise refuses
+    the agent with the exact snippet; a key connect wrote is replaced or removed only while it still matches the
+    manifest hash. If the container at `key_path` is a string in `accept`, the intent already holds and nothing is written.
+    """
+    key_path: tuple[str, ...]
+    name: str
+    value: Any
+    accept: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
 class McpTarget:
     """The MCP server entry the framework merges into one user-level config file."""
     path: Location
@@ -45,6 +62,9 @@ class McpTarget:
     # JSON-like shape works: the command may stay an array and the env may use another key, for example
     # OpenCode's `{"type": "local", "command": command, "environment": env, "enabled": True}`.
     entry: Callable[[list[str], dict[str, str]], dict] = standard_entry
+    # Extra values merged into the same file with the same set/remove/ownership rules (json and yaml only), each with
+    # its own hash in the manifest. Use for settings that keep the entry safe, for example an approval rule.
+    extra: tuple[ExtraEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,12 +75,22 @@ class RulesTarget:
     # connect creates the file. It is recorded in the manifest: `--remove` deletes the file only when it still
     # holds just this header and the block, otherwise it removes only the block.
     header: str | None = None
+    # A path that, when it exists while the rules file does not, stops connect from creating the rules file: the agent
+    # reads that path only while the rules file is absent (OpenCode: `~/.claude/CLAUDE.md` versus `AGENTS.md`), so creating
+    # the file would hide it. The preview prints the block as a snippet instead and records nothing. An existing rules
+    # file is updated as always.
+    create_unless: Location | None = None
 
 
 @dataclass(frozen=True)
 class SkillsTarget:
     """A user-level skills directory that receives the six portable skill folders as plain copies."""
     path: Location
+    # Directories the agent also reads skills from. A skill name that a `<dir>/<name>/SKILL.md` already provides there is
+    # not installed for this agent (the agent would list it twice): the preview names the directory, the manifest records
+    # it (`skillsElsewhere`) and doctor reports it stale when that copy disappears. A name this agent's own directory
+    # already holds as a connect copy keeps being updated, with a note.
+    also_read: tuple[Location, ...] = ()
 
 
 @dataclass(frozen=True)

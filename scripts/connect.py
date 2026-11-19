@@ -41,7 +41,7 @@ if str(SCRIPTS) not in sys.path:
 from config_contract import load_config  # noqa: E402
 from module_loading import load_source  # noqa: E402
 import connect_adapters  # noqa: E402
-from connect_adapters.spec import Adapter, Location  # noqa: E402
+from connect_adapters.spec import Adapter, ExtraEntry, Location  # noqa: E402
 
 PACKAGE_ROOT = SCRIPTS.parent
 LAUNCHER = "scripts/obsidian-second-brain.mjs"
@@ -301,16 +301,26 @@ def set_entry(doc: dict[str, Any], key_path: tuple[str, ...], name: str, entry: 
     node[name] = entry
 
 
-def drop_entry(doc: dict[str, Any], key_path: tuple[str, ...], name: str, prune: bool) -> None:
+def drop_entry(doc: dict[str, Any], key_path: tuple[str, ...], name: str, levels: int) -> None:
+    """Delete the entry, then up to `levels` of its containers (innermost first) while they are empty."""
     chain = [doc]
     for key in key_path:
         chain.append(chain[-1][key])
     del chain[-1][name]
-    if prune:
-        for index in range(len(key_path), 0, -1):
-            if chain[index]:
-                break
-            del chain[index - 1][key_path[index - 1]]
+    for index in range(len(key_path), len(key_path) - levels, -1):
+        if chain[index]:
+            break
+        del chain[index - 1][key_path[index - 1]]
+
+
+def missing_levels(doc: dict[str, Any], key_path: tuple[str, ...]) -> int:
+    """How many trailing levels of `key_path` are absent from `doc` (the containers a new entry would create)."""
+    node: Any = doc
+    for index, key in enumerate(key_path):
+        if not isinstance(node, dict) or key not in node:
+            return len(key_path) - index
+        node = node[key]
+    return 0
 
 
 def _indent(text: str | None) -> int | str:
@@ -467,11 +477,12 @@ def _prune(doc: dict[str, Any], key_path: tuple[str, ...]) -> dict[str, Any]:
 
 
 def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: str, entry: dict[str, Any] | None,
-                 owned: str | None, created: bool, path: Path | None = None) -> str | None:
+                 owned: str | None, created: bool, path: Path | None = None, created_keys: int = 0) -> str | None:
     """Return the new file text (None = delete the file) with only our entry added, replaced or removed.
 
     `entry` None removes it. Our entry may be replaced or removed only when it still
-    matches the hash recorded in the manifest (`owned`); any other differing entry is refused.
+    matches the hash recorded in the manifest (`owned`); any other differing entry is refused. Removal also drops the
+    containers connect created (`created_keys` innermost levels, all of them for a file connect created) once empty.
     """
     doc = parse_config(fmt, text, path)
     current = lookup(doc, key_path, name, path)
@@ -491,7 +502,7 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
             if remaining is None or _prune(remaining, key_path) != _prune(expected, key_path):
                 raise Refusal("toml-merge-unsafe", f"{path or 'config'}: the entry is not a removable [{'.'.join((*key_path, name))}] table (dotted keys, an inline table or a table that another section interrupts), or removing it would change other settings; remove it by hand", path)
             return None if created and not new_text.strip() else new_text
-        drop_entry(doc, key_path, name, created)
+        drop_entry(doc, key_path, name, len(key_path) if created else created_keys)
         if created and not doc:
             return None
         ensure_rewrite_safe(fmt, text, path)
@@ -525,12 +536,94 @@ def merge_config(fmt: str, text: str | None, key_path: tuple[str, ...], name: st
     return dump_config(fmt, doc, text)
 
 
-def render_snippet(fmt: str, key_path: tuple[str, ...], name: str, entry: dict[str, Any]) -> str:
+def render_snippet(fmt: str, key_path: tuple[str, ...], name: str, entry: dict[str, Any], extras: tuple[ExtraEntry, ...] = ()) -> str:
     if fmt == "toml":
         return toml_block(key_path, name, entry)
     doc: dict[str, Any] = {}
     set_entry(doc, key_path, name, entry)
+    for extra in extras:
+        set_entry(doc, tuple(extra.key_path), extra.name, copy.deepcopy(extra.value))
     return dump_config(fmt, doc, None)
+
+
+# -- extra entries (values connect sets next to the MCP entry, for example an approval rule) ------------------
+
+_ABSENT = object()
+
+
+def _extra_state(doc: dict[str, Any], key_path: tuple[str, ...], name: str) -> tuple[Any, Any]:
+    """(value at key_path/name or _ABSENT, the container when it is not an object else _ABSENT)."""
+    node: Any = doc
+    for key in key_path:
+        if not isinstance(node, dict) or key not in node:
+            return _ABSENT, _ABSENT
+        node = node[key]
+    return (node.get(name, _ABSENT), _ABSENT) if isinstance(node, dict) else (_ABSENT, node)
+
+
+def merge_extras(fmt: str, text: str | None, extras: tuple[ExtraEntry, ...], olds: dict[tuple[tuple[str, ...], str], dict[str, Any]],
+                 path: Path) -> tuple[str | None, list[dict[str, Any]]]:
+    """The text with each extra set (new keys are appended at the end of their object) and the manifest records of those connect owns.
+
+    Absent: set. Already the wanted value: kept, owned only if connect wrote it. A value connect wrote that is unchanged:
+    replaced. Another value in `accept` (or a container string in `accept`): the user's own, left alone and not owned.
+    Anything else is refused: for OpenCode that is an `allow` that would let `wiki_batch_apply` run unprompted.
+    """
+    doc = parse_config(fmt, text, path)
+    before = copy.deepcopy(doc)
+    records: list[dict[str, Any]] = []
+    created_levels: dict[tuple[str, ...], int] = {}  # containers created by an earlier extra of this pass count for every extra in them
+    for extra in extras:
+        key_path = tuple(extra.key_path)
+        old = olds.get((key_path, extra.name))
+        owned = old["valueSha256"] if old else None
+        current, scalar = _extra_state(doc, key_path, extra.name)
+        if current is _ABSENT and isinstance(scalar, str) and scalar in extra.accept:
+            continue
+        if current is _ABSENT:
+            if key_path not in created_levels:
+                created_levels[key_path] = missing_levels(doc, key_path)
+            set_entry(doc, key_path, extra.name, copy.deepcopy(extra.value), path)
+            levels = created_levels[key_path]
+        elif current == extra.value:
+            if owned != entry_hash(current):
+                continue
+            levels = old.get("createdKeys", 0)
+        elif owned is not None and entry_hash(current) == owned:
+            set_entry(doc, key_path, extra.name, copy.deepcopy(extra.value), path)
+            levels = old.get("createdKeys", 0)
+        elif any(current == value for value in extra.accept):
+            continue
+        else:
+            raise Refusal("extra-differs", f"{path}: {'.'.join((*key_path, extra.name))} is {json.dumps(current)}, but connect needs "
+                          f"{json.dumps(extra.value)} (or a stricter value) there so the wiki write tools stay user-approved; connect will not override it, so change it by hand", path)
+        records.append({"keyPath": list(key_path), "name": extra.name, "valueSha256": entry_hash(extra.value),
+                        **({"createdKeys": levels} if levels else {})})
+    if doc == before:
+        return text, records
+    ensure_rewrite_safe(fmt, text, path)
+    return dump_config(fmt, doc, text), records
+
+
+def remove_extras(fmt: str, text: str | None, olds: dict[tuple[tuple[str, ...], str], dict[str, Any]],
+                  path: Path) -> tuple[str | None, list[str]]:
+    """The text without the extras connect wrote (and the containers it created, once empty), and the ones left because the value changed."""
+    doc = parse_config(fmt, text, path)
+    kept: list[str] = []
+    changed = False
+    for (key_path, name), old in olds.items():
+        current, _ = _extra_state(doc, key_path, name)
+        if current is _ABSENT:
+            continue
+        if entry_hash(current) != old["valueSha256"]:
+            kept.append(".".join((*key_path, name)))
+            continue
+        drop_entry(doc, key_path, name, old.get("createdKeys", 0))
+        changed = True
+    if not changed:
+        return text, kept
+    ensure_rewrite_safe(fmt, text, path)
+    return dump_config(fmt, doc, text), kept
 
 
 # -- rules block -----------------------------------------------------------------------------
@@ -588,11 +681,17 @@ def _relative(value: Any) -> bool:
     return isinstance(value, str) and bool(value) and not os.path.isabs(value) and ".." not in Path(value).parts
 
 
+def _extra_valid(item: Any) -> bool:
+    return (isinstance(item, dict) and _strings(item.get("keyPath")) and bool(item.get("keyPath")) and isinstance(item.get("name"), str)
+            and isinstance(item.get("valueSha256"), str) and isinstance(item.get("createdKeys", 0), int))
+
+
 def _mcp_valid(item: Any) -> bool:
     return (isinstance(item, dict) and _absolute(item.get("path")) and item.get("format") in ("json", "toml", "yaml")
             and _strings(item.get("keyPath")) and bool(item.get("keyPath")) and isinstance(item.get("name"), str)
             and isinstance(item.get("entrySha256"), str) and isinstance(item.get("createdFile"), bool)
-            and isinstance(item.get("adopted", False), bool))
+            and isinstance(item.get("adopted", False), bool) and isinstance(item.get("createdKeys", 0), int)
+            and isinstance(item.get("extras", []), list) and all(_extra_valid(extra) for extra in item.get("extras", [])))
 
 
 def _rules_valid(item: Any) -> bool:
@@ -603,7 +702,9 @@ def _rules_valid(item: Any) -> bool:
 def _skills_valid(item: Any) -> bool:
     return (isinstance(item, dict) and _absolute(item.get("root")) and isinstance(item.get("files"), dict)
             and all(_relative(rel) and isinstance(digest, str) for rel, digest in item["files"].items())
-            and _strings(item.get("adopted", [])) and all(rel in item["files"] for rel in item.get("adopted", [])))
+            and _strings(item.get("adopted", [])) and all(rel in item["files"] for rel in item.get("adopted", []))
+            and isinstance(item.get("skillsElsewhere", {}), dict)
+            and all(isinstance(name, str) and _absolute(directory) for name, directory in item.get("skillsElsewhere", {}).items()))
 
 
 RECORD_FIELDS = {
@@ -670,6 +771,8 @@ def load_adapters(strict: bool = True) -> tuple[list[Adapter], list[str]]:
                 raise ValueError("ADAPTER must be an Adapter with a lowercase name")
             if any(existing.name == adapter.name for existing in adapters):
                 raise ValueError(f"duplicate adapter name {adapter.name!r}")
+            if adapter.mcp and adapter.mcp.extra and adapter.mcp.format not in ("json", "yaml"):
+                raise ValueError("extra MCP entries need a json or yaml config file")
         except Exception as exc:
             if strict:
                 raise ConnectError("adapter-invalid", f"adapter {module_name}: {exc}") from exc
@@ -794,8 +897,10 @@ class Context:
     sources: dict[str, bytes]
     notes: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
-    claims: dict[tuple[str, str], tuple[bool, bool]] = field(default_factory=dict)  # (path, name) -> (adopted, createdFile) of the MCP entries planned so far
+    claims: dict[tuple[str, str], tuple[bool, bool, int]] = field(default_factory=dict)  # (path, name) -> (adopted, createdFile, createdKeys) of the MCP entries planned so far
     directories: list[dict[str, Any]] = field(default_factory=list)  # {path, op: create|remove, agents}: directories connect creates, or removes when empty
+    elsewhere: dict[str, dict[str, str]] = field(default_factory=dict)  # agent -> {skill name: directory that already provides it}
+    snippets: list[dict[str, str]] = field(default_factory=list)  # printed, never written: content a plan decided not to write
 
     def place(self, location: Location, directory: bool = False) -> Path:
         """The real path of an adapter location; a symlinked parent shows up in the plan as `requestedPath`."""
@@ -852,6 +957,8 @@ def _owners(ctx: Context, selected: set[str], section: str) -> dict[str, set[str
 
 def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, Any] | None, others: dict[str, set[str]]) -> dict[str, Any] | None:
     target = adapter.mcp
+    olds = {(tuple(item["keyPath"]), item["name"]): item for item in (old or {}).get("extras", [])}
+    keep_entry = False  # removal of an adopted entry: the entry stays, the extras connect added still go
     if ctx.remove:
         if not old:
             return None
@@ -859,7 +966,9 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
         entry = None
         if old.get("adopted"):
             ctx.notes.append(f"{adapter.name}: the {name!r} entry in {path} existed before connect (adopted); it stays")
-            return None
+            if not olds:
+                return None
+            keep_entry = True
     else:
         assert target is not None and ctx.interpreter is not None and ctx.node is not None
         path, fmt, key_path, name = ctx.place(target.path), target.format, tuple(target.key_path), target.name
@@ -867,13 +976,15 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
     key = (str(path), name)
     if old is None and not ctx.remove:
         # An entry that another record or an earlier agent of this plan owns is shared: it shares that owner's
-        # adoption and file creation, so the last agent removed undoes what connect did.
-        owners = [(bool(item.get("adopted")), item["createdFile"]) for agent, other in ctx.manifest["agents"].items()
+        # adoption, file creation and created containers, so the last agent removed undoes what connect did.
+        owners = [(bool(item.get("adopted")), item["createdFile"], item.get("createdKeys", 0)) for agent, other in ctx.manifest["agents"].items()
                   if agent != adapter.name and (item := other["mcp"]) and (item["path"], item["name"]) == key]
-        claim = ctx.claims.get(key) or ((all(a for a, _ in owners), any(c for _, c in owners)) if owners else None)
+        claim = ctx.claims.get(key) or ((all(a for a, _, _ in owners), any(c for _, c, _ in owners), max(k for _, _, k in owners)) if owners else None)
     else:
         claim = None
     created = old["createdFile"] if old else (claim[1] if claim else False) or read_file(path) is None
+    created_keys = old.get("createdKeys", 0) if old else (claim[2] if claim else 0)
+    extra_records: list[dict[str, Any]] = []
     try:
         if entry is None and str(path) in others:
             planner.ctx.notes.append(f"{adapter.name}: {path} also serves {', '.join(sorted(others[str(path)]))}; its entry stays")
@@ -881,10 +992,21 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
         text = read_text(planner, path)
         if text is None and entry is not None:
             created = True  # absent now (new, or deleted since an earlier connect): connect creates it, so removal may delete it
-        new_text = merge_config(fmt, text, key_path, name, entry, old["entrySha256"] if old else None, created, path)
+        if entry is not None and fmt != "toml" and lookup(parse_config(fmt, text, path), key_path, name, path) is None:
+            created_keys = missing_levels(parse_config(fmt, text, path), key_path)
+        if entry is None:
+            if olds:
+                text, kept = remove_extras(fmt, text, olds, path)
+                for kept_name in kept:
+                    ctx.notes.append(f"{adapter.name}: {kept_name} in {path} was changed after connect; it stays")
+            new_text = text if keep_entry else merge_config(fmt, text, key_path, name, None, old["entrySha256"], created, path, created_keys)
+        else:
+            new_text = entry_text = merge_config(fmt, text, key_path, name, entry, old["entrySha256"] if old else None, created, path)
+            if target.extra:
+                new_text, extra_records = merge_extras(fmt, new_text, target.extra, olds, path)
     except Refusal as refusal:
         if entry is not None:
-            refusal.snippet = render_snippet(fmt, key_path, name, entry)
+            refusal.snippet = render_snippet(fmt, key_path, name, entry, target.extra)
         raise
     # Removal never backs up: the entry is removed only while it still matches the recorded hash.
     planner.set(path, "mcp", adapter.name, None if new_text is None else new_text.encode("utf-8"), backup=entry is not None,
@@ -893,10 +1015,11 @@ def plan_mcp(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, An
         return None
     # Adopted: identical and already there, and nobody else owns it (an owner's adoption is inherited).
     inherited = bool(old.get("adopted")) if old is not None else (claim[0] if claim else True)
-    adopted = text is not None and new_text == text and inherited
-    ctx.claims[key] = (adopted, created)
+    adopted = text is not None and entry_text == text and inherited
+    ctx.claims[key] = (adopted, created, created_keys)
     return {"path": str(path), "format": fmt, "keyPath": list(key_path), "name": name,
-            "entrySha256": entry_hash(entry), "createdFile": created, **({"adopted": True} if adopted else {})}
+            "entrySha256": entry_hash(entry), "createdFile": created, **({"adopted": True} if adopted else {}),
+            **({"createdKeys": created_keys} if created_keys else {}), **({"extras": extra_records} if extra_records else {})}
 
 
 def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, Any] | None, others: dict[str, set[str]]) -> dict[str, Any] | None:
@@ -916,6 +1039,17 @@ def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, 
         if agent != adapter.name and other["rules"] and other["rules"]["path"] == str(path))
     created = old["createdFile"] if old else shared_created or read_file(path) is None
     text = read_text(planner, path)
+    if text is None and not ctx.remove and adapter.rules.create_unless is not None:
+        unless = ctx.place(adapter.rules.create_unless)
+        if os.path.lexists(unless) or (unless in planner.ops and planner.ops[unless].after is not None):
+            # The agent reads `unless` only while the rules file is absent: creating the file would hide it.
+            ctx.notes.append(f"{adapter.name}: {path} was not created because {unless} exists and {adapter.title} reads it only while {path} is absent, "
+                             f"so creating {path} would hide it. The MCP server's instructions already carry the wiki rules; to keep them in a rules file too, "
+                             f"paste the printed block into {unless} or create {path} yourself")
+            ctx.snippets.append({"agent": adapter.name, "title": f"Wiki rules block, not written (it would hide {unless})",
+                                 "destination": f"{unless}, or a {path} you create yourself",
+                                 "content": rules_block(rules_body(ctx.vault, ctx.config_file)) + "\n"})
+            return None
     if text is None:
         created = True  # absent now (new, or deleted since an earlier connect): connect creates it, so removal may delete it
     span = _rules_span(text, path) if text is not None else None
@@ -947,6 +1081,14 @@ def plan_rules(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, 
     return {"path": str(path), "blockSha256": sha256(block), "createdFile": created, "header": header}
 
 
+def skill_present(planner: Planner, path: Path) -> bool:
+    """A SKILL.md at `path`, on disk or pending in this plan; a symlinked one counts (the agent follows it)."""
+    try:
+        return planner.current(path) is not None
+    except Refusal as refusal:
+        return refusal.code == "symlink-target"
+
+
 def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str, Any] | None, others: dict[str, set[str]]) -> dict[str, Any] | None:
     recorded: dict[str, str] = dict(old["files"]) if old else {}
     previously_adopted = set(old.get("adopted", [])) if old else set()
@@ -963,6 +1105,20 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
     foreign: list[str] = []  # differing copies that connect never wrote (no manifest record)
     files: dict[str, str] = {}
     adopted: list[str] = []
+    elsewhere: dict[str, str] = {}  # skill name -> a directory this agent also reads that already provides it
+    if not ctx.remove and adapter.skills and adapter.skills.also_read:
+        also = [directory for directory in (ctx.place(location, directory=True) for location in adapter.skills.also_read) if directory != root]
+        own = {rel.split("/")[0] for rel in recorded}
+        for skill in SKILL_NAMES:
+            for directory in also:
+                if not skill_present(planner, directory / skill / "SKILL.md"):
+                    continue
+                if skill in own:
+                    ctx.notes.append(f"{adapter.name}: skill {skill} also exists in {directory}, which {adapter.title} reads too; the copy in {root} is kept "
+                                     "(connect never deletes it), so the agent may list it twice: remove one copy")
+                else:
+                    elsewhere[skill] = str(directory)
+                break
 
     def retire(rel: str, digest: str) -> None:
         path = root / rel
@@ -987,6 +1143,8 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
             retire(rel, digest)
     else:
         for rel, data in ctx.sources.items():
+            if rel.split("/")[0] in elsewhere:
+                continue  # provided by another directory the agent reads: no second copy
             path = root / rel
             if Path(os.path.realpath(path.parent)) != path.parent:
                 raise Refusal("symlink-target", f"{path.parent} is a symlink inside the skills directory; connect never writes through it", path)
@@ -1023,7 +1181,10 @@ def plan_skills(adapter: Adapter, ctx: Context, planner: Planner, old: dict[str,
         if foreign:
             parts.append(f"{show(foreign)}: exists and was not installed by connect, so it would be overwritten")
         raise Refusal("skill-customized", "; ".join(parts) + "; review them, then rerun with --force to back them up and replace them")
-    return None if ctx.remove else {"root": str(root), "files": files, **({"adopted": sorted(adopted)} if adopted else {})}
+    if elsewhere:
+        ctx.elsewhere[adapter.name] = elsewhere
+    return None if ctx.remove else {"root": str(root), "files": files, **({"adopted": sorted(adopted)} if adopted else {}),
+                                    **({"skillsElsewhere": elsewhere} if elsewhere else {})}
 
 
 def plan_agent(adapter: Adapter, ctx: Context, planner: Planner, others: dict[str, dict[str, set[str]]]) -> dict[str, Any] | None:
@@ -1158,6 +1319,7 @@ def core_plan(ctx: Context, planner: Planner, names: list[str]) -> dict[str, Any
             "packageRoot": str(ctx.package_root), "version": ctx.version, "interpreter": ctx.interpreter, "node": ctx.node,
             "config": str(ctx.config_file),
             "directories": ctx.directories,
+            **({"skillsElsewhere": ctx.elsewhere} if ctx.elsewhere else {}),
             "files": [{"agents": sorted(op.agents), "role": op.role, "path": str(op.path), "op": op.op,
                        **({"requestedPath": str(ctx.requested(op.path))} if ctx.requested(op.path) != op.path else {}),
                        "beforeSha256": None if op.before is None else sha256(op.before),
@@ -1324,6 +1486,13 @@ def _entry_state(record: dict[str, Any]) -> list[dict[str, str]]:
             reasons.append({"code": "mcp-entry-missing", "detail": item["path"]})
         elif entry_hash(current) != item["entrySha256"]:
             reasons.append({"code": "mcp-entry-modified", "detail": item["path"]})
+        for extra in item.get("extras", []):
+            value, _ = _extra_state(doc, tuple(extra["keyPath"]), extra["name"])
+            where = f"{item['path']}: {'.'.join((*extra['keyPath'], extra['name']))}"
+            if value is _ABSENT:
+                reasons.append({"code": "mcp-extra-missing", "detail": where})
+            elif entry_hash(value) != extra["valueSha256"]:
+                reasons.append({"code": "mcp-extra-modified", "detail": where})
     return reasons
 
 
@@ -1400,6 +1569,12 @@ def evaluate(record: dict[str, Any], probes: dict[str, str | None] | None = None
             elif shipped and shipped.get(rel) != digest:
                 buckets["skill-outdated"].append(str(path))
         reasons += [{"code": code, "detail": ", ".join(paths[:5])} for code, paths in buckets.items() if paths]
+    if item:
+        gone = [f"{name} ({directory})" for name, directory in item.get("skillsElsewhere", {}).items()
+                if not (Path(directory) / name / "SKILL.md").is_file()]
+        if gone:
+            reasons.append({"code": "skill-elsewhere-missing", "detail": f"{', '.join(gone)}: connect skipped these skills because another directory the agent reads "
+                                                                          "provided them, and that copy is gone; run connect for this agent again to install its own"})
     return reasons
 
 
@@ -1500,7 +1675,7 @@ def adapter_extras(adapters: list[Adapter], ctx: Context) -> tuple[list[dict[str
     snippets = [{"agent": adapter.name, "title": snippet.title, "destination": snippet.destination,
                  "content": snippet.content.replace("{{rules}}", body)} for adapter in adapters for snippet in adapter.snippets]
     notes = [f"{adapter.name}: {note}" for adapter in adapters for note in adapter.notes]
-    return snippets, notes + ctx.notes
+    return snippets + ctx.snippets, notes + ctx.notes
 
 
 def mechanism(adapter: Adapter) -> str:
@@ -1557,6 +1732,10 @@ def _print_plan(output: dict[str, Any], names: list[str], args: argparse.Namespa
             print("  rules block:\n" + "\n".join("    " + line for line in item["block"].splitlines()))
     for root, items in skills.items():
         print(f"Create skill copies ({len(items)} files, JSON lists each): {root}")
+    for agent, found in plan.get("skillsElsewhere", {}).items():
+        for directory in sorted(set(found.values())):
+            names_here = ", ".join(skill for skill, where in found.items() if where == directory)
+            print(f"Skip skills for {agent}: {names_here} already in {directory}, which {agent} also reads; no second copy is installed (rerun connect for {agent} after that copy goes away)")
     for item in plan["directories"]:
         print(("Create directory: " if item["op"] == "create" else "Remove directory connect created, if empty: ") + item["path"])
     if plan["backupDir"]:

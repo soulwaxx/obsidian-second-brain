@@ -134,6 +134,20 @@ class CursorAdapterTests(CursorCase):
         self.apply("cursor", extra=("--remove",))
         self.assertEqual(sorted(path.name for path in self.skills.iterdir()), ["my-own-skill"])
 
+    def test_skills_cursor_also_loads_from_agents_claude_and_codex_directories_are_not_installed_again(self):
+        # https://cursor.com/docs/skills: ~/.agents/skills, and for compatibility ~/.claude/skills and ~/.codex/skills.
+        names = connect_module.SKILL_NAMES
+        for directory, name in ((".agents/skills", names[0]), (".claude/skills", names[1]), (".codex/skills", names[2])):
+            (self.home / directory / name).mkdir(parents=True)
+            (self.home / directory / name / "SKILL.md").write_text(f"my {name}\n", encoding="utf-8")
+        before = snapshot(self.home / ".agents", self.home / ".claude", self.home / ".codex")
+        planned = self.preview("cursor")
+        self.assertEqual(planned["plan"]["skillsElsewhere"]["cursor"],
+                         {names[0]: str(self.home / ".agents/skills"), names[1]: str(self.home / ".claude/skills"), names[2]: str(self.home / ".codex/skills")})
+        self.apply("cursor")
+        self.assertEqual(sorted(path.name for path in self.skills.iterdir()), sorted(names[3:]))
+        self.assertEqual(before, snapshot(self.home / ".agents", self.home / ".claude", self.home / ".codex"))
+
     def test_existing_realistic_config_is_preserved_repeat_is_a_no_op_and_removal_restores_it(self):
         self.cursor.mkdir()
         original = dump(EXISTING)
