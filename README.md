@@ -317,11 +317,11 @@ manual-only agents, and advises when a newer package is installed elsewhere, wit
 | OpenCode | `connect` adapter `opencode`: MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills` (names already in `~/.claude/skills` or `~/.agents/skills` are skipped); OpenCode runs MCP tools without asking by default, so `connect` writes `ask` rules for the wiki write tools into the config | fixture-tested (live-unverified) |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, other MCP clients | [Generic MCP snippets](docs/agents.md#generic-mcp-snippets) (`read` and `all`) | snippet-only |
 
-"Planned adapter" is a temporary row label, not a status; the statuses are
-live-validated, fixture-tested (live-unverified) and snippet-only. An adapter row
-becomes "fixture-tested (live-unverified)" when its tests pass in a
-temporary home; no real agent has been run, and live validation is tracked
-separately. "Snippet-only" agents are untested.
+The statuses are live-validated, fixture-tested (live-unverified) and
+snippet-only. An adapter row is "fixture-tested (live-unverified)" when its tests
+pass in a temporary home; no real agent has been run with `connect` yet, and each
+live run is recorded in [the live validation record](docs/agents.md#live-validation-record-72).
+"Snippet-only" agents are untested.
 
 ## Local retrieval
 

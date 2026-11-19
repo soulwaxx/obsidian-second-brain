@@ -15,7 +15,7 @@
 | OpenCode | `connect` adapter `opencode` (#69): MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills`, `ask` rules for the wiki write tools written into the config ([details](#opencode)) | fixture-tested (live-unverified) |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, any other MCP client | [Generic MCP snippet](#generic-mcp-snippets) | snippet-only |
 
-There are exactly three statuses. `planned adapter` in the table is a temporary row label for an adapter whose ticket (#66–#69) has not landed, not a fourth status: it becomes `fixture-tested (live-unverified)` when that adapter's tests pass.
+There are exactly three statuses. A `connect` adapter is `fixture-tested (live-unverified)` once its tests pass in a temporary home, and moves to `live-validated` only with a recorded live run (see [the live validation record](#live-validation-record-72)).
 
 Statuses mean:
 
@@ -171,7 +171,7 @@ REGISTRY: list[str] = [
 
 Separate comment lines keep each adapter's edit on its own line, so adapter changes merge without conflicts. A module that fails to import or has an invalid `ADAPTER` is reported by `connect` and, as `adapterErrors`, by doctor.
 
-Test an adapter with `tests/connect_fixture_adapter.py` and `tests/test_connect.py` as the model: run the real `connect` code against a temporary `HOME` and `OBSIDIAN_AGENT_CONFIG`, assert the exact paths, entry shape, preservation of unrelated entries, preview-without-writes, apply, repeat no-op, removal, and a doctor round trip. Never touch the real home directory or run the agent. When the tests pass, change the agent's row in the table above and in the README from "planned adapter" to "fixture-tested (live-unverified)"; live validation (#72) is a separate step. `tests/connect_fixture_adapter.py` has fixtures for each target shape (`fixture-custom`: environment-dependent location functions, an OpenCode-like entry and a rules header).
+Test an adapter with `tests/connect_fixture_adapter.py` and `tests/test_connect.py` as the model: run the real `connect` code against a temporary `HOME` and `OBSIDIAN_AGENT_CONFIG`, assert the exact paths, entry shape, preservation of unrelated entries, preview-without-writes, apply, repeat no-op, removal, and a doctor round trip. Never touch the real home directory or run the agent. When the tests pass, add the agent's row to the table above and to the README as "fixture-tested (live-unverified)"; live validation is a separate, recorded step (#72). `tests/connect_fixture_adapter.py` has fixtures for each target shape (`fixture-custom`: environment-dependent location functions, an OpenCode-like entry and a rules header).
 
 ## Codex CLI
 
@@ -265,6 +265,20 @@ Notes:
 - **Duplicate skills.** OpenCode also reads skills from `~/.claude/skills` and `~/.agents/skills` (Codex installs the same six names in `~/.agents/skills`). For each of the six skill names that already has a `<dir>/<name>/SKILL.md` in either directory, `connect` installs no second copy: the preview says which names it skipped and in which directory, and the manifest records it. When that copy disappears (for example after `connect codex --remove`, whose preview names OpenCode as depending on it), doctor reports `skill-elsewhere-missing` (stale) and rerunning `connect opencode` installs OpenCode's own copy. The references folder belongs to the `wiki` skill and follows it. The order does not matter: if OpenCode was connected first and `connect codex` writes `~/.agents/skills` afterwards, the Codex preview warns that OpenCode will list the six skills twice, doctor reports `skill-duplicated-elsewhere` (stale) for OpenCode, and rerunning `connect opencode` removes its own copies (a customized one is refused unless `--force`) and uses Codex's. Deleting OpenCode's own copy by hand has the same result on the next `connect opencode` instead of reinstalling it. The Claude plugin keeps its skills in the plugin, not in `~/.claude/skills`.
 - A project `opencode.json` or `OPENCODE_CONFIG` that defines its own `obsidian-wiki` entry overrides the global one. Restart OpenCode after connecting.
 - Status: fixture-tested (live-unverified). `tests/test_connect_opencode.py` runs the real framework against a temporary `HOME`; a live OpenCode run belongs to #72.
+
+## Live validation record (#72)
+
+A live run follows the #72 checklist against a disposable vault with isolated agent settings: `connect <agent>` preview and apply, the agent lists the MCP tools and skills, `wiki_search` and `wiki_read` from the agent, one `wiki_batch_inspect` → approval → `wiki_batch_apply` save (summary shown, approval awaited, index and log updated, nothing committed), the rules reach the agent, and `connect <agent> --remove` restores the prior config. Fixture tests are not a substitute; the support table changes only for an agent with a recorded run.
+
+| Agent | Result | Date, host | Reason |
+| --- | --- | --- | --- |
+| Codex CLI | not run | 2026-11-19, macOS 27.2.1 arm64 | `codex` is not installed on the maintainer host |
+| GitHub Copilot CLI | not run | 2026-11-19, macOS 27.2.1 arm64 | `copilot` is not installed on the maintainer host |
+| GitHub Copilot in VS Code (Copilot and Local harness) | not run | 2026-11-19, macOS 27.2.1 arm64 | VS Code is installed, but a run needs a signed-in GitHub Copilot account (a paid provider); #72 requires the owner's approval of provider, budget and credentials first |
+| Cursor | not run | 2026-11-19, macOS 27.2.1 arm64 | Cursor is not installed on the maintainer host |
+| OpenCode | not run | 2026-11-19, macOS 27.2.1 arm64 | `opencode` is not installed on the maintainer host |
+
+Deterministic local checks on the same host (not live runs): every adapter's `tests/test_connect_<agent>.py`, the framework tests and `bash tests/install-smoke.sh` passed. Claude Code 2.1.322 and Pi 1.5.2, which use the plugin and package rather than `connect`, stay live-validated by their own checks. Add a row with agent version, OS, date and deviations when a run is recorded.
 
 ## Generic MCP snippets
 
