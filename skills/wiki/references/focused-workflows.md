@@ -64,8 +64,9 @@ wrapper/copy, or change package versions merely to query.
 Pi exposes `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor` as
 read-only model tools, and the Claude Code plugin and MCP-only agents get the
 same four through the package's MCP server (the client may prefix the names; see
-[tool surface by client](tool-surface.md)). Prefer them when they are listed;
-when they are not (for example the server is disabled or failed to start),
+[tool surface by client](tool-surface.md), including Pi discovery for tools not
+directly listed). Prefer them when reachable; when they cannot be reached
+(for example the server is disabled or failed to start),
 Claude Code and Pi use the CLI procedure above, while an MCP-only agent reports
 that the wiki server is not connected. They preserve hash-bound
 read coordinates and existing retrieval diagnostics without injecting wiki
@@ -81,7 +82,7 @@ MCP `all` profile) write tools.
 
 For a question answered by existing wiki knowledge, search first, then read the
 most relevant pages and answer with honest page citations. Use `wiki_search`
-when listed; otherwise (Claude Code and Pi) use the package-relative launcher
+when reachable; otherwise (Claude Code and Pi) use the package-relative launcher
 procedure above, replacing `doctor --json` with `search "query terms" --json`.
 
 The CLI resolves the same selected vault as the integration. Use `--vault
@@ -298,7 +299,7 @@ use the optional [authoring patterns](authoring-patterns.md).
 
 ## Health
 
-Health checks are read-only. Call `wiki_doctor` when listed; otherwise (Claude
+Health checks are read-only. Call `wiki_doctor` when reachable; otherwise (Claude
 Code and Pi) run `doctor --json` through the package-relative launcher procedure
 above.
 

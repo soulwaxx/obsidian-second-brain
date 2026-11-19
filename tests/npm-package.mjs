@@ -236,7 +236,7 @@ try {
     fs.mkdirSync(process.env.OBSIDIAN_AGENT_CONFIG);
     const { default: packedExtension } = await import(`${pathToFileURL(extensionPath).href}?package-native-tools`);
     const packedTools = new Map();
-    packedExtension({ on: () => {}, registerTool: (tool) => packedTools.set(tool.name, tool) });
+    await packedExtension({ on: () => {}, registerTool: (tool) => packedTools.set(tool.name, tool) });
     const packedPage = path.join(cliVault, "wiki/packed ü.md");
     const packedSource = "# Packed native page\nBody.\n";
     fs.writeFileSync(packedPage, packedSource);

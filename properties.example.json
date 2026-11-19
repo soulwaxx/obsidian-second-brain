@@ -1,5 +1,6 @@
 {
   "vaultPath": null,
+  "pi": { "toolExposure": "direct" },
   "features": {
     "guard": true,
     "toc": true,

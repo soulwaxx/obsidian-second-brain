@@ -1,6 +1,6 @@
 # Native Pi wiki read tools
 
-The package's Pi extension registers four direct, default-active, read-only tools:
+The package's Pi extension registers four read-only tools (direct and default-active unless configured otherwise):
 `wiki_search`, `wiki_outline`, `wiki_read`, and `wiki_doctor`. They do not add wiki text to prompts (the separate, off-by-default `features.autoRecall` setting in the extension's `before_agent_start` handler can, see [Automatic recall](setup.md#automatic-recall-opt-in)), replace the user's active-tool selection, write vault/config files, build indexes, settle lifecycle captures, or expose evidence-report and write operations. Their annotations are non-destructive, idempotent, read-only, and closed-world hints, not permission enforcement.
 
 Each result has an `operation` and `ok` state, plus the existing CLI response in `payload` when available. Failures can include bounded `code`, `message`, and `processStatus`. A result with `ok: false` is returned as a tool error while retaining structured diagnostics. Search keeps BM25 ranking, read references, fallback, semantic errors, and freshness as reported by the existing retrieval code; empty results, pending refreshes, and fallback are not verified evidence. `wiki_doctor` reports invalid config details in `payload.config.error` without attempting repair. Its payload includes the doctor's `capabilities` and `readiness` (stage and `nextActions`); suggestions are never executed by the tool. See [readiness and next steps](setup.md#readiness-and-next-steps).
@@ -12,6 +12,33 @@ Search defaults to 10 BM25 results, up to 100, with the existing 4,000-character
 Outline defaults to 10 entries and supports up to 100. Pagination must carry the returned `expectedHash`. Read requires that hash and exactly one section selector or complete start/end span; raw/current views preserve source coordinates. Reads default to 12,000 characters (maximum 12,000) and return a cursor continuation when truncated. Continuations retain the original selection and hash. Existing hidden, symlink, alias, hardlink, non-regular and reserved-page restrictions remain owned by the Python read implementation.
 
 Native calls have a 30-second deadline, 256 KiB transport-output cap, 8 KiB stderr cap, and 64 KiB model-facing JSON cap. Excessive output is a structured `output-limit` error suggesting a smaller request; evidence is never clipped. Cancellation/timeout terminates the launcher and its process group on verified macOS/Linux platforms. Windows process-tree termination is not verified. Native calls set `PYTHONDONTWRITEBYTECODE=1` and do not modify Python bytecode caches.
+
+## Choose tool exposure
+
+In the selected integration `properties.json`, set `pi.toolExposure` to one of
+the following values. Reload the extension or restart Pi after changing it.
+
+| Value | How to reach the tools in Pi 1.5+ |
+| --- | --- |
+| `direct` (default) | The four tools are declared as before, subject to Pi's tool selection. |
+| `codemode` | No separate initial declarations. Pi's `codemode` lists the tools under `obsidian-wiki`; scripts call e.g. `tools.wiki_search({ query: "project notes" })`. |
+| `deferred` | Neither initially declared nor listed in the `codemode` description. Search for `wiki search` with `tool_search` to make it a direct call, or find it in a codemode script with `searchTools()` or `describeTool()` and call it there. |
+
+Either indirect mode works through either discovery tool. In Pi's own
+`settings.json`, add `+codemode` or `+tool_search` to `defaultTools` to enable it
+without replacing the default tools. If neither is active when a prompt starts,
+the extension falls back to direct exposure and issues a notice. Pi's tool
+allowlists and exclusions still apply. The packaged `wiki-vault` specialist
+uses the same fallback when its runner scopes out both discovery tools; its
+allowlist does not need to include them.
+
+`doctor --json` reports `pi.toolExposure` (the normalized setting), `pi.valid`,
+and `pi.error`. An invalid setting uses `direct` without invalidating the vault
+configuration. Native Pi `wiki_doctor` also reports `pi.runtimeToolExposure`
+for the loaded session and `pi.runtimeFallback` (`indirect-tools-inactive` when
+applicable, otherwise `null`). The CLI and MCP server do not inspect a running
+Pi session. To compare a recently edited setting with the loaded session, check
+both exposure fields.
 
 ## Equivalent access in Claude Code
 

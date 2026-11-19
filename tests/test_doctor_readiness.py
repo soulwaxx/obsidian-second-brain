@@ -25,7 +25,7 @@ CLI_MODULE = load_source("doctor_readiness_cli", str(CLI))
 
 LEGACY_KEYS = {"config", "dependencies", "vault", "cacheExclusions", "lifecycle", "retrieval"}
 VAULT_KEYS = {"vaultExists", "wikiExists", "batches"}
-NEW_KEYS = {"schemaVersion", "capabilities", "readiness", "autoRecall", "connect"}
+NEW_KEYS = {"schemaVersion", "capabilities", "readiness", "autoRecall", "connect", "pi"}
 DEPENDENCY_KEYS = {"python", "pythonMinimum", "pythonSupported", "pythonError", "retrieval", "pyyaml", "git", "jq"}
 CAPABILITIES = ["lexicalSearch", "spanReads", "sectionReads", "evidenceReport", "reviewedWrites", "sourceChecks", "semanticRerank"]
 STAGES = ["package", "vaultSelected", "scaffold", "workflow", "pendingContent", "pendingRetrieval"]
@@ -522,6 +522,35 @@ class DoctorReadinessTests(unittest.TestCase):
         self.assertEqual(lines[5], "Stage: pendingRetrieval (index-stale)")
         self.assertTrue(lines[13].startswith("Next: Rebuild the derived BM25 cache") and lines[13].endswith("[writes, review first]"))
         self.assertIn("build --vault '" + str(self.vault) + "'", lines[14])
+
+    def test_pi_tool_exposure_is_diagnostic_only(self):
+        self.configure()
+        self.build()
+        for extra, exposure, error in (
+            ({}, "direct", None),
+            ({"pi": None}, "direct", None),
+            ({"pi": {"toolExposure": "direct"}}, "direct", None),
+            ({"pi": {"toolExposure": "codemode"}}, "codemode", None),
+            ({"pi": {"toolExposure": "deferred"}}, "deferred", None),
+            ({"pi": []}, "direct", "pi must be an object"),
+            ({"pi": {"toolExposure": None}}, "direct", "pi.toolExposure must be"),
+            ({"pi": {"toolExposure": {"wiki_search": "direct"}}}, "direct", "pi.toolExposure must be"),
+        ):
+            with self.subTest(extra=extra):
+                self.write_config({"vaultPath": str(self.vault), **extra})
+                report = self.doctor_in_process()
+                self.assertTrue(report["config"]["valid"])
+                self.assertEqual(report["capabilities"]["reviewedWrites"]["state"], "ready")
+                self.assertEqual(report["pi"]["toolExposure"], exposure)
+                self.assertEqual(report["pi"]["valid"], error is None)
+                if error:
+                    self.assertIn(error, report["pi"]["error"])
+                else:
+                    self.assertIsNone(report["pi"]["error"])
+        human = self.run_cli("doctor")
+        self.assertEqual(human.returncode, 0)
+        self.assertIn("Pi tool exposure: direct", human.stdout)
+        self.assertIn("pi.toolExposure must be", human.stderr)
 
     def test_pi_doctor_bridge_passes_readiness_through(self):
         self.configure()

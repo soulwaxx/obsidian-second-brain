@@ -193,7 +193,7 @@ socket.getaddrinfo = _block("getaddrinfo", socket.getaddrinfo)
   fs.mkdirSync(path.dirname(extensionFile));
   fs.writeFileSync(extensionFile, extensionSource);
   const piTools = [];
-  (await import(pathToFileURL(extensionFile).href)).default({ on: () => {}, registerTool: (tool) => piTools.push(tool) });
+  await (await import(pathToFileURL(extensionFile).href)).default({ on: () => {}, registerTool: (tool) => piTools.push(tool) });
   assert.deepEqual(piTools.map((tool) => tool.name), READ_TOOLS);
   for (const [index, piTool] of piTools.entries()) {
     const tool = listed[index];

@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 
 const configPath = path.resolve(resolveHome(process.env.OBSIDIAN_AGENT_CONFIG?.trim()) || path.join(os.homedir(), ".config/obsidian-second-brain/properties.json"));
 type Config = { vaultPath?: string | null; features?: { guard?: boolean | null; autoCommit?: boolean | null; toc?: boolean | null; retrievalRefresh?: boolean | null } };
+type PiToolSettings = { toolExposure: "direct" | "codemode" | "deferred"; error: string | null };
+type PiDoctorSettings = PiToolSettings & { runtimeToolExposure?: PiToolSettings["toolExposure"]; runtimeFallback?: "indirect-tools-inactive" | null };
+type ConfigResult = { config: Config | null; error: string | null; autoRecall: { enabled: boolean }; pi: PiToolSettings };
 let config: Config = {};
 let configError: string | null = null;
 // features.autoRecall as normalized by scripts/config_contract.py (the one shared reader).
@@ -136,11 +139,15 @@ function configDiagnosticKey(): string {
 	return createHash("sha256").update(JSON.stringify([configError, knownVault, configState])).digest("hex");
 }
 
+async function readConfig(): Promise<ConfigResult> {
+	const { stdout } = await execFileAsync("python3", [CONFIG_HELPER, configPath], { encoding: "utf8" });
+	return JSON.parse(stdout) as ConfigResult;
+}
+
 async function refreshConfig(): Promise<void> {
 	const invocationOverride = process.env.OBSIDIAN_VAULT_PATH?.trim() || null;
 	try {
-		const { stdout } = await execFileAsync("python3", [CONFIG_HELPER, configPath], { encoding: "utf8" });
-		const result = JSON.parse(stdout) as { config: Config | null; error: string | null; autoRecall?: { enabled?: boolean } };
+		const result = await readConfig();
 		autoRecallEnabled = !result.error && result.autoRecall?.enabled === true;
 		if (!result.error) {
 			config = result.config ?? {};
@@ -349,16 +356,29 @@ async function runRecall(prompt: string, cwd: string, vault: string): Promise<st
 	}
 }
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+	// Register at load time so the initial Pi loadout and subagent runner see the tools.
+	// If the shared config helper fails, the usual lifecycle diagnostic reports it.
+	const settings = (await readConfig().catch(() => null))?.pi;
+	let exposure = settings?.toolExposure ?? "direct";
+	let fallback = false;
+	const registerDirect: Array<() => void> = [];
 	const common = { namespace: { name: "obsidian-wiki", description: "Read-only tools for locating and inspecting pages in the selected Obsidian wiki." }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, outputSchema: TOOL_OUTPUT };
 	const vaultSchema = Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }));
 	const registerWikiTool = (name: string, label: string, description: string, parameters: ReturnType<typeof Type.Object>, operation: string) => {
-		pi.registerTool({ ...common, name, label, description, parameters,
+		const definition = { ...common, name, label, description, parameters,
 			execute: async (_id, params, signal, _onUpdate, ctx) => {
 				const result = await runNativeTool(operation, params as Record<string, unknown>, signal, ctx.cwd);
+				if (operation === "doctor" && result.payload && typeof result.payload === "object" && "pi" in result.payload) {
+					// The CLI knows the current file, not this session's loaded exposure/fallback.
+					const payload = result.payload as { pi: PiDoctorSettings };
+					payload.pi = { ...payload.pi, runtimeToolExposure: exposure, runtimeFallback: fallback ? "indirect-tools-inactive" : null };
+				}
 				return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined, structuredContent: result, isError: result.ok !== true };
 			},
-		});
+		} satisfies Parameters<ExtensionAPI["registerTool"]>[0];
+		pi.registerTool(exposure === "direct" ? definition : { ...definition, exposure });
+		if (exposure !== "direct") registerDirect.push(() => pi.registerTool(definition));
 	};
 	registerWikiTool("wiki_search", "Wiki search", "Search the selected wiki's existing BM25 index. Hybrid Ollama reranking is opt-in and uses only a bounded loopback endpoint; results report fallback and freshness without building or refreshing indexes.", Type.Object({ query: Type.String({ minLength: 1, maxLength: 4000 }), vault: vaultSchema, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), hybrid: Type.Optional(Type.Boolean()), ollamaUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })), ollamaModel: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), timeout: Type.Optional(Type.Number({ minimum: 0.1, maximum: 30 })) }, { additionalProperties: false }), "search");
 	registerWikiTool("wiki_outline", "Wiki outline", "Return hash-bound outline labels and source coordinates for one visible wiki Markdown page; use expectedHash for pagination.", Type.Object({ page: Type.String({ minLength: 6, maxLength: 1024 }), vault: vaultSchema, expectedHash: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000000 })) }, { additionalProperties: false }), "outline");
@@ -397,6 +417,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		await refreshConfig();
 		if (configError) ctx.ui.notify(`obsidian configuration needs repair: ${configError}`, "warning");
+		if (settings?.error) ctx.ui.notify(`obsidian configuration: ${settings.error}`, "warning");
 		if (!knownVault) return;
 		rememberVault(sessionIdentity(ctx), knownVault);
 		if (locatorVault === knownVault) return;
@@ -407,6 +428,17 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		// Check the actual loadout after other extensions and subagent scoping have run.
+		if (exposure !== "direct" && pi.getAllTools().some((tool) => tool.namespace?.name === common.namespace.name)) {
+			const active = pi.getActiveTools();
+			if (!active.includes("codemode") && !active.includes("tool_search")) {
+				exposure = "direct";
+				fallback = true;
+				// Pi still applies the session's allowlist and exclusions to re-registered tools.
+				for (const register of registerDirect) register();
+				ctx.ui.notify("obsidian wiki tools are using direct exposure: neither codemode nor tool_search is active", "warning");
+			}
+		}
 		await refreshConfig();
 		if (configError && knownVault) {
 			const diagnostic = configDiagnosticKey();

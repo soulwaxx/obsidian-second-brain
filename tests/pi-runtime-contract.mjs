@@ -17,8 +17,8 @@ if (!packageRoot) {
 
 const sdkUrl = pathToFileURL(path.join(packageRoot, "dist/index.js")).href;
 const [aiUrl, typeboxUrl] = resolveRuntimeDependencies(packageRoot);
-const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkUrl);
-const { createAssistantMessageEventStream } = await import(aiUrl);
+const { createAgentSession, createCodemodeExtension, createToolSearchExtension, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkUrl);
+const { createAssistantMessageEventStream, getCurrentTools } = await import(aiUrl);
 const { Check: checkSchema } = await import(new URL("./value/index.mjs", typeboxUrl));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-pi-runtime-"));
 function processGroup(pid) {
@@ -57,6 +57,7 @@ let siblingRequests = 0;
 let expectedLocator = "";
 let locatorRequests = 0;
 let nestedRequests = 0;
+let exposureSteps = [];
 const modelRuntime = await ModelRuntime.create({ authPath: path.join(tmp, "auth.json"), modelsPath: null, refreshOnCreate: false });
 modelRuntime.registerProvider("m1-stub", {
   api: "m1-stub-api",
@@ -68,7 +69,23 @@ modelRuntime.registerProvider("m1-stub", {
     requests += 1;
     const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() };
     stream.push({ type: "start", partial: message });
-    if (scenario === "nested-repair-read") {
+    if (scenario === "exposure") {
+      const step = exposureSteps.shift();
+      assert.ok(step, "unexpected exposure test model request");
+      const next = step(context);
+      if (typeof next === "string") {
+        message.content.push({ type: "text", text: next });
+        message.stopReason = "stop";
+        stream.push({ type: "text_end", contentIndex: 0, content: next, partial: message });
+        stream.push({ type: "done", reason: "stop", message });
+      } else {
+        const call = { type: "toolCall", id: `exposure-${requests}`, ...next };
+        message.content.push(call);
+        stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+        stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: call, partial: message });
+        stream.push({ type: "done", reason: "toolUse", message });
+      }
+    } else if (scenario === "nested-repair-read") {
       nestedRequests += 1;
       if (nestedRequests === 1) {
         const call = { type: "toolCall", id: "m1-nested-repair-read", name: "m1_repair_read", arguments: {} };
@@ -418,7 +435,97 @@ try {
   } finally {
     nativeSession.dispose();
   }
-  console.log("Pi installed-SDK runtime contract PASS: lifecycle regressions plus all four native read-only wiki tools and structured outputs.");
+  const defaultDefinitions = JSON.stringify(nativeResources.getExtensions().extensions.find((ext) => ext.path.endsWith("/obsidian.ts")).tools.values().toArray());
+  const wikiNames = ["wiki_search", "wiki_outline", "wiki_read", "wiki_doctor"];
+  const modelTools = (context) => getCurrentTools(context.messages);
+  const modelWikiTools = (context) => modelTools(context).filter((tool) => wikiNames.includes(tool.name)).map((tool) => tool.name);
+  const lastToolText = (context) => context.messages.findLast((entry) => entry.role === "toolResult").content.map((part) => part.text).join("\n");
+  const query = { query: "synthetic native wiki" };
+
+  async function checkExposure(mode, defaultTools, steps, { excludeTools, limitToWikiTools = false, prompt = "Check the wiki." } = {}) {
+    fs.writeFileSync(config, JSON.stringify({ vaultPath: nativeVault, pi: { toolExposure: mode } }));
+    const settingsManager = SettingsManager.inMemory({ defaultTools, retry: { enabled: false } });
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: nativeVault, agentDir: path.join(home, ".pi", "agent"), settingsManager,
+      additionalExtensionPaths: [path.resolve("extensions/obsidian.ts")],
+      additionalSkillPaths: [path.resolve("skills/wiki-query")],
+      extensionFactories: [createCodemodeExtension({ models: false }), createToolSearchExtension()],
+    });
+    await resourceLoader.reload();
+    assert.deepEqual(resourceLoader.getExtensions().errors, []);
+    const extension = resourceLoader.getExtensions().extensions.find((ext) => ext.path.endsWith("/obsidian.ts"));
+    assert.equal(extension.tools.size, 4);
+    assert.ok([...extension.tools.values()].every(({ definition }) => definition.exposure === (mode === "direct" || mode === "invalid" ? undefined : mode)));
+    if (mode === "direct") assert.equal(JSON.stringify([...extension.tools.values()]), defaultDefinitions);
+    const { session } = await createAgentSession({ cwd: nativeVault, agentDir: path.join(home, ".pi", "agent"), model, modelRuntime, resourceLoader, sessionManager: SessionManager.inMemory(nativeVault), settingsManager, excludeTools });
+    try {
+      await session.bindExtensions({});
+      if (limitToWikiTools) {
+        // Like a vault specialist whose runner removes the parent's discovery tools after bind.
+        assert.ok(session.getActiveToolNames().includes("codemode"));
+        session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "codemode"));
+      }
+      const snapshot = nativeSnapshot();
+      scenario = "exposure";
+      exposureSteps = [...steps];
+      await session.prompt(prompt);
+      assert.deepEqual(exposureSteps, [], "all scripted exposure steps ran");
+      assert.equal(session.messages.findLast((entry) => entry.role === "assistant").stopReason, "stop", JSON.stringify(session.messages.at(-1)));
+      assert.deepEqual(nativeSnapshot(), snapshot, "tool exposure and use leave vault and config untouched");
+    } finally {
+      session.dispose();
+    }
+  }
+
+  await checkExposure("direct", [], [(context) => {
+    assert.deepEqual(modelWikiTools(context), wikiNames);
+    return "Direct tools are unchanged.";
+  }]);
+  await checkExposure("codemode", ["+codemode"], [(context) => {
+    assert.deepEqual(modelWikiTools(context), []);
+    assert.match(modelTools(context).find((tool) => tool.name === "codemode").description, /obsidian-wiki[\s\S]*wiki_search/);
+    assert.match(JSON.stringify(context.messages), /including Pi discovery/);
+    return { name: "codemode", arguments: { code: `const s = await tools.wiki_search(${JSON.stringify(query)}); const r = await tools.wiki_read(s.payload.results[0].readRef); text(r.payload.text);` } };
+  }, (context) => {
+    assert.match(lastToolText(context), /A local fixture\./);
+    return "The wiki page says this is a local fixture (wiki/native-tool.md).";
+  }], { prompt: "/skill:wiki-query What does the native wiki say?" });
+  await checkExposure("deferred", ["+codemode", "+tool_search"], [(context) => {
+    assert.deepEqual(modelWikiTools(context), []);
+    assert.doesNotMatch(modelTools(context).find((tool) => tool.name === "codemode").description, /wiki_search/);
+    return { name: "codemode", arguments: { code: `const found = await searchTools("wiki search", { namespace: "obsidian-wiki", limit: 1 }); text(found[0].name); text((await tools.wiki_doctor({})).payload.pi.runtimeToolExposure);` } };
+  }, (context) => {
+    assert.match(lastToolText(context), /wiki_search[\s\S]*deferred/);
+    assert.deepEqual(modelWikiTools(context), []);
+    return { name: "tool_search", arguments: { query: "wiki search", limit: 1 } };
+  }, (context) => {
+    assert.deepEqual(modelWikiTools(context), ["wiki_search"]);
+    return { name: "wiki_search", arguments: query };
+  }, (context) => {
+    assert.equal(JSON.parse(lastToolText(context)).payload.results[0].path, "wiki/native-tool.md");
+    return "Deferred search works after discovery.";
+  }]);
+  await checkExposure("codemode", ["+codemode"], [(context) => {
+    assert.deepEqual(modelWikiTools(context), wikiNames.filter((name) => name !== "wiki_read"));
+    assert.ok(!modelTools(context).some((tool) => tool.name === "codemode"));
+    return { name: "wiki_doctor", arguments: {} };
+  }, (context) => {
+    const { pi } = JSON.parse(lastToolText(context)).payload;
+    assert.deepEqual(pi, { toolExposure: "codemode", valid: true, error: null, runtimeToolExposure: "direct", runtimeFallback: "indirect-tools-inactive" });
+    return "The scoped session fell back without restoring excluded tools.";
+  }], { excludeTools: ["wiki_read"], limitToWikiTools: true });
+  await checkExposure("invalid", [], [(context) => {
+    assert.deepEqual(modelWikiTools(context), wikiNames);
+    return { name: "wiki_doctor", arguments: {} };
+  }, (context) => {
+    const { config, pi } = JSON.parse(lastToolText(context)).payload;
+    assert.equal(config.valid, true);
+    assert.equal(pi.valid, false);
+    assert.equal(pi.runtimeToolExposure, "direct");
+    assert.equal(pi.runtimeFallback, null);
+    return "Invalid Pi-only config did not invalidate the vault config.";
+  }]);
+  console.log("Pi installed-SDK runtime contract PASS: lifecycle, native wiki tools, and all Pi exposure modes.");
 } finally {
   session.dispose();
   fs.rmSync(tmp, { recursive: true, force: true });
