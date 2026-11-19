@@ -314,7 +314,7 @@ manual-only agents, and advises when a newer package is installed elsewhere, wit
 | GitHub Copilot CLI and VS Code's Copilot harness | `connect` adapter `copilot-cli`: MCP entry in `~/.copilot/mcp-config.json`, rules in `~/.copilot/copilot-instructions.md`, skills; one connection covers both ([details](docs/agents.md#github-copilot)) | fixture-tested (live-unverified) |
 | VS Code's deprecated Local harness | `connect` adapter `copilot-vscode`, only for the Local harness when Copilot CLI discovery is off (do not connect it together with `copilot-cli`): MCP entry in the VS Code profile `mcp.json`, same rules file and skills | fixture-tested (live-unverified) |
 | Cursor | `connect` adapter `cursor`: MCP entry in `~/.cursor/mcp.json`, skill copies in `~/.cursor/skills`; no user rules file (Cursor keeps them in its settings), project rule printed as a snippet | fixture-tested (live-unverified) |
-| OpenCode | `connect` adapter (planned, #69) | planned adapter |
+| OpenCode | `connect` adapter `opencode`: MCP entry in `~/.config/opencode/opencode.json` (or an existing `opencode.jsonc`), rules block in `~/.config/opencode/AGENTS.md`, skill copies in `~/.config/opencode/skills` (names already in `~/.claude/skills` or `~/.agents/skills` are skipped); OpenCode runs MCP tools without asking by default, so `connect` writes `ask` rules for the wiki write tools into the config | fixture-tested (live-unverified) |
 | Gemini CLI, Cline, Zed, Kiro, Continue, Claude Desktop, Windsurf, other MCP clients | [Generic MCP snippets](docs/agents.md#generic-mcp-snippets) (`read` and `all`) | snippet-only |
 
 "Planned adapter" is a temporary row label, not a status; the statuses are

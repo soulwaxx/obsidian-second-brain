@@ -1178,6 +1178,385 @@ class SharedRulesTests(ConnectCase):
         self.assertEqual(duplicate_notes(self.preview("fixture-json", "fixture-twin", extra=("--remove",))), [])
 
 
+class ExtensionTests(ConnectCase):
+    """`ExtraEntry`, `SkillsTarget.also_read` and `RulesTarget.create_unless`, through the fixture-reader adapters."""
+
+    def setUp(self):
+        super().setUp()
+        connect_fixture_adapter.register(type("R", (), {"REGISTRY": self.registry}),
+                                         (connect_fixture_adapter.READER, connect_fixture_adapter.READER_YAML))
+        self.reader = self.home / ".fixture-reader"
+        self.mcp_file = self.reader / "mcp.json"
+        self.rules_file = self.reader / "RULES.md"
+        self.skills = self.reader / "skills"
+        self.json_skills = self.json_dir / "skills"
+
+    def record(self, agent):
+        return json.loads(self.manifest.read_text(encoding="utf-8"))["agents"][agent]
+
+    def doc(self, path=None):
+        return json.loads((path or self.mcp_file).read_text(encoding="utf-8"))
+
+    # -- extra entries --------------------------------------------------------------------------
+    def test_extras_are_appended_after_existing_keys_hashed_repeat_as_a_no_op_and_removed_exactly(self):
+        self.reader.mkdir()
+        original = json.dumps({"other": 1, "policy": {"rules": {"mine": "allow"}}, "mcpServers": {"x": {"command": "y"}}}, indent=2) + "\n"
+        self.mcp_file.write_text(original, encoding="utf-8")
+        planned = self.preview("fixture-reader")
+        self.assertEqual(planned["plan"]["files"][0]["op"], "update")
+        self.apply("fixture-reader")
+        doc = self.doc()
+        self.assertEqual(list(doc["policy"]["rules"].items()), [("mine", "allow"), ("fixture-wiki_apply", "ask"), ("fixture-wiki_recover", "ask")])
+        extras = self.record("fixture-reader")["mcp"]["extras"]
+        self.assertEqual([item["name"] for item in extras], ["fixture-wiki_apply", "fixture-wiki_recover"])
+        self.assertEqual(extras[0]["valueSha256"], hashlib.sha256(json.dumps("ask", separators=(",", ":")).encode()).hexdigest())
+        self.assertTrue(all(item["keyPath"] == ["policy", "rules"] and "createdKeys" not in item for item in extras))
+        before = snapshot(self.home, self.config.parent)
+        self.assertTrue(all(item["op"] == "unchanged" for item in self.apply("fixture-reader")["plan"]["files"]))
+        self.assertEqual(before, snapshot(self.home, self.config.parent))
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertEqual(self.mcp_file.read_text(encoding="utf-8"), original)
+
+    def test_containers_connect_created_are_removed_once_empty_and_a_users_object_stays(self):
+        self.apply("fixture-reader")
+        extras = self.record("fixture-reader")["mcp"]["extras"]
+        self.assertEqual([item["createdKeys"] for item in extras], [2, 2])  # policy and policy.rules were both absent
+        self.assertEqual(self.doc()["policy"], {"rules": {"fixture-wiki_apply": "ask", "fixture-wiki_recover": "ask"}})
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertFalse(self.mcp_file.exists())
+        # In a file that existed, the mcpServers and policy objects connect added go too, leaving the file as it was.
+        self.reader.mkdir(exist_ok=True)
+        self.mcp_file.write_text('{\n  "other": 1\n}\n', encoding="utf-8")
+        self.apply("fixture-reader")
+        self.assertEqual(set(self.doc()), {"other", "mcpServers", "policy"})
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertEqual(self.mcp_file.read_text(encoding="utf-8"), '{\n  "other": 1\n}\n')
+
+    def test_a_user_value_that_is_not_safe_is_refused_with_the_whole_snippet_and_nothing_is_written(self):
+        self.reader.mkdir()
+        cases = [({"policy": {"rules": {"fixture-wiki_apply": "allow"}}}, "extra-differs"),
+                 ({"policy": {"rules": {"fixture-wiki_recover": ["allow"]}}}, "extra-differs"),
+                 ({"policy": "allow"}, "config-shape"),
+                 ({"policy": {"rules": None}}, "config-shape")]
+        for config, code in cases:
+            with self.subTest(config=config):
+                self.mcp_file.write_text(json.dumps(config), encoding="utf-8")
+                before = snapshot(self.home, self.config.parent)
+                refusal = self.refused("fixture-reader")["refusals"][0]
+                self.assertEqual(refusal["code"], code)
+                snippet = json.loads(refusal["snippet"])
+                self.assertEqual(snippet["policy"]["rules"], {"fixture-wiki_apply": "ask", "fixture-wiki_recover": "ask"})
+                self.assertIn("obsidian-wiki", snippet["mcpServers"])
+                self.assertEqual(before, snapshot(self.home, self.config.parent))
+
+    def test_accepted_values_stay_the_users_and_are_not_owned(self):
+        self.reader.mkdir()
+        for config in ({"policy": {"rules": {"fixture-wiki_apply": "deny", "fixture-wiki_recover": "ask"}}}, {"policy": {"rules": "ask"}}):
+            with self.subTest(config=config):
+                self.mcp_file.write_text(json.dumps(config), encoding="utf-8")
+                self.apply("fixture-reader")
+                self.assertEqual(self.doc()["policy"], config["policy"])
+                self.assertNotIn("extras", self.record("fixture-reader")["mcp"])
+                self.apply("fixture-reader", extra=("--remove",))
+                self.assertEqual(self.doc(), config)
+
+    def test_a_value_connect_wrote_is_replaced_removed_only_while_unchanged_and_doctor_reports_drift(self):
+        self.apply("fixture-reader")
+        doc = self.doc()
+        doc["policy"]["rules"]["fixture-wiki_apply"] = {"changed": True}
+        del doc["policy"]["rules"]["fixture-wiki_recover"]
+        self.mcp_file.write_text(json.dumps(doc), encoding="utf-8")
+        reasons = {item["code"]: item["detail"] for item in self.status()["agents"]["fixture-reader"]["reasons"]}
+        self.assertEqual(set(reasons), {"mcp-extra-modified", "mcp-extra-missing"})
+        self.assertTrue(reasons["mcp-extra-modified"].endswith("policy.rules.fixture-wiki_apply"))
+        removed = self.apply("fixture-reader", extra=("--remove",))
+        self.assertEqual(self.doc(), {"policy": {"rules": {"fixture-wiki_apply": {"changed": True}}}})
+        self.assertTrue(any("policy.rules.fixture-wiki_apply" in note and "it stays" in note for note in removed["notes"]))
+
+    def test_extras_work_in_yaml_and_are_removed_with_the_entry(self):
+        import yaml
+        directory = self.home / ".fixture-reader-yaml"
+        directory.mkdir()
+        config = directory / "config.yaml"
+        config.write_text("other: 1\n", encoding="utf-8")
+        self.apply("fixture-reader-yaml")
+        loaded = yaml.safe_load(config.read_text(encoding="utf-8"))
+        self.assertEqual(loaded["permission"], {"fixture-wiki_apply": "ask"})
+        self.assertIn("obsidian-wiki", loaded["mcp"]["servers"])
+        self.apply("fixture-reader-yaml", extra=("--remove",))
+        self.assertEqual(config.read_text(encoding="utf-8"), "other: 1\n")
+
+    def test_extras_on_an_adopted_entry_are_still_removed(self):
+        self.apply("fixture-reader")
+        entry = self.doc()["mcpServers"]["obsidian-wiki"]
+        self.manifest.unlink()
+        self.mcp_file.write_text(json.dumps({"mcpServers": {"obsidian-wiki": entry}}), encoding="utf-8")  # the entry was there before
+        self.apply("fixture-reader")
+        self.assertTrue(self.record("fixture-reader")["mcp"]["adopted"])
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertEqual(self.doc(), {"mcpServers": {"obsidian-wiki": entry}})
+
+    def test_extras_need_a_json_or_yaml_file_and_a_malformed_record_is_invalid(self):
+        self.apply("fixture-reader")
+        connect_fixture_adapter.register(type("R", (), {"REGISTRY": self.registry}), (connect_fixture_adapter.BAD_TOML_EXTRA,))
+        self.assertTrue(any("fixture_bad" in message and "json or yaml" in message for message in self.status()["adapterErrors"]))
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest["agents"]["fixture-reader"]["mcp"]["extras"] = [{"name": 1}]
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(self.status()["manifest"]["code"], "manifest-invalid")
+
+    # -- skills another directory provides ------------------------------------------------------
+    def other_copies(self, directory, skip=()):
+        for rel, data in connect_module.skill_sources().items():
+            if rel.split("/")[0] not in skip:
+                (directory / rel).parent.mkdir(parents=True, exist_ok=True)
+                (directory / rel).write_bytes(data)
+
+    def test_skills_that_an_also_read_directory_provides_are_skipped_reported_recorded_and_doctor_goes_stale_when_they_vanish(self):
+        self.apply("fixture-json")  # installs all six into the directory fixture-reader also reads
+        other = self.home / ".fixture-other/skills"
+        shutil.rmtree(self.json_skills / "wiki-health")
+        self.other_copies(other, skip=[name for name in connect_module.SKILL_NAMES if name != "wiki-health"])
+        before = snapshot(self.json_skills, other)
+        planned = self.preview("fixture-reader")
+        elsewhere = planned["plan"]["skillsElsewhere"]["fixture-reader"]
+        self.assertEqual(elsewhere, {**{name: str(self.json_skills) for name in connect_module.SKILL_NAMES if name != "wiki-health"}, "wiki-health": str(other)})
+        self.assertFalse([item for item in planned["plan"]["files"] if item["role"] == "skill"])
+        human = self.run_cli("fixture-reader")[1]
+        self.assertIn(f"Skip skills for fixture-reader: wiki, wiki-query, wiki-save, wiki-ingest, wiki-research already in {self.json_skills}", human)
+        self.assertIn(f"wiki-health already in {other}", human)
+        self.apply("fixture-reader")
+        self.assertFalse(self.skills.exists())
+        self.assertEqual(before, snapshot(self.json_skills, other))
+        record = self.record("fixture-reader")["skills"]
+        self.assertEqual((record["files"], record["skillsElsewhere"]), ({}, elsewhere))
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["state"], "connected")
+        self.apply("fixture-json", extra=("--remove",))  # the copies in the other directory go away
+        agent = self.status()["agents"]["fixture-reader"]
+        self.assertEqual(agent["state"], "stale")
+        self.assertEqual([reason["code"] for reason in agent["reasons"]], ["skill-elsewhere-missing"])
+        self.assertIn("wiki-save", agent["reasons"][0]["detail"])
+        self.assertIn(str(self.json_skills), agent["reasons"][0]["detail"])
+        self.assertIn("run connect for this agent again", agent["reasons"][0]["detail"])
+        again = self.apply("fixture-reader")  # the rerun installs the five that are no longer provided; wiki-health stays in `other`
+        self.assertEqual(len([item for item in again["plan"]["files"] if item["role"] == "skill"]), len(connect_module.skill_sources()) - 1)
+        self.assertEqual(self.record("fixture-reader")["skills"]["skillsElsewhere"], {"wiki-health": str(other)})
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["state"], "connected")
+
+    def test_skills_selected_together_are_provided_once_by_the_agent_planned_first(self):
+        planned = self.preview("fixture-json", "fixture-reader")
+        self.assertEqual(set(planned["plan"]["skillsElsewhere"]["fixture-reader"]), set(connect_module.SKILL_NAMES))
+        self.apply("fixture-json", "fixture-reader")
+        self.assertFalse(self.skills.exists())
+
+    def own_files(self):
+        return sorted(self.record("fixture-reader")["skills"]["files"])
+
+    def test_an_own_copy_that_another_directory_now_provides_is_replaced_by_the_shared_copy_on_the_next_run(self):
+        self.apply("fixture-reader")
+        self.other_copies(self.json_skills, skip=[name for name in connect_module.SKILL_NAMES if name != "wiki-save"])
+        before = snapshot(self.json_skills)
+        planned = self.preview("fixture-reader")
+        self.assertEqual(planned["plan"]["skillsElsewhere"], {"fixture-reader": {"wiki-save": str(self.json_skills)}})
+        deleted = [item["path"] for item in planned["plan"]["files"] if item["op"] == "delete"]
+        self.assertEqual(deleted, [str(self.skills / "wiki-save/SKILL.md")])
+        self.assertTrue(any("wiki-save are provided by a directory" in note and "own copies" in note for note in planned["notes"]), planned["notes"])
+        self.apply("fixture-reader")
+        self.assertFalse((self.skills / "wiki-save").exists())
+        self.assertTrue((self.skills / "wiki-query/SKILL.md").is_file())  # the names nobody else provides stay
+        self.assertNotIn("wiki-save/SKILL.md", self.own_files())
+        self.assertEqual(self.record("fixture-reader")["skills"]["skillsElsewhere"], {"wiki-save": str(self.json_skills)})
+        self.assertEqual(before, snapshot(self.json_skills))
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["state"], "connected")
+        self.assertTrue(all(item["op"] == "unchanged" for item in self.apply("fixture-reader")["plan"]["files"]))
+
+    def test_a_copy_deleted_by_hand_stays_deleted_while_another_directory_provides_the_name(self):
+        self.apply("fixture-reader")
+        self.apply("fixture-json")  # all six names now exist in a directory fixture-reader reads
+        shutil.rmtree(self.skills / "wiki-query")
+        agent = self.status()["agents"]["fixture-reader"]
+        self.assertEqual({reason["code"] for reason in agent["reasons"]}, {"skill-missing", "skill-duplicated-elsewhere"})
+        planned = self.preview("fixture-reader")
+        paths = {item["path"] for item in planned["plan"]["files"] if item["role"] == "skill" and item["op"] != "unchanged"}
+        self.assertNotIn(str(self.skills / "wiki-query/SKILL.md"), paths)  # not reinstalled
+        self.apply("fixture-reader")
+        self.assertFalse(self.skills.exists())  # converged: one copy, the shared one
+        record = self.record("fixture-reader")["skills"]
+        self.assertEqual(record["files"], {})
+        self.assertEqual(set(record["skillsElsewhere"]), set(connect_module.SKILL_NAMES))
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["state"], "connected")
+        self.assertTrue((self.json_skills / "wiki-query/SKILL.md").is_file())
+
+    def test_a_modified_own_copy_is_not_removed_without_force(self):
+        self.apply("fixture-reader")
+        self.apply("fixture-json")
+        edited = self.skills / "wiki-save/SKILL.md"
+        edited.write_text("my edits\n", encoding="utf-8")
+        before = snapshot(self.skills, self.json_skills, self.config.parent)
+        refusal = self.refused("fixture-reader")["refusals"][0]
+        self.assertEqual(refusal["code"], "skill-customized")
+        self.assertIn(str(edited), refusal["message"])
+        self.assertEqual(before, snapshot(self.skills, self.json_skills, self.config.parent))
+        forced = self.apply("fixture-reader", extra=("--force",))
+        self.assertTrue(forced["plan"]["forcedBackupDirs"])
+        self.assertFalse(edited.exists())
+        saved = [path for path in self.config.parent.rglob("*") if path.is_file() and path.read_text(encoding="utf-8") == "my edits\n"]
+        self.assertEqual(len(saved), 1)  # the only copy of the user's text is kept
+
+    def test_a_modified_remaining_file_of_a_deleted_skill_is_not_removed_without_force(self):
+        self.apply("fixture-reader")
+        self.apply("fixture-json")
+        (self.skills / "wiki/SKILL.md").unlink()
+        reference = self.skills / "wiki/references/frontmatter.md"
+        reference.write_text("my notes\n", encoding="utf-8")
+        self.assertEqual(self.refused("fixture-reader")["refusals"][0]["code"], "skill-customized")
+        self.assertEqual(reference.read_text(encoding="utf-8"), "my notes\n")
+
+    def test_an_unrecorded_copy_in_the_own_directory_is_never_touched(self):
+        self.skills.mkdir(parents=True)
+        (self.skills / "wiki-save").mkdir()
+        (self.skills / "wiki-save/SKILL.md").write_text("mine\n", encoding="utf-8")
+        self.other_copies(self.json_skills, skip=[name for name in connect_module.SKILL_NAMES if name != "wiki-save"])
+        self.apply("fixture-reader")
+        self.assertEqual((self.skills / "wiki-save/SKILL.md").read_text(encoding="utf-8"), "mine\n")
+        self.assertEqual(self.record("fixture-reader")["skills"]["skillsElsewhere"], {"wiki-save": str(self.json_skills)})
+
+    def test_a_writer_warns_about_a_connected_reader_that_has_its_own_copies_and_doctor_flags_the_duplicate(self):
+        self.apply("fixture-reader")
+        before = snapshot(self.skills)
+        planned = self.preview("fixture-json")
+        note = next(note for note in planned["notes"] if "lists them twice" in note)
+        for text in ("Fixture reader agent", str(self.json_skills), ", ".join(connect_module.SKILL_NAMES), "connect fixture-reader", "after this apply"):
+            self.assertIn(text, note)
+        self.assertEqual(planned["plan"].get("skillsElsewhere"), None)
+        self.apply("fixture-json")
+        self.assertEqual(before, snapshot(self.skills))  # the writer never touches the reader's copies
+        agent = self.status()["agents"]["fixture-reader"]
+        self.assertEqual((agent["state"], [reason["code"] for reason in agent["reasons"]]), ("stale", ["skill-duplicated-elsewhere"]))
+        detail = agent["reasons"][0]["detail"]
+        for text in ("wiki-save", str(self.json_skills), "run connect fixture-reader again"):
+            self.assertIn(text, detail)
+        self.assertEqual(self.status()["agents"]["fixture-json"]["state"], "connected")
+        shot = snapshot(self.home, self.config.parent)
+        self.status()
+        self.assertEqual(shot, snapshot(self.home, self.config.parent))  # reported, never repaired
+        self.apply("fixture-reader")  # the advice: the reader switches to the shared copies
+        self.assertFalse(self.skills.exists())
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["state"], "connected")
+        self.assertFalse([note for note in self.preview("fixture-json")["notes"] if "lists them twice" in note])  # and the warning is gone
+
+    def test_a_reader_selected_with_a_writer_that_sorts_after_it_still_ends_with_one_copy(self):
+        # `fixture-reader` sorts before `fixture-shared`, which installs into the directory the reader also reads.
+        self.apply("fixture-reader", "fixture-shared")
+        self.assertFalse(self.skills.exists())
+        self.assertTrue((self.json_skills / "wiki-save/SKILL.md").is_file())
+        self.assertEqual(set(self.record("fixture-reader")["skills"]["skillsElsewhere"]), set(connect_module.SKILL_NAMES))
+        # Reader connected first, the writer and the reader selected together: the reader switches in the same run.
+        self.apply("fixture-reader", "fixture-shared", extra=("--remove",))
+        self.apply("fixture-reader")
+        planned = self.preview("fixture-reader", "fixture-shared")
+        self.assertFalse([note for note in planned["notes"] if "lists them twice" in note])
+        self.apply("fixture-reader", "fixture-shared")
+        self.assertFalse(self.skills.exists())
+
+    def test_removing_the_copies_another_connected_agent_uses_names_that_agent(self):
+        self.apply("fixture-json", "fixture-reader")
+        self.assertFalse(self.skills.exists())
+        planned = self.preview("fixture-json", extra=("--remove",))
+        note = next(note for note in planned["notes"] if "fixture-reader" in note and "uses instead of its own" in note)
+        for text in (str(self.json_skills), "wiki-save", "connect fixture-reader"):
+            self.assertIn(text, note)
+        both = self.preview("fixture-json", "fixture-reader", extra=("--remove",))
+        self.assertFalse([note for note in both["notes"] if "uses instead of its own" in note])
+        self.apply("fixture-json", extra=("--remove",))
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["reasons"][0]["code"], "skill-elsewhere-missing")
+        self.apply("fixture-reader")  # the reconnect the note asks for installs its own copies
+        self.assertTrue((self.skills / "wiki-save/SKILL.md").is_file())
+
+    # -- manifest fields of extras ---------------------------------------------------------------
+    def test_created_keys_must_be_a_real_integer_within_the_key_path(self):
+        self.apply("fixture-reader")
+        original = self.manifest.read_text(encoding="utf-8")
+        # extras sit in policy.rules (two levels), the MCP entry in mcpServers (one level)
+        cases = [(where, value) for where in ("extra", "mcp") for value in (True, False, -1, 1.0, "1", None)] + [("extra", 3), ("mcp", 2)]
+        for where, value in cases:
+            with self.subTest(value=value, where=where):
+                manifest = json.loads(original)
+                mcp = manifest["agents"]["fixture-reader"]["mcp"]
+                (mcp["extras"][0] if where == "extra" else mcp)["createdKeys"] = value
+                self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+                self.assertEqual(self.status()["manifest"]["code"], "manifest-invalid")
+                code, out, _ = self.run_cli("fixture-reader", "--json")
+                self.assertEqual((code, json.loads(out)["code"]), (1, "manifest-invalid"))
+        manifest = json.loads(original)
+        manifest["agents"]["fixture-reader"]["mcp"]["extras"][0]["createdKeys"] = 2
+        manifest["agents"]["fixture-reader"]["mcp"]["createdKeys"] = 1
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertIsNone(self.status()["manifest"]["code"])  # the boundary values are valid
+
+    def test_a_deleted_extra_that_is_reconnected_does_not_leave_an_empty_container_behind(self):
+        self.apply("fixture-reader")
+        doc = self.doc()
+        del doc["policy"]["rules"]["fixture-wiki_recover"]
+        self.mcp_file.write_text(json.dumps(doc), encoding="utf-8")
+        self.apply("fixture-reader")
+        self.assertEqual([item["createdKeys"] for item in self.record("fixture-reader")["mcp"]["extras"]], [2, 2])
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertFalse(self.mcp_file.exists())
+        # In a file that existed, the containers go too and the file is as it was.
+        self.reader.mkdir(exist_ok=True)
+        self.mcp_file.write_text('{\n  "other": 1\n}\n', encoding="utf-8")
+        self.apply("fixture-reader")
+        doc = self.doc()
+        del doc["policy"]["rules"]["fixture-wiki_recover"]
+        self.mcp_file.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        self.apply("fixture-reader")
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertEqual(self.mcp_file.read_text(encoding="utf-8"), '{\n  "other": 1\n}\n')
+
+    def test_agents_without_also_read_keep_their_records_free_of_the_new_fields(self):
+        self.apply("fixture-json")
+        record = self.record("fixture-json")
+        self.assertEqual(set(record["skills"]), {"root", "files"})
+        self.assertEqual(set(record["mcp"]) - {"path", "format", "keyPath", "name", "entrySha256", "createdFile", "createdKeys"}, set())
+        self.assertNotIn("extras", record["mcp"])
+
+    # -- rules file that would hide another file -----------------------------------------------
+    def test_the_rules_file_is_not_created_while_the_fallback_exists_and_the_block_is_printed(self):
+        self.reader.mkdir()
+        fallback = self.reader / "FALLBACK.md"
+        fallback.write_text("fallback rules\n", encoding="utf-8")
+        planned = self.preview("fixture-reader")
+        self.assertNotIn(str(self.rules_file), {item["path"] for item in planned["plan"]["files"]})
+        snippet = next(item for item in planned["snippets"] if "rules block" in item["title"])
+        self.assertIn("obsidian-second-brain:start", snippet["content"])
+        self.assertIn(str(fallback), snippet["destination"])
+        note = next(note for note in planned["notes"] if "was not created" in note)
+        for text in (str(self.rules_file), str(fallback), "would hide it", "MCP server's instructions", "paste the printed block"):
+            self.assertIn(text, note)
+        self.apply("fixture-reader")
+        self.assertFalse(self.rules_file.exists())
+        self.assertEqual(fallback.read_text(encoding="utf-8"), "fallback rules\n")
+        self.assertIsNone(self.record("fixture-reader")["rules"])
+        self.assertEqual(self.status()["agents"]["fixture-reader"]["state"], "connected")  # nothing recorded, nothing stale
+        self.apply("fixture-reader", extra=("--remove",))
+        self.assertEqual(fallback.read_text(encoding="utf-8"), "fallback rules\n")
+
+    def test_without_the_fallback_or_with_an_existing_rules_file_the_block_is_written(self):
+        self.apply("fixture-reader")
+        self.assertIn("obsidian-second-brain:start", self.rules_file.read_text(encoding="utf-8"))
+        self.apply("fixture-reader", extra=("--remove",))
+        self.reader.mkdir(exist_ok=True)
+        (self.reader / "FALLBACK.md").write_text("fallback\n", encoding="utf-8")
+        self.rules_file.write_text("# mine\n", encoding="utf-8")
+        planned = self.preview("fixture-reader")
+        self.assertEqual({item["op"] for item in planned["plan"]["files"] if item["path"] == str(self.rules_file)}, {"update"})
+        self.assertEqual([item for item in planned["snippets"] if "rules block" in item["title"]], [])
+        self.apply("fixture-reader")
+        self.assertTrue(self.rules_file.read_text(encoding="utf-8").startswith("# mine\n"))
+        self.assertIsNotNone(self.record("fixture-reader")["rules"])
+
+
 class CliProcessTests(ConnectCase):
     """The shipped CLI in a real process: HOME-only effects, PATH shims, doctor and a moved package."""
 
