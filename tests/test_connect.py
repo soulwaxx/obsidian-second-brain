@@ -46,7 +46,14 @@ def snapshot(*roots: Path, mtimes: bool = True) -> dict:
 
 
 class ConnectCase(unittest.TestCase):
+    # Environment overrides that adapter locations read: inherited values (CI runners set XDG_CONFIG_HOME, for
+    # example) would point an adapter at the real home instead of the temporary one, so every test starts without them.
+    LOCATION_OVERRIDES = ("XDG_CONFIG_HOME", "CODEX_HOME", "COPILOT_HOME", "APPDATA", "OPENCODE_CONFIG_DIR", "OBSIDIAN_VAULT_PATH")
+
     def setUp(self):
+        environ = self.enterContext(mock.patch.dict(os.environ))
+        for name in self.LOCATION_OVERRIDES:
+            environ.pop(name, None)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.home = self.root / "home"

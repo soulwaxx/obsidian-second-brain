@@ -114,7 +114,10 @@ try {
   // profiles with this package's absolute launcher path, and writes nothing to the isolated HOME.
   const connectHome = path.join(work, "connect-home");
   fs.mkdirSync(connectHome);
-  const connectList = JSON.parse(run(cli, ["connect", "--json"], { cwd: work, encoding: "utf8", env: { ...env, HOME: connectHome } }));
+  // Adapter location overrides (CI runners set XDG_CONFIG_HOME) would point detection at the real home.
+  const connectEnv = { ...env, HOME: connectHome };
+  for (const name of ["XDG_CONFIG_HOME", "CODEX_HOME", "COPILOT_HOME", "APPDATA", "OPENCODE_CONFIG_DIR"]) delete connectEnv[name];
+  const connectList = JSON.parse(run(cli, ["connect", "--json"], { cwd: work, encoding: "utf8", env: connectEnv }));
   assert.equal(connectList.mode, "list");
   // Exactly the adapters the installed registry lists, in its order, all absent in an empty HOME.
   const registered = JSON.parse(run(process.env.PYTHON || "python3", ["-B", "-c",
