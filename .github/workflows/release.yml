@@ -109,14 +109,14 @@ jobs:
       - name: Install publishing CLI
         env:
           # renovate: datasource=npm depName=npm
-          NPM_VERSION: '12.2.2'
+          NPM_VERSION: '12.2.3'
         run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-fund
       - name: Install agent CLIs for prepared-artifact checks
         env:
           # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
-          PI_VERSION: '1.5.2'
+          PI_VERSION: '1.6.0'
           # renovate: datasource=npm depName=@anthropic-ai/claude-code
-          CLAUDE_VERSION: '2.1.325'
+          CLAUDE_VERSION: '2.1.330'
         run: |
           npm install --global --strict-allow-scripts \
             --allow-scripts=@anthropic-ai/claude-code,@google/genai,protobufjs \
